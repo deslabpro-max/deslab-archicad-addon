@@ -1,10 +1,14 @@
 #include "AnalyticalCommands.hpp"
 #include "MigrationHelper.hpp"
 
+// deslab: the Analytical Model API is left out of the build. Archicad 27.0.0 R1 (5003) refused an
+// add-on that links AnalyticalModelAPI.dll as "not an Add-On file"; the commands report "not supported".
+#define DESLAB_NO_ANALYTICAL
+
 // The Structural Analytical Model functions are called with their ACAPI_Analytical_* names and the
 // add-on's own token, which is how the Archicad 27 and newer DevKits declare them. Archicad 25 and 26
 // name them ACAPI_AnalyticalModel_*, so the commands report "not supported" there.
-#ifdef ServerMainVers_2700
+#if defined (ServerMainVers_2700) && !defined (DESLAB_NO_ANALYTICAL)
 #include "ACAPI_Analytical.hpp"
 #endif
 
@@ -37,7 +41,7 @@ GS::Optional<GS::UniString> GetCurrentAnalyticalModelCommand::GetRawResponseSche
 
 GS::ObjectState GetCurrentAnalyticalModelCommand::Execute (const GS::ObjectState& /*parameters*/, GS::ProcessControl& /*processControl*/) const
 {
-#ifdef ServerMainVers_2700
+#if defined (ServerMainVers_2700) && !defined (DESLAB_NO_ANALYTICAL)
     API_Guid analyticalModelGuid = APINULLGuid;
     const GSErrCode err = ACAPI_Analytical_GetCurrentAnalyticalModel (ACAPI_GetToken (), analyticalModelGuid);
     if (err != NoError) {
@@ -84,7 +88,7 @@ GS::Optional<GS::UniString> UpdateAnalyticalModelCommand::GetRawResponseSchema (
 
 GS::ObjectState UpdateAnalyticalModelCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
 {
-#ifdef ServerMainVers_2700
+#if defined (ServerMainVers_2700) && !defined (DESLAB_NO_ANALYTICAL)
     API_Guid analyticalModelGuid = APINULLGuid;
     const GS::ObjectState* analyticalModelId = parameters.Get ("analyticalModelId");
     if (analyticalModelId != nullptr) {
@@ -132,7 +136,7 @@ GS::Optional<GS::UniString> SetAnalyticalGenerationSettingsToNoRuleCommand::GetR
 
 GS::ObjectState SetAnalyticalGenerationSettingsToNoRuleCommand::Execute (const GS::ObjectState& /*parameters*/, GS::ProcessControl& /*processControl*/) const
 {
-#ifdef ServerMainVers_2700
+#if defined (ServerMainVers_2700) && !defined (DESLAB_NO_ANALYTICAL)
     const GSErrCode err = ACAPI_CallUndoableCommand ("Set Analytical Generation Settings To No Rule", [&] () -> GSErrCode {
         return ACAPI_Analytical_SetGenerationSettingsToNoRule (ACAPI_GetToken ());
     });
@@ -175,7 +179,7 @@ GS::Optional<GS::UniString> GetAnalyticalModelCheckTypeIdCommand::GetRawResponse
 
 GS::ObjectState GetAnalyticalModelCheckTypeIdCommand::Execute (const GS::ObjectState& /*parameters*/, GS::ProcessControl& /*processControl*/) const
 {
-#ifdef ServerMainVers_2900
+#if defined (ServerMainVers_2900) && !defined (DESLAB_NO_ANALYTICAL)
     API_Guid typeId = APINULLGuid;
     const GSErrCode err = ACAPI_Analytical_GetModelCheckTypeId (ACAPI_GetToken (), typeId);
     if (err != NoError) {

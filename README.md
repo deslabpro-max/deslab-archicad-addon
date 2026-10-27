@@ -15,5 +15,6 @@ with commands that deslab needs for drafting in Archicad 27 from Claude.
 | Command | Change |
 | --- | --- |
 | `CreateWindows` | Optional `cornerWindow: true` places the window with the Corner Window tool variation (`APIVarId_CornerWindow`) and that tool's defaults. |
+| Analytical Model commands | Left out of the build (`DESLAB_NO_ANALYTICAL`): linking AnalyticalModelAPI.dll is suspected of making Archicad 27.0.0 R1 (5003) refuse the add-on. |
 
 Original Tapir documentation: `CLAUDE.tapir.md`, `archicad-addon/README.md`.
