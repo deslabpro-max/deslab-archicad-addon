@@ -79,17 +79,6 @@ newPropertyDefinitions = [{
         },
         'availability': classificationItemIdsForAvailability
     }
-}, {
-    'propertyDefinition': {
-        'name': 'Python Number Property',
-        'description': 'Number property without a default value, so its default is Undefined',
-        'type': 'number',
-        'isEditable': True,
-        'group': {
-            'propertyGroupId': newPropertyGroupId
-        },
-        'availability': classificationItemIdsForAvailability
-    }
 }]
 
 newPropertyIds = aclib.RunTapirCommand('CreatePropertyDefinitions', {'propertyDefinitions': newPropertyDefinitions})['propertyIds']

@@ -40,26 +40,6 @@ public:
     virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
 };
 
-class GetReservationStatusOfElementsCommand : public CommandBase
-{
-public:
-    GetReservationStatusOfElementsCommand ();
-    virtual GS::String GetName () const override;
-    virtual GS::Optional<GS::UniString> GetInputParametersSchema () const override;
-    virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
-    virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
-};
-
-class GrantElementsCommand : public CommandBase
-{
-public:
-    GrantElementsCommand ();
-    virtual GS::String GetName () const override;
-    virtual GS::Optional<GS::UniString> GetInputParametersSchema () const override;
-    virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
-    virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
-};
-
 class ReserveLockableObjectSetCommand : public CommandBase
 {
 public:
@@ -103,15 +83,6 @@ class ReleaseHotlinkCacheManagementCommand : public CommandBase
 {
 public:
     ReleaseHotlinkCacheManagementCommand ();
-    virtual GS::String GetName () const override;
-    virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
-    virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
-};
-
-class GetTeamworkStatusCommand : public CommandBase
-{
-public:
-    GetTeamworkStatusCommand ();
     virtual GS::String GetName () const override;
     virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
     virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;

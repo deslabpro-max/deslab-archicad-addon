@@ -1,5 +1,7 @@
 # deslab Archicad add-on
 
+> Branch `base-1.7.2`: the deslab changes on top of Tapir 1.7.2 (`539b692`), the last Tapir that Archicad 27.0.0 R1 (5003) is known to load. Built into the `ac27-172` release.
+
 Fork of [Tapir](https://github.com/ENZYME-APD/tapir-archicad-automation) (MIT license, see `LICENSE`)
 with commands that deslab needs for drafting in Archicad 27 from Claude.
 

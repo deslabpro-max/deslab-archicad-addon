@@ -22,26 +22,6 @@ public:
     virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
 };
 
-class CreateFolderInEmbeddedLibraryCommand : public CommandBase
-{
-public:
-    CreateFolderInEmbeddedLibraryCommand ();
-    virtual GS::String GetName () const override;
-    virtual GS::Optional<GS::UniString> GetInputParametersSchema () const override;
-    virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
-    virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
-};
-
-class CopyFilesIntoEmbeddedLibraryCommand : public CommandBase
-{
-public:
-    CopyFilesIntoEmbeddedLibraryCommand ();
-    virtual GS::String GetName () const override;
-    virtual GS::Optional<GS::UniString> GetInputParametersSchema () const override;
-    virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
-    virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
-};
-
 class GetLibrariesCommand : public CommandBase
 {
 public:
@@ -83,16 +63,6 @@ class GetAvailableLibraryPartsCommand : public CommandBase
 {
 public:
     GetAvailableLibraryPartsCommand ();
-    virtual GS::String GetName () const override;
-    virtual GS::Optional<GS::UniString> GetInputParametersSchema () const override;
-    virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;
-    virtual GS::ObjectState Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const override;
-};
-
-class SetLibraryPartScriptsCommand : public CommandBase
-{
-public:
-    SetLibraryPartScriptsCommand ();
     virtual GS::String GetName () const override;
     virtual GS::Optional<GS::UniString> GetInputParametersSchema () const override;
     virtual GS::Optional<GS::UniString> GetRawResponseSchema () const override;

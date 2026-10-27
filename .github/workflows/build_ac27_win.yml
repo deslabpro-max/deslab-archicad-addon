@@ -26,12 +26,12 @@ jobs:
       with:
         name: DeslabTapir AddOn AC27 Win
         path: archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx
-    - name: Publish to the "ac27-latest" release (main only)
-      if: github.ref == 'refs/heads/main'
+    - name: Publish to the "ac27-172" release (base-1.7.2 only)
+      if: github.ref == 'refs/heads/base-1.7.2'
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       shell: bash
       run: |
-        gh release view ac27-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
-          gh release create ac27-latest -R "$GITHUB_REPOSITORY" --prerelease --title "AC27 Win, latest main build" --notes "Built from main by build_ac27_win.yml."
-        gh release upload ac27-latest -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx
+        gh release view ac27-172 -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+          gh release create ac27-172 -R "$GITHUB_REPOSITORY" --prerelease --title "AC27 Win, deslab changes on Tapir 1.7.2" --notes "Built from base-1.7.2 by build_ac27_win.yml."
+        gh release upload ac27-172 -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx

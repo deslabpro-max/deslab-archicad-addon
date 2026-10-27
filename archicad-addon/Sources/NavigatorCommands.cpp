@@ -160,118 +160,6 @@ GS::ObjectState UpdateDrawingsCommand::Execute(const GS::ObjectState& parameters
 #endif
 }
 
-GetDrawingContentBoxesCommand::GetDrawingContentBoxesCommand () :
-    CommandBase (CommonSchema::Used)
-{
-}
-
-GS::String GetDrawingContentBoxesCommand::GetName () const
-{
-    return "GetDrawingContentBoxes";
-}
-
-GS::Optional<GS::UniString> GetDrawingContentBoxesCommand::GetInputParametersSchema () const
-{
-    return R"({
-        "type": "object",
-        "properties": {
-            "elements": {
-                "$ref": "#/Elements"
-            }
-        },
-        "additionalProperties": false,
-        "required": [
-            "elements"
-        ]
-    })";
-}
-
-GS::Optional<GS::UniString> GetDrawingContentBoxesCommand::GetRawResponseSchema () const
-{
-    return R"({
-        "type": "object",
-        "properties": {
-            "contentBoxes": {
-                "type": "array",
-                "description": "One item per input element, in the same order: the full content box of the Drawing, or an error.",
-                "items": {
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "properties": {
-                                "contentBox": {
-                                    "$ref": "#/BoundingBox2D",
-                                    "description": "The full boundary box of the Drawing's content, independent of its frame, as returned by Archicad."
-                                }
-                            },
-                            "additionalProperties": false,
-                            "required": [
-                                "contentBox"
-                            ]
-                        },
-                        {
-                            "$ref": "#/ErrorItem"
-                        }
-                    ]
-                }
-            }
-        },
-        "additionalProperties": false,
-        "required": [
-            "contentBoxes"
-        ]
-    })";
-}
-
-GS::ObjectState GetDrawingContentBoxesCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
-{
-#ifdef ServerMainVers_2700
-    GS::Array<GS::ObjectState> elements;
-    parameters.Get ("elements", elements);
-
-    GS::ObjectState response;
-    const auto& contentBoxes = response.AddList<GS::ObjectState> ("contentBoxes");
-
-    for (const GS::ObjectState& element : elements) {
-        const GS::ObjectState* elementId = element.Get ("elementId");
-        if (elementId == nullptr) {
-            contentBoxes (CreateErrorResponse (APIERR_BADPARS, "elementId is missing"));
-            continue;
-        }
-
-        API_Elem_Head elemHead = {};
-        elemHead.guid = GetGuidFromObjectState (*elementId);
-        GSErrCode err = ACAPI_Element_GetHeader (&elemHead);
-        if (err != NoError) {
-            contentBoxes (CreateErrorResponse (err, "Failed to find element in Archicad"));
-            continue;
-        }
-        if (GetElemTypeId (elemHead) != API_DrawingID) {
-            contentBoxes (CreateErrorResponse (APIERR_BADID, "The given element is not a Drawing."));
-            continue;
-        }
-
-        API_Box contentBox = {};
-        err = ACAPI_Drawing_GetFullDrawingContentBox (&contentBox, &elemHead.guid);
-        if (err != NoError) {
-            contentBoxes (CreateErrorResponse (err, "Failed to get the content box of the Drawing."));
-            continue;
-        }
-
-        contentBoxes (GS::ObjectState ("contentBox", GS::ObjectState (
-            "xMin", contentBox.xMin,
-            "yMin", contentBox.yMin,
-            "xMax", contentBox.xMax,
-            "yMax", contentBox.yMax)));
-    }
-
-    return response;
-#else
-    (void) parameters;
-    return CreateErrorResponse (APIERR_NOTSUPPORTED, "GetDrawingContentBoxes is not supported in Archicad versions earlier than 27.");
-#endif
-}
-
 GetDatabaseIdFromNavigatorItemIdCommand::GetDatabaseIdFromNavigatorItemIdCommand () :
     CommandBase (CommonSchema::Used)
 {}
@@ -345,174 +233,6 @@ GS::ObjectState GetDatabaseIdFromNavigatorItemIdCommand::Execute (const GS::Obje
 
         databases (CreateDatabaseIdObjectState (databaseGuid));
     }
-    return response;
-}
-
-struct DatabaseTypeData {
-    const char*      name;
-    API_WindowTypeID typeID;
-};
-
-static const DatabaseTypeData databaseTypes[] = {
-    { "Section",           APIWind_SectionID },
-    { "Elevation",         APIWind_ElevationID },
-    { "InteriorElevation", APIWind_InteriorElevationID },
-    { "Detail",            APIWind_DetailID },
-    { "Worksheet",         APIWind_WorksheetID },
-    { "DocumentFrom3D",    APIWind_DocumentFrom3DID },
-    { "Layout",            APIWind_LayoutID },
-    { "MasterLayout",      APIWind_MasterLayoutID }
-};
-
-static GSErrCode GetDatabaseUnIdsOfType (API_WindowTypeID typeID, GS::Array<API_DatabaseUnId>& databaseUnIds)
-{
-    switch (typeID) {
-        case APIWind_SectionID:           return ACAPI_Database_GetSectionDatabases (nullptr, &databaseUnIds);
-        case APIWind_ElevationID:         return ACAPI_Database_GetElevationDatabases (nullptr, &databaseUnIds);
-        case APIWind_InteriorElevationID: return ACAPI_Database_GetInteriorElevationDatabases (nullptr, &databaseUnIds);
-        case APIWind_DetailID:            return ACAPI_Database_GetDetailDatabases (nullptr, &databaseUnIds);
-        case APIWind_WorksheetID:         return ACAPI_Database_GetWorksheetDatabases (nullptr, &databaseUnIds);
-        case APIWind_DocumentFrom3DID:    return ACAPI_Database_GetDocumentFrom3DDatabases (nullptr, &databaseUnIds);
-        case APIWind_LayoutID:            return ACAPI_Database_GetLayoutDatabases (nullptr, &databaseUnIds);
-        case APIWind_MasterLayoutID:      return ACAPI_Database_GetMasterLayoutDatabases (nullptr, &databaseUnIds);
-        default:                          return APIERR_BADPARS;
-    }
-}
-
-GetDatabasesCommand::GetDatabasesCommand () :
-    CommandBase (CommonSchema::Used)
-{}
-
-GS::String GetDatabasesCommand::GetName () const
-{
-    return "GetDatabases";
-}
-
-GS::Optional<GS::UniString> GetDatabasesCommand::GetInputParametersSchema () const
-{
-    return R"({
-    "type": "object",
-    "properties": {
-        "types": {
-            "type": "array",
-            "description": "The types of the databases to list. Optional, by default the databases of every type are listed.",
-            "items": {
-                "type": "string",
-                "enum": [
-                    "Section",
-                    "Elevation",
-                    "InteriorElevation",
-                    "Detail",
-                    "Worksheet",
-                    "DocumentFrom3D",
-                    "Layout",
-                    "MasterLayout"
-                ]
-            }
-        }
-    },
-    "additionalProperties": false,
-    "required": []
-})";
-}
-
-GS::Optional<GS::UniString> GetDatabasesCommand::GetRawResponseSchema () const
-{
-    return R"({
-    "type": "object",
-    "properties": {
-        "databases": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "description": "The type of the database."
-                    },
-                    "databaseId": {
-                        "$ref": "#/DatabaseId"
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "The name of the database. Missing when the database info cannot be read."
-                    },
-                    "referenceId": {
-                        "type": "string",
-                        "description": "The reference id of the database. Missing when the database info cannot be read."
-                    }
-                },
-                "additionalProperties": false,
-                "required": [
-                    "type",
-                    "databaseId"
-                ]
-            }
-        }
-    },
-    "additionalProperties": false,
-    "required": [
-        "databases"
-    ]
-})";
-}
-
-GS::ObjectState GetDatabasesCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
-{
-    GS::Array<const DatabaseTypeData*> requestedTypes;
-    GS::Array<GS::UniString> typeNames;
-    if (parameters.Get ("types", typeNames)) {
-        for (const GS::UniString& typeName : typeNames) {
-            const DatabaseTypeData* found = nullptr;
-            for (const DatabaseTypeData& databaseType : databaseTypes) {
-                if (typeName == databaseType.name) {
-                    found = &databaseType;
-                    break;
-                }
-            }
-            if (found == nullptr) {
-                return CreateErrorResponse (APIERR_BADPARS, "Unknown database type: " + typeName);
-            }
-            if (!requestedTypes.Contains (found)) {
-                requestedTypes.Push (found);
-            }
-        }
-    } else {
-        for (const DatabaseTypeData& databaseType : databaseTypes) {
-            requestedTypes.Push (&databaseType);
-        }
-    }
-
-    GS::ObjectState response;
-    const auto& databases = response.AddList<GS::ObjectState> ("databases");
-
-    for (const DatabaseTypeData* databaseType : requestedTypes) {
-        GS::Array<API_DatabaseUnId> databaseUnIds;
-        // As with the layout lookups in DocumentCreationCommands, a type whose list
-        // cannot be read is treated as having no databases, so one failing type does
-        // not hide the others.
-        if (GetDatabaseUnIdsOfType (databaseType->typeID, databaseUnIds) != NoError) {
-            continue;
-        }
-
-        for (const API_DatabaseUnId& databaseUnId : databaseUnIds) {
-            API_DatabaseInfo databaseInfo = {};
-            databaseInfo.typeID = databaseType->typeID;
-            databaseInfo.databaseUnId = databaseUnId;
-
-            GS::ObjectState database (
-                "type", GS::UniString (databaseType->name),
-                "databaseId", CreateGuidObjectState (DatabaseIdResolver::Instance ().GetIdOfDatabase (databaseInfo)));
-
-            if (ACAPI_Window_GetDatabaseInfo (&databaseInfo) == NoError) {
-                database.Add ("name", GS::UniString (databaseInfo.name));
-                database.Add ("referenceId", GS::UniString (databaseInfo.ref));
-            }
-
-            databases (database);
-        }
-    }
-
     return response;
 }
 
@@ -1048,144 +768,6 @@ GS::ObjectState SetActiveGraphicalOverrideCombinationCommand::Execute (const GS:
 #endif
 }
 
-// The Partial Structure Display of the current (front) window, as opposed to
-// the one stored in a saved view (Get/SetViewSettings "structureDisplay").
-
-#ifdef ServerMainVers_2700
-static GS::UniString StructureDisplayToString (API_StructureDisplay structureDisplay)
-{
-    switch (structureDisplay) {
-        case API_CoreOnly:        return "CoreOnly";
-        case API_WithoutFinishes: return "WithoutFinishes";
-        case API_StructureOnly:   return "StructureOnly";
-        default:                  return "EntireStructure";
-    }
-}
-
-static bool StringToStructureDisplay (const GS::UniString& str, API_StructureDisplay& structureDisplay)
-{
-    if      (str == "EntireStructure")  structureDisplay = API_EntireStructure;
-    else if (str == "CoreOnly")         structureDisplay = API_CoreOnly;
-    else if (str == "WithoutFinishes")  structureDisplay = API_WithoutFinishes;
-    else if (str == "StructureOnly")    structureDisplay = API_StructureOnly;
-    else                                return false;
-    return true;
-}
-#endif
-
-GetStructureDisplayCommand::GetStructureDisplayCommand () :
-    CommandBase (CommonSchema::NotUsed)
-{}
-
-GS::String GetStructureDisplayCommand::GetName () const
-{
-    return "GetStructureDisplay";
-}
-
-GS::Optional<GS::UniString> GetStructureDisplayCommand::GetRawResponseSchema () const
-{
-    return R"({
-        "type": "object",
-        "description": "The Partial Structure Display of the current window.",
-        "properties": {
-            "structureDisplay": {
-                "type": "string",
-                "description": "The Partial Structure Display mode of the current window.",
-                "enum": ["EntireStructure", "CoreOnly", "WithoutFinishes", "StructureOnly"]
-            },
-            "is3D": {
-                "type": "boolean",
-                "description": "True when the setting belongs to the 3D window."
-            }
-        },
-        "additionalProperties": false,
-        "required": [
-            "structureDisplay",
-            "is3D"
-        ]
-    })";
-}
-
-GS::ObjectState GetStructureDisplayCommand::Execute (const GS::ObjectState& /*parameters*/, GS::ProcessControl& /*processControl*/) const
-{
-#ifdef ServerMainVers_2700
-    API_UIStructureDisplay uiStructureDisplay = {};
-    GSErrCode err = ACAPI_Navigator_GetStructureDisplay (&uiStructureDisplay);
-    if (err != NoError) {
-        return CreateErrorResponse (err, "Failed to get the Partial Structure Display of the current window. The current window must be a floor plan, section, elevation, interior elevation, worksheet, detail or 3D window.");
-    }
-
-    return GS::ObjectState (
-        "structureDisplay", StructureDisplayToString (uiStructureDisplay.structureDisplay),
-        "is3D", uiStructureDisplay.is3D);
-#else
-    return CreateErrorResponse (APIERR_NOTSUPPORTED, "Available from Archicad 27.");
-#endif
-}
-
-SetStructureDisplayCommand::SetStructureDisplayCommand () :
-    CommandBase (CommonSchema::Used)
-{}
-
-GS::String SetStructureDisplayCommand::GetName () const
-{
-    return "SetStructureDisplay";
-}
-
-GS::Optional<GS::UniString> SetStructureDisplayCommand::GetInputParametersSchema () const
-{
-    return R"({
-        "type": "object",
-        "properties": {
-            "structureDisplay": {
-                "type": "string",
-                "description": "The Partial Structure Display mode to apply to the current window.",
-                "enum": ["EntireStructure", "CoreOnly", "WithoutFinishes", "StructureOnly"]
-            }
-        },
-        "additionalProperties": false,
-        "required": [
-            "structureDisplay"
-        ]
-    })";
-}
-
-GS::Optional<GS::UniString> SetStructureDisplayCommand::GetRawResponseSchema () const
-{
-    return R"({
-        "$ref": "#/ExecutionResult"
-    })";
-}
-
-GS::ObjectState SetStructureDisplayCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
-{
-#ifdef ServerMainVers_2700
-    GS::UniString structureDisplayStr;
-    API_StructureDisplay structureDisplay = API_EntireStructure;
-    if (!parameters.Get ("structureDisplay", structureDisplayStr) || !StringToStructureDisplay (structureDisplayStr, structureDisplay)) {
-        return CreateFailedExecutionResult (APIERR_BADPARS, "structureDisplay must be one of EntireStructure, CoreOnly, WithoutFinishes, StructureOnly.");
-    }
-
-    // Read the current setting first, so the owner database stays the one of the current window.
-    API_UIStructureDisplay uiStructureDisplay = {};
-    GSErrCode err = ACAPI_Navigator_GetStructureDisplay (&uiStructureDisplay);
-    if (err != NoError) {
-        return CreateFailedExecutionResult (err, "Failed to get the Partial Structure Display of the current window. The current window must be a floor plan, section, elevation, interior elevation, worksheet, detail or 3D window.");
-    }
-
-    uiStructureDisplay.structureDisplay = structureDisplay;
-    err = ACAPI_Navigator_ChangeStructureDisplay (&uiStructureDisplay);
-    if (err != NoError) {
-        return CreateFailedExecutionResult (err, "Failed to change the Partial Structure Display of the current window.");
-    }
-
-    return CreateSuccessfulExecutionResult ();
-#else
-    (void) parameters;
-    return CreateFailedExecutionResult (APIERR_NOTSUPPORTED, "Available from Archicad 27.");
-#endif
-}
-
 GetView2DTransformationsCommand::GetView2DTransformationsCommand () :
     CommandBase (CommonSchema::Used)
 {}
@@ -1509,123 +1091,6 @@ GS::ObjectState FitInWindowCommand::Execute (const GS::ObjectState& parameters, 
         if (err != NoError) {
             return CreateFailedExecutionResult (err, "Failed to fit in window. There might be no project open.");
         }
-    }
-
-    return CreateSuccessfulExecutionResult ();
-}
-
-SetZoomCommand::SetZoomCommand () :
-    CommandBase (CommonSchema::Used)
-{
-}
-
-GS::String SetZoomCommand::GetName () const
-{
-    return "SetZoom";
-}
-
-GS::Optional<GS::UniString> SetZoomCommand::GetInputParametersSchema () const
-{
-    return R"({
-        "type": "object",
-        "properties": {
-            "zoomBox": {
-                "$ref": "#/Zoom",
-                "description": "The area to zoom the current 2D window to, in model coordinates (meters). The window keeps its aspect ratio, so the shown area may be larger than the box."
-            }
-        },
-        "additionalProperties": false,
-        "required": [
-            "zoomBox"
-        ]
-    })";
-}
-
-GS::Optional<GS::UniString> SetZoomCommand::GetRawResponseSchema () const
-{
-    return R"({
-        "$ref": "#/ExecutionResult"
-    })";
-}
-
-GS::ObjectState SetZoomCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
-{
-    API_Box zoomBox = {};
-    const GS::ObjectState* zoomBoxOS = parameters.Get ("zoomBox");
-    if (zoomBoxOS == nullptr ||
-        !zoomBoxOS->Get ("xMin", zoomBox.xMin) ||
-        !zoomBoxOS->Get ("yMin", zoomBox.yMin) ||
-        !zoomBoxOS->Get ("xMax", zoomBox.xMax) ||
-        !zoomBoxOS->Get ("yMax", zoomBox.yMax)) {
-        return CreateFailedExecutionResult (APIERR_BADPARS, "Invalid zoomBox parameter.");
-    }
-    if (zoomBox.xMin >= zoomBox.xMax || zoomBox.yMin >= zoomBox.yMax) {
-        return CreateFailedExecutionResult (APIERR_BADPARS, "The zoomBox must have xMin < xMax and yMin < yMax.");
-    }
-
-    API_WindowInfo currentWindow = {};
-    GSErrCode err = ACAPI_Window_GetCurrentWindow (&currentWindow);
-    if (err != NoError) {
-        return CreateFailedExecutionResult (err, "Failed to get the current window.");
-    }
-    if (currentWindow.typeID == APIWind_3DModelID) {
-        return CreateFailedExecutionResult (APIERR_BADDATABASE, "The current window is the 3D window; SetZoom works only in 2D windows.");
-    }
-
-    err = ACAPI_View_SetZoom (&zoomBox);
-    if (err != NoError) {
-        return CreateFailedExecutionResult (err, "Failed to set the zoom of the current window.");
-    }
-
-    return CreateSuccessfulExecutionResult ();
-}
-
-ResetZoomCommand::ResetZoomCommand () :
-    CommandBase (CommonSchema::Used)
-{
-}
-
-GS::String ResetZoomCommand::GetName () const
-{
-    return "ResetZoom";
-}
-
-GS::Optional<GS::UniString> ResetZoomCommand::GetInputParametersSchema () const
-{
-    return R"({
-        "type": "object",
-        "properties": {
-            "numberOfStepsBack": {
-                "type": "integer",
-                "description": "The number of steps to go back in the zoom history of the current window, like Archicad's Zoom Back. The default is 1.",
-                "minimum": 1,
-                "maximum": 32767
-            }
-        },
-        "additionalProperties": false,
-        "required": []
-    })";
-}
-
-GS::Optional<GS::UniString> ResetZoomCommand::GetRawResponseSchema () const
-{
-    return R"({
-        "$ref": "#/ExecutionResult"
-    })";
-}
-
-GS::ObjectState ResetZoomCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
-{
-    Int32 numberOfStepsBack = 1;
-    parameters.Get ("numberOfStepsBack", numberOfStepsBack);
-    if (numberOfStepsBack < 1 || numberOfStepsBack > 32767) {
-        return CreateFailedExecutionResult (APIERR_BADPARS, "numberOfStepsBack must be between 1 and 32767.");
-    }
-
-    short numOfStepsBack = static_cast<short> (numberOfStepsBack);
-    const GSErrCode err = ACAPI_View_ResetZoom (&numOfStepsBack);
-    if (err != NoError) {
-        return CreateFailedExecutionResult (err, "Failed to step back in the zoom history of the current window. The history might be shorter than the requested number of steps, or the current window has no zoom history.");
     }
 
     return CreateSuccessfulExecutionResult ();
@@ -1958,114 +1423,6 @@ GS::ObjectState CreateViewMapFolderCommand::Execute (const GS::ObjectState& para
     return response;
 }
 
-// ACAPI_Navigator_GetNavigatorItem does not tell which navigator map an item is in, and
-// ACAPI_Navigator_GetNavigatorChildrenItems needs it, so the children of parentGuid are
-// looked up in every map and the map whose children contain childGuid is returned.
-static bool GetChildrenContaining (const API_Guid& parentGuid, const API_Guid& childGuid, API_NavigatorMapID& mapId, GS::Array<API_Guid>& childGuids)
-{
-    API_NavigatorItem parentItem = {};
-    if (ACAPI_Navigator_GetNavigatorItem (&parentGuid, &parentItem) != NoError) {
-        return false;
-    }
-
-    for (const API_NavigatorMapID candidateMapId : { API_PublicViewMap, API_LayoutMap, API_PublisherSets, API_ProjectMap }) {
-        parentItem.mapId = candidateMapId;
-        GS::Array<API_NavigatorItem> children;
-        if (ACAPI_Navigator_GetNavigatorChildrenItems (&parentItem, &children) != NoError) {
-            continue;
-        }
-        GS::Array<API_Guid> guids;
-        for (const API_NavigatorItem& child : children) {
-            guids.Push (child.guid);
-        }
-        if (guids.Contains (childGuid)) {
-            mapId      = candidateMapId;
-            childGuids = guids;
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool FindNavigatorItemParent (API_NavigatorItem item, API_NavigatorMapID mapId, const API_Guid& targetGuid, API_Guid& parentGuid)
-{
-    item.mapId = mapId;
-    GS::Array<API_NavigatorItem> children;
-    if (ACAPI_Navigator_GetNavigatorChildrenItems (&item, &children) != NoError) {
-        return false;
-    }
-    for (const API_NavigatorItem& child : children) {
-        if (child.guid == targetGuid) {
-            parentGuid = item.guid;
-            return true;
-        }
-        if (FindNavigatorItemParent (child, mapId, targetGuid, parentGuid)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// Archicad leaves an item in place when it is moved to the parent it is already in, but
-// an item moved in from another parent is placed where asked. So a folder to park the
-// item in for a moment is needed: the parent of parentGuid, or when parentGuid is the
-// root of its map, a folder in it other than the item itself.
-static bool FindTemporaryParent (const API_Guid& parentGuid, const API_Guid& itemGuid, API_NavigatorMapID mapId, API_Guid& temporaryParentGuid)
-{
-    // A project has one set of each map, except the publisher sets
-    Int32 numberOfSets = 1;
-    if (mapId == API_PublisherSets) {
-        ACAPI_Navigator_GetNavigatorSetNum (&numberOfSets);
-    }
-    GS::Array<API_Guid> rootGuids;
-    for (Int32 ii = 0; ii < numberOfSets; ++ii) {
-        API_NavigatorSet navSet = {};
-        navSet.mapId = mapId;
-        if (ACAPI_Navigator_GetNavigatorSet (&navSet, &ii) == NoError) {
-            rootGuids.Push (navSet.rootGuid);
-        }
-    }
-
-    for (const API_Guid& rootGuid : rootGuids) {
-        API_NavigatorItem rootItem = {};
-        if (ACAPI_Navigator_GetNavigatorItem (&rootGuid, &rootItem) != NoError) {
-            continue;
-        }
-        if (rootGuid != parentGuid) {
-            if (FindNavigatorItemParent (rootItem, mapId, parentGuid, temporaryParentGuid)) {
-                return true;
-            }
-            continue;
-        }
-        rootItem.mapId = mapId;
-        GS::Array<API_NavigatorItem> children;
-        if (ACAPI_Navigator_GetNavigatorChildrenItems (&rootItem, &children) != NoError) {
-            return false;
-        }
-        for (const API_NavigatorItem& child : children) {
-            if (child.guid != itemGuid && (child.itemType == API_FolderNavItem || child.itemType == API_SubSetNavItem)) {
-                temporaryParentGuid = child.guid;
-                return true;
-            }
-        }
-        return false;
-    }
-    return false;
-}
-
-static bool IsAtRequestedPosition (const GS::Array<API_Guid>& childGuids, const API_Guid& itemGuid, const API_Guid* previousGuid)
-{
-    const UIndex itemIndex = childGuids.FindFirst (itemGuid);
-    if (itemIndex == MaxUIndex) {
-        return false;
-    }
-    if (previousGuid == nullptr) {
-        return true;
-    }
-    const UIndex previousIndex = childGuids.FindFirst (*previousGuid);
-    return previousIndex != MaxUIndex && previousIndex + 1 == itemIndex;
-}
-
 MoveNavigatorItemCommand::MoveNavigatorItemCommand () :
     CommandBase (CommonSchema::Used)
 {}
@@ -2081,14 +1438,8 @@ GS::Optional<GS::UniString> MoveNavigatorItemCommand::GetInputParametersSchema (
         "type": "object",
         "properties": {
             "navigatorItemIdToMove": { "$ref": "#/NavigatorItemId" },
-            "parentNavigatorItemId": {
-                "$ref": "#/NavigatorItemId",
-                "description": "The new parent of the item. It can be the item's current parent, to change the order of the items in it."
-            },
-            "previousNavigatorItemId": {
-                "$ref": "#/NavigatorItemId",
-                "description": "Optional child of parentNavigatorItemId that the item is placed right after. Without it an item moved within its own parent goes to the end of it."
-            }
+            "parentNavigatorItemId": { "$ref": "#/NavigatorItemId" },
+            "previousNavigatorItemId": { "$ref": "#/NavigatorItemId" }
         },
         "additionalProperties": false,
         "required": ["navigatorItemIdToMove", "parentNavigatorItemId"]
@@ -2111,109 +1462,25 @@ GS::ObjectState MoveNavigatorItemCommand::Execute (const GS::ObjectState& parame
         return CreateFailedExecutionResult (APIERR_BADPARS, "navigatorItemIdToMove and parentNavigatorItemId are required.");
     }
 
-    const API_Guid sourceApiGuid = GetGuidFromObjectState (*itemToMoveOS);
-    const API_Guid parentApiGuid = GetGuidFromObjectState (*parentOS);
-    const GS::Guid sourceGuid    = APIGuid2GSGuid (sourceApiGuid);
-    const GS::Guid parentGuid    = APIGuid2GSGuid (parentApiGuid);
+    const GS::Guid sourceGuid = APIGuid2GSGuid (GetGuidFromObjectState (*itemToMoveOS));
+    const GS::Guid parentGuid = APIGuid2GSGuid (GetGuidFromObjectState (*parentOS));
 
     const GS::ObjectState* prevOS = parameters.Get ("previousNavigatorItemId");
-    API_Guid  prevApiGuid = APINULLGuid;
     GS::Guid  prevGuidStorage;
     GS::Guid* prevGuidPtr = nullptr;
     if (prevOS != nullptr) {
-        prevApiGuid     = GetGuidFromObjectState (*prevOS);
-        prevGuidStorage = APIGuid2GSGuid (prevApiGuid);
-        prevGuidPtr     = &prevGuidStorage;
-        if (prevApiGuid == sourceApiGuid) {
-            return CreateFailedExecutionResult (APIERR_BADPARS, "previousNavigatorItemId cannot be the item to move.");
-        }
-    }
-    const API_Guid* prevApiGuidPtr = prevOS != nullptr ? &prevApiGuid : nullptr;
-
-    API_NavigatorMapID  mapId = API_PublicViewMap;
-    GS::Array<API_Guid> childGuidsBefore;
-    const bool alreadyInParent = GetChildrenContaining (parentApiGuid, sourceApiGuid, mapId, childGuidsBefore);
-
-    // Checked before anything is moved, so that a wrong previousNavigatorItemId does not
-    // leave the item in another folder
-    if (prevApiGuidPtr != nullptr) {
-        API_NavigatorMapID  prevMapId = API_PublicViewMap;
-        GS::Array<API_Guid> prevSiblingGuids;
-        const bool prevInParent = alreadyInParent ?
-            childGuidsBefore.Contains (prevApiGuid) :
-            GetChildrenContaining (parentApiGuid, prevApiGuid, prevMapId, prevSiblingGuids);
-        if (!prevInParent) {
-            return CreateFailedExecutionResult (APIERR_BADPARS, "previousNavigatorItemId must be a child of parentNavigatorItemId.");
-        }
+        prevGuidStorage = APIGuid2GSGuid (GetGuidFromObjectState (*prevOS));
+        prevGuidPtr = &prevGuidStorage;
     }
 
-    GSErrCode     err = NoError;
-    GS::UniString errorMessage;
+    GSErrCode err = NoError;
     ACAPI_CallUndoableCommand ("MoveNavigatorItemCommand", [&]() -> GSErrCode {
         err = ACAPI_Navigator_SetNavigatorItemPosition (&sourceGuid, &parentGuid, prevGuidPtr);
-        if (err != NoError) {
-            errorMessage = "Failed to move navigator item.";
-            return err;
-        }
-
-        // ACAPI_Navigator_SetNavigatorItemPosition returns NoError also when it leaves the
-        // item where it was, so read the parent back. Without previousNavigatorItemId an
-        // item that already is in the parent goes to the end of it.
-        GS::Array<API_Guid> childGuids;
-        bool moved = GetChildrenContaining (parentApiGuid, sourceApiGuid, mapId, childGuids) &&
-                     IsAtRequestedPosition (childGuids, sourceApiGuid, prevApiGuidPtr) &&
-                     (!alreadyInParent || prevApiGuidPtr != nullptr || childGuids.GetLast () == sourceApiGuid);
-
-        // An item moved within its own parent stays in place, so move it out and back in
-        if (!moved && alreadyInParent) {
-            API_Guid temporaryParentApiGuid = APINULLGuid;
-            if (!FindTemporaryParent (parentApiGuid, sourceApiGuid, mapId, temporaryParentApiGuid)) {
-                err          = APIERR_GENERAL;
-                errorMessage = "Archicad did not move the navigator item within its parent, and there is no other folder to move it through.";
-                return err;
-            }
-            const GS::Guid temporaryParentGuid = APIGuid2GSGuid (temporaryParentApiGuid);
-            err = ACAPI_Navigator_SetNavigatorItemPosition (&sourceGuid, &temporaryParentGuid, nullptr);
-            if (err != NoError) {
-                errorMessage = "Failed to move navigator item within its parent.";
-                return err;
-            }
-            err = ACAPI_Navigator_SetNavigatorItemPosition (&sourceGuid, &parentGuid, prevGuidPtr);
-            const bool backInParent = GetChildrenContaining (parentApiGuid, sourceApiGuid, mapId, childGuids);
-            if (!backInParent) {
-                // Put the item back where it was, after its previous sibling, instead of
-                // leaving it in the temporary folder
-                const UIndex originalIndex = childGuidsBefore.FindFirst (sourceApiGuid);
-                GS::Guid  originalPrevGuid;
-                GS::Guid* originalPrevGuidPtr = nullptr;
-                if (originalIndex != MaxUIndex && originalIndex > 0) {
-                    originalPrevGuid    = APIGuid2GSGuid (childGuidsBefore[originalIndex - 1]);
-                    originalPrevGuidPtr = &originalPrevGuid;
-                }
-                ACAPI_Navigator_SetNavigatorItemPosition (&sourceGuid, &parentGuid, originalPrevGuidPtr);
-            }
-            if (err != NoError || !backInParent) {
-                if (err == NoError) {
-                    err = APIERR_REFUSEDPAR;
-                }
-                errorMessage = "Failed to move navigator item within its parent.";
-                return err;
-            }
-            moved = IsAtRequestedPosition (childGuids, sourceApiGuid, prevApiGuidPtr);
-        }
-
-        if (!moved) {
-            err          = APIERR_REFUSEDPAR;
-            errorMessage = prevApiGuidPtr != nullptr ?
-                "Archicad did not move the navigator item to the requested position." :
-                "Archicad did not move the navigator item to the requested parent.";
-            return err;
-        }
-        return NoError;
+        return err;
     });
 
     if (err != NoError) {
-        return CreateFailedExecutionResult (err, errorMessage);
+        return CreateFailedExecutionResult (err, "Failed to move navigator item.");
     }
 
     return CreateSuccessfulExecutionResult ();
@@ -2235,10 +1502,7 @@ GS::Optional<GS::UniString> RenameNavigatorItemCommand::GetInputParametersSchema
         "properties": {
             "navigatorItemId": { "$ref": "#/NavigatorItemId" },
             "newName":         { "type": "string" },
-            "newId": {
-                "type": "string",
-                "description": "The new ID of the item. On a layout it is the custom layout number (customLayoutNumbering is switched on); on any other item it is the custom ID of the navigator item (customUiId becomes true)."
-            },
+            "newId":           { "type": "string" },
             "customName": {
                 "type": "boolean",
                 "description": "Set to false to drop the custom name of the item, so that it follows the name of its Project Map source again. Cannot be combined with newName."
@@ -2254,39 +1518,6 @@ GS::Optional<GS::UniString> RenameNavigatorItemCommand::GetRawResponseSchema () 
     return R"({
         "$ref": "#/ExecutionResult"
     })";
-}
-
-static bool ContainsNavigatorItem (API_NavigatorItem item, API_NavigatorMapID mapId, const API_Guid& guid)
-{
-    if (item.guid == guid) {
-        return true;
-    }
-    item.mapId = mapId;
-    GS::Array<API_NavigatorItem> children;
-    if (ACAPI_Navigator_GetNavigatorChildrenItems (&item, &children) != NoError) {
-        return false;
-    }
-    for (const API_NavigatorItem& child : children) {
-        if (ContainsNavigatorItem (child, mapId, guid)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool IsProjectMapItem (const API_Guid& guid)
-{
-    API_NavigatorSet projectMapSet = {};
-    projectMapSet.mapId = API_ProjectMap;
-    Int32 idx = 0;
-    if (ACAPI_Navigator_GetNavigatorSet (&projectMapSet, &idx) != NoError) {
-        return false;
-    }
-    API_NavigatorItem rootItem = {};
-    if (ACAPI_Navigator_GetNavigatorItem (&projectMapSet.rootGuid, &rootItem) != NoError) {
-        return false;
-    }
-    return ContainsNavigatorItem (rootItem, API_ProjectMap, guid);
 }
 
 GS::ObjectState RenameNavigatorItemCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
@@ -2313,25 +1544,6 @@ GS::ObjectState RenameNavigatorItemCommand::Execute (const GS::ObjectState& para
         return CreateFailedExecutionResult (APIERR_BADPARS, "newName cannot be combined with customName false.");
     }
 
-    GS::UniString newId;
-    const bool hasNewId = parameters.Get ("newId", newId) && !newId.IsEmpty ();
-
-    // The ID of a layout is its layout number, which lives in the layout settings
-    // (API_LayoutInfo::customLayoutNumber) and not on the navigator item, so it is
-    // changed through ACAPI_Navigator_ChangeLayoutSets below. The ID of every other
-    // item is the uiId of the navigator item, changed the same way as its name.
-    const bool isLayout = navItem.itemType == API_LayoutNavItem || navItem.itemType == API_MasterLayoutNavItem;
-    const bool hasNewItemId = hasNewId && !isLayout;
-
-    // Archicad does not let the name or the ID of a Project Map item (story, section,
-    // elevation, schedule, ...) be changed, but ACAPI_Navigator_ChangeNavigatorItem
-    // returns NoError for them and ACAPI_Navigator_GetNavigatorItem then reads back the
-    // value that was passed in, so the read-back below cannot catch it. Refuse them here.
-    if ((hasNewName || resetCustomName || hasNewId) && IsProjectMapItem (guid)) {
-        return CreateFailedExecutionResult (APIERR_REFUSEDPAR,
-            "The name and the ID of a Project Map item cannot be changed. Rename its view in the View Map instead.");
-    }
-
     if (hasNewName) {
         GS::ucsncpy (navItem.uName, newName.ToUStr (), GS::ArraySize (navItem.uName));
         navItem.uName[GS::ArraySize (navItem.uName) - 1] = 0;
@@ -2340,21 +1552,15 @@ GS::ObjectState RenameNavigatorItemCommand::Execute (const GS::ObjectState& para
         navItem.customName = false;
     }
 
-    if (hasNewItemId) {
-        // uiId is a char array (unlike uName), so it is copied like customLayoutNumber below.
-        CHTruncate (newId.ToCStr ().Get (), navItem.uiId, GS::ArraySize (navItem.uiId));
-        navItem.customUiId = true;
+    err = ACAPI_Navigator_ChangeNavigatorItem (&navItem);
+    if (err != NoError) {
+        return CreateFailedExecutionResult (err, "Failed to rename navigator item.");
     }
 
-    if (hasNewName || resetCustomName || hasNewItemId) {
-        err = ACAPI_Navigator_ChangeNavigatorItem (&navItem);
-        if (err != NoError) {
-            return CreateFailedExecutionResult (err, "Failed to rename navigator item.");
-        }
-
-        // ACAPI_Navigator_ChangeNavigatorItem returns NoError even when it leaves the name
-        // or the ID untouched (e.g. Project Map schedule items, which are named by their
-        // scheme), so read the item back and report a value that was not applied as an error.
+    // ACAPI_Navigator_ChangeNavigatorItem returns NoError even when it leaves the name
+    // untouched (e.g. Project Map schedule items, which are named by their scheme),
+    // so read the item back and report a name that was not applied as an error.
+    if (hasNewName || resetCustomName) {
         API_NavigatorItem changedItem = {};
         err = ACAPI_Navigator_GetNavigatorItem (&guid, &changedItem);
         if (err != NoError) {
@@ -2368,40 +1574,20 @@ GS::ObjectState RenameNavigatorItemCommand::Execute (const GS::ObjectState& para
             return CreateFailedExecutionResult (APIERR_REFUSEDPAR,
                 "Archicad did not drop the custom name of this navigator item.");
         }
-        if (hasNewItemId && GS::UniString (changedItem.uiId) != GS::UniString (navItem.uiId)) {
-            return CreateFailedExecutionResult (APIERR_REFUSEDPAR,
-                "Archicad did not apply the new ID. The ID of this navigator item cannot be changed by this command.");
-        }
     }
 
-    if (hasNewId && isLayout) {
+    // For layouts: set custom layout number (ID) via ChangeLayoutSets
+    GS::UniString newId;
+    if (parameters.Get ("newId", newId)) {
         API_LayoutInfo layoutInfo = {};
-        err = ACAPI_Navigator_GetLayoutSets (&layoutInfo, &navItem.db.databaseUnId);
-        if (err != NoError) {
-            return CreateFailedExecutionResult (err, "Failed to read the layout settings of the layout.");
-        }
-        CHTruncate (newId.ToCStr ().Get (), layoutInfo.customLayoutNumber,
-                    GS::ArraySize (layoutInfo.customLayoutNumber));
-        layoutInfo.customLayoutNumbering = true;
-        err = ACAPI_Navigator_ChangeLayoutSets (&layoutInfo, &navItem.db.databaseUnId);
-        delete layoutInfo.customData;
-        layoutInfo.customData = nullptr;
-        if (err != NoError) {
-            return CreateFailedExecutionResult (err, "Failed to change the ID of the layout.");
-        }
-
-        API_LayoutInfo changedLayoutInfo = {};
-        err = ACAPI_Navigator_GetLayoutSets (&changedLayoutInfo, &navItem.db.databaseUnId);
-        if (err != NoError) {
-            return CreateFailedExecutionResult (err, "Failed to read back the layout settings after the change.");
-        }
-        const bool layoutIdApplied = changedLayoutInfo.customLayoutNumbering &&
-                                     GS::UniString (changedLayoutInfo.customLayoutNumber) == GS::UniString (layoutInfo.customLayoutNumber);
-        delete changedLayoutInfo.customData;
-        changedLayoutInfo.customData = nullptr;
-        if (!layoutIdApplied) {
-            return CreateFailedExecutionResult (APIERR_REFUSEDPAR,
-                "Archicad did not apply the new ID of the layout.");
+        BNZeroMemory (&layoutInfo, sizeof (layoutInfo));
+        if (ACAPI_Navigator_GetLayoutSets (&layoutInfo, &navItem.db.databaseUnId) == NoError) {
+            CHTruncate (newId.ToCStr ().Get (), layoutInfo.customLayoutNumber,
+                        GS::ArraySize (layoutInfo.customLayoutNumber));
+            layoutInfo.customLayoutNumbering = true;
+            ACAPI_Navigator_ChangeLayoutSets (&layoutInfo, &navItem.db.databaseUnId);
+            delete layoutInfo.customData;
+            layoutInfo.customData = nullptr;
         }
     }
 
@@ -2434,35 +1620,6 @@ GS::Optional<GS::UniString> DeleteNavigatorItemsCommand::GetRawResponseSchema ()
     return R"({"type":"object","properties":{"executionResults":{"$ref":"#/ExecutionResults"}},"additionalProperties":false,"required":["executionResults"]})";
 }
 
-// A worksheet or detail of the Project Map is a database, like a layout, and
-// ACAPI_Navigator_DeleteNavigatorView deletes View Map views only. The item is
-// looked up in the Project Map by its database instead of trusting the mapId
-// returned with it, so a View Map view of the same worksheet - another item on
-// the same database - is not matched and still deletes only the view.
-static bool IsProjectMapWorksheetOrDetail (const API_Guid& guid, const API_NavigatorItem& navItem)
-{
-    if (navItem.db.typeID != APIWind_WorksheetID && navItem.db.typeID != APIWind_DetailID) {
-        return false;
-    }
-
-    API_NavigatorItem filterItem = {};
-    filterItem.mapId           = API_ProjectMap;
-    filterItem.itemType        = navItem.itemType;
-    filterItem.db.databaseUnId = navItem.db.databaseUnId;
-
-    GS::Array<API_NavigatorItem> results;
-    if (ACAPI_Navigator_SearchNavigatorItem (&filterItem, &results) != NoError) {
-        return false;
-    }
-
-    for (const API_NavigatorItem& result : results) {
-        if (result.guid == guid) {
-            return true;
-        }
-    }
-    return false;
-}
-
 GS::ObjectState DeleteNavigatorItemsCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
 {
     GS::Array<GS::ObjectState> navigatorItemIds;
@@ -2486,17 +1643,9 @@ GS::ObjectState DeleteNavigatorItemsCommand::Execute (const GS::ObjectState& par
         }
 
         GSErrCode err = NoError;
-        GS::UniString failureMessage = "Failed to delete navigator item.";
         if (navItem.itemType == API_LayoutNavItem || navItem.itemType == API_MasterLayoutNavItem) {
             API_DatabaseInfo dbInfo = navItem.db;
             err = ACAPI_Database_DeleteDatabase (&dbInfo);
-        } else if (IsProjectMapWorksheetOrDetail (guid, navItem)) {
-            // Only independent worksheets and details are databases of their
-            // own; one placed by a marker belongs to its marker and cannot be
-            // deleted this way.
-            API_DatabaseInfo dbInfo = navItem.db;
-            err = ACAPI_Database_DeleteDatabase (&dbInfo);
-            failureMessage = "Failed to delete the worksheet or detail. Only independent worksheets and details can be deleted; delete a marker-linked one by deleting its marker.";
         } else if (navItem.itemType == API_SubSetNavItem) {
             err = APIERR_NOTSUPPORTED;
         } else {
@@ -2507,7 +1656,7 @@ GS::ObjectState DeleteNavigatorItemsCommand::Execute (const GS::ObjectState& par
         if (err == APIERR_NOTSUPPORTED) {
             executionResults (CreateFailedExecutionResult (err, "Deleting layout subsets is not supported by the ArchiCAD API."));
         } else if (err != NoError) {
-            executionResults (CreateFailedExecutionResult (err, failureMessage));
+            executionResults (CreateFailedExecutionResult (err, "Failed to delete navigator item."));
         } else {
             executionResults (CreateSuccessfulExecutionResult ());
         }
@@ -2551,7 +1700,7 @@ static GS::UniString NavigatorItemTypeToString (API_NavigatorItemTypeID t)
     }
 }
 
-static GS::ObjectState NavigatorItemToObjectState (API_NavigatorItem item, API_NavigatorMapID mapId, bool includeChildCount)
+static GS::ObjectState NavigatorItemToObjectState (API_NavigatorItem item, API_NavigatorMapID mapId)
 {
     GS::ObjectState itemOS;
     itemOS.Add ("type",            NavigatorItemTypeToString (item.itemType));
@@ -2583,22 +1732,12 @@ static GS::ObjectState NavigatorItemToObjectState (API_NavigatorItem item, API_N
     }
 
     item.mapId = mapId;
-
-    // The number of direct children as Archicad counts them, without fetching
-    // the children themselves. Missing when Archicad cannot count them.
-    if (includeChildCount) {
-        Int32 childCount = 0;
-        if (ACAPI_Navigator_GetNavigatorChildNum (&item, &childCount) == NoError) {
-            itemOS.Add ("childCount", childCount);
-        }
-    }
-
     GS::Array<API_NavigatorItem> children;
     if (ACAPI_Navigator_GetNavigatorChildrenItems (&item, &children) == NoError && !children.IsEmpty ()) {
         const auto& childList = itemOS.AddList<GS::ObjectState> ("children");
         for (const API_NavigatorItem& child : children) {
             GS::ObjectState wrapper;
-            wrapper.Add ("navigatorItem", NavigatorItemToObjectState (child, mapId, includeChildCount));
+            wrapper.Add ("navigatorItem", NavigatorItemToObjectState (child, mapId));
             childList (wrapper);
         }
     }
@@ -2629,10 +1768,6 @@ GS::Optional<GS::UniString> GetNavigatorItemTreeCommand::GetInputParametersSchem
                 "type": "string",
                 "minLength": 1,
                 "description": "The name of the publisher set to retrieve. Used only when navigatorMapId is PublisherSets. Without it the first publisher set is returned."
-            },
-            "includeChildCount": {
-                "type": "boolean",
-                "description": "Set to true to add childCount, the number of direct children Archicad reports, to every item. Defaults to false."
             }
         },
         "additionalProperties": false,
@@ -2698,105 +1833,7 @@ GS::ObjectState GetNavigatorItemTreeCommand::Execute (const GS::ObjectState& par
         return CreateErrorResponse (err, "Failed to get root navigator item.");
     }
 
-    bool includeChildCount = false;
-    parameters.Get ("includeChildCount", includeChildCount);
-
     GS::ObjectState response;
-    response.Add ("navigatorItemTree", NavigatorItemToObjectState (rootItem, mapId, includeChildCount));
-    return response;
-}
-
-// ─── GetNavigatorParentItems ──────────────────────────────────────────────────
-
-GetNavigatorParentItemsCommand::GetNavigatorParentItemsCommand () :
-    CommandBase (CommonSchema::Used)
-{}
-
-GS::String GetNavigatorParentItemsCommand::GetName () const
-{
-    return "GetNavigatorParentItems";
-}
-
-GS::Optional<GS::UniString> GetNavigatorParentItemsCommand::GetInputParametersSchema () const
-{
-    return R"({
-        "type": "object",
-        "properties": {
-            "navigatorItemIds": { "$ref": "#/NavigatorItemIds" }
-        },
-        "additionalProperties": false,
-        "required": ["navigatorItemIds"]
-    })";
-}
-
-GS::Optional<GS::UniString> GetNavigatorParentItemsCommand::GetRawResponseSchema () const
-{
-    return R"({
-        "type": "object",
-        "properties": {
-            "parentItems": {
-                "type": "array",
-                "description": "The parent of each requested navigator item, in the order of the input, or an error for an item whose parent cannot be read.",
-                "items": {
-                    "type": "object",
-                    "oneOf": [
-                        {
-                            "type": "object",
-                            "properties": {
-                                "navigatorItemId": { "$ref": "#/NavigatorItemId" },
-                                "type":            { "$ref": "#/NavigatorItemType" },
-                                "name":            { "type": "string", "description": "The name of the parent navigator item." }
-                            },
-                            "additionalProperties": false,
-                            "required": ["navigatorItemId", "type", "name"]
-                        },
-                        {
-                            "$ref": "#/ErrorItem"
-                        }
-                    ]
-                }
-            }
-        },
-        "additionalProperties": false,
-        "required": ["parentItems"]
-    })";
-}
-
-GS::ObjectState GetNavigatorParentItemsCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
-{
-    GS::Array<GS::ObjectState> navigatorItemIds;
-    parameters.Get ("navigatorItemIds", navigatorItemIds);
-
-    GS::ObjectState response;
-    const auto& parentItems = response.AddList<GS::ObjectState> ("parentItems");
-
-    for (const GS::ObjectState& navItemIdOS : navigatorItemIds) {
-        const API_Guid guid = GetGuidFromNavigatorItemIdArrayItem (navItemIdOS);
-        if (guid == APINULLGuid) {
-            parentItems (CreateErrorResponse (APIERR_BADPARS, "navigatorItemId is corrupt or missing."));
-            continue;
-        }
-
-        API_NavigatorItem parent = {};
-        const GSErrCode err = ACAPI_Navigator_GetNavigatorParentItem (&guid, &parent);
-        if (err != NoError) {
-            parentItems (CreateErrorResponse (err, "Failed to get the parent of the navigator item."));
-            continue;
-        }
-
-        // The root of a map has no parent. Report it as an error rather than
-        // an item with a null id, whichever way Archicad signals it.
-        if (parent.guid == APINULLGuid) {
-            parentItems (CreateErrorResponse (APIERR_BADPARS, "The navigator item has no parent."));
-            continue;
-        }
-
-        GS::ObjectState parentOS;
-        parentOS.Add ("navigatorItemId", CreateGuidObjectState (parent.guid));
-        parentOS.Add ("type",            NavigatorItemTypeToString (parent.itemType));
-        parentOS.Add ("name",            GS::UniString (parent.uName));
-        parentItems (parentOS);
-    }
-
+    response.Add ("navigatorItemTree", NavigatorItemToObjectState (rootItem, mapId));
     return response;
 }
