@@ -8,7 +8,7 @@ with commands that deslab needs for drafting in Archicad 27 from Claude.
   Disable the original Tapir add-on in Archicad before loading this one, and do not accept Tapir's
   "update to the latest version" prompt, which would replace this build with upstream Tapir.
 - The build runs in GitHub Actions (`.github/workflows/build_ac27_win.yml`) on every push.
-  Download the `.apx` from the run's artifacts; no Visual Studio is needed on the drafting PC.
+  Each main build is attached to the `ac27-latest` release; no Visual Studio is needed on the drafting PC.
 
 ## deslab changes
 
