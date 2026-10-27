@@ -398,6 +398,37 @@ GSErrCode PrepareWindowOrDoorDefaults (API_ElemTypeID elemTypeId, API_Element& e
     return NoError;
 }
 
+// deslab: the Corner Window tool keeps its own defaults (variation APIVarId_CornerWindow).
+// A favorite or library part applied for a corner window has to go to those defaults, with the
+// part's ac_cw_function switched on, otherwise Archicad places a plain "Окно 27" corner window.
+static bool IsCornerWindowFunctionParam (const char* paramName)
+{
+    const char* expected = "ac_cw_function";
+    UIndex ii = 0;
+    for (; paramName[ii] != '\0' && expected[ii] != '\0'; ++ii) {
+        const char ch = (paramName[ii] >= 'A' && paramName[ii] <= 'Z') ? char (paramName[ii] - 'A' + 'a') : paramName[ii];
+        if (ch != expected[ii]) {
+            return false;
+        }
+    }
+    return paramName[ii] == '\0' && expected[ii] == '\0';
+}
+
+static void SwitchOnCornerWindowFunction (API_AddParType** params)
+{
+    if (params == nullptr) {
+        return;
+    }
+    const GSSize nParams = BMGetHandleSize ((GSHandle) params) / sizeof (API_AddParType);
+    for (GSIndex ii = 0; ii < nParams; ++ii) {
+        API_AddParType& param = (*params)[ii];
+        if (param.typeMod == API_ParSimple && IsCornerWindowFunctionParam (param.name)) {
+            param.value.real = 1.0;
+            return;
+        }
+    }
+}
+
 // Apply a named FAVORITE to the Door/Window tool defaults BEFORE
 // the caller clones element/memo/marker via PrepareWindowOrDoorDefaults.
 //
@@ -439,7 +470,7 @@ GSErrCode PrepareWindowOrDoorDefaults (API_ElemTypeID elemTypeId, API_Element& e
 // element type than `expectedTypeId` (e.g. passing a Window favorite
 // to CreateDoors). Otherwise returns the underlying Favorite_Get /
 // ChangeDefaultsExt error code.
-static GSErrCode ApplyWindowOrDoorFavoriteToDefaults (const GS::ObjectState& data, API_ElemTypeID expectedTypeId)
+static GSErrCode ApplyWindowOrDoorFavoriteToDefaults (const GS::ObjectState& data, API_ElemTypeID expectedTypeId, API_ElemVariationID variationId = APIVarId_Generic)
 {
     GS::UniString favoriteName;
     if (!data.Get ("favoriteName", favoriteName)) {
@@ -506,6 +537,13 @@ static GSErrCode ApplyWindowOrDoorFavoriteToDefaults (const GS::ObjectState& dat
         subElemsPtr = &markerSubElement;
     }
 
+    if (variationId != APIVarId_Generic) {
+        // deslab: send the favorite to the defaults of the given tool variation.
+        SetElemVariationId (favorite.element.header, variationId);
+        if (variationId == APIVarId_CornerWindow) {
+            SwitchOnCornerWindowFunction (favorite.memo->params);
+        }
+    }
     err = ACAPI_Element_ChangeDefaultsExt (&favorite.element, favorite.memo.GetPtr (), &mask, nSubElems, subElemsPtr);
     disposeFavoriteMemos ();
     if (err != NoError) {
@@ -4576,7 +4614,7 @@ GS::Optional<GS::UniString> CreateWindowsCommand::GetRawResponseSchema () const
 // APILib_ObjectID for windows and doors). Given to the search together with the name, the
 // window (or door) typeID limits it to that subtype, so a part of another type (an object, a
 // lamp, a door for CreateWindows) is not found and the tool defaults are left unchanged.
-static GSErrCode ApplyWindowOrDoorLibraryPartToDefaults (const GS::ObjectState& data, API_ElemTypeID typeId)
+static GSErrCode ApplyWindowOrDoorLibraryPartToDefaults (const GS::ObjectState& data, API_ElemTypeID typeId, API_ElemVariationID variationId = APIVarId_Generic)
 {
     GS::UniString libName;
     if (!data.Get ("libraryPartName", libName) || libName.IsEmpty ()) {
@@ -4598,6 +4636,7 @@ static GSErrCode ApplyWindowOrDoorLibraryPartToDefaults (const GS::ObjectState& 
 #else
     element.header.typeID = typeId;
 #endif
+    SetElemVariationId (element.header, variationId); // deslab
     err = ACAPI_Element_GetDefaults (&element, &memo);
     if (err != NoError) {
         return err;
@@ -4615,6 +4654,9 @@ static GSErrCode ApplyWindowOrDoorLibraryPartToDefaults (const GS::ObjectState& 
         ACAPI_DisposeAddParHdl (&memo.params);
     }
     memo.params = addPars;
+    if (variationId == APIVarId_CornerWindow) {
+        SwitchOnCornerWindowFunction (memo.params); // deslab
+    }
     element.window.openingBase.libInd = libPart.index;
 
     API_Element mask;
@@ -4678,9 +4720,12 @@ GS::ObjectState CreateWindowsCommand::Execute (const GS::ObjectState& parameters
             // PrepareWindowOrDoorDefaults first and applying the favorite
             // after leaves the marker pointing at the previous libpart,
             // causing CreateExt to fail with -2130313110.
-            GSErrCode err = ApplyWindowOrDoorFavoriteToDefaults (data, API_WindowID);
+            bool cornerWindow = false;
+            data.Get ("cornerWindow", cornerWindow);
+            const API_ElemVariationID variationId = cornerWindow ? APIVarId_CornerWindow : APIVarId_Generic;
+            GSErrCode err = ApplyWindowOrDoorFavoriteToDefaults (data, API_WindowID, variationId);
             if (err == NoError) {
-                err = ApplyWindowOrDoorLibraryPartToDefaults (data, API_WindowID);
+                err = ApplyWindowOrDoorLibraryPartToDefaults (data, API_WindowID, variationId);
                 if (err != NoError) {
                     elements.Push (CreateErrorResponse (err, "Failed to resolve `libraryPartName`: no window library part with that name."));
                     continue;
@@ -4691,10 +4736,7 @@ GS::ObjectState CreateWindowsCommand::Execute (const GS::ObjectState& parameters
                 continue;
             }
 
-            bool cornerWindow = false;
-            data.Get ("cornerWindow", cornerWindow);
-            err = PrepareWindowOrDoorDefaults (API_WindowID, element, memo, marker,
-                cornerWindow ? APIVarId_CornerWindow : APIVarId_Generic);
+            err = PrepareWindowOrDoorDefaults (API_WindowID, element, memo, marker, variationId);
             if (err != NoError) {
                 elements.Push (CreateErrorResponse (err, "Failed to prepare window defaults."));
                 continue;
