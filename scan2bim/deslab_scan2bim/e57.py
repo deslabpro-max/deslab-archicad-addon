@@ -111,15 +111,59 @@ def _decode(buf: bytes, fld: Field, count: int) -> np.ndarray:
     return val.astype(np.float64)
 
 
+class _Stream:
+    """Decodes one bytestream incrementally and keeps every step-th value as float32."""
+
+    CHUNK = 1 << 22  # decode once this many bytes are pending
+
+    def __init__(self, fld: Field, count: int, step: int):
+        self.fld, self.left, self.step = fld, count, step
+        self.pending = bytearray()
+        self.index = 0  # record number of the next decoded value
+        self.out: list[np.ndarray] = []
+
+    def _record_bytes(self, avail: int, final: bool) -> tuple[int, int]:
+        """(records, bytes) that can be decoded from avail bytes, keeping whole bytes."""
+        f = self.fld
+        if f.bits == 0:
+            return self.left, 0
+        if f.kind == "Float" or f.bits in (8, 16, 32, 64):
+            n = min(avail // (f.bits // 8), self.left)
+            return n, n * (f.bits // 8)
+        n = min(avail * 8 // f.bits, self.left)
+        if not final:
+            n -= n % 8  # 8 records of any width end on a byte boundary
+        return n, (n * f.bits + 7) // 8
+
+    def feed(self, data: bytes, final: bool = False):
+        self.pending += data
+        if not final and len(self.pending) < self.CHUNK:
+            return
+        n, nbytes = self._record_bytes(len(self.pending), final)
+        if n <= 0:
+            return
+        vals = _decode(bytes(self.pending[:nbytes]), self.fld, n)
+        del self.pending[:nbytes]
+        first = (-self.index) % self.step
+        self.out.append(vals[first::self.step].astype(np.float32))
+        self.index += n
+        self.left -= n
+
+    def result(self) -> np.ndarray:
+        self.feed(b"", final=True)
+        return np.concatenate(self.out) if self.out else np.zeros(0, np.float32)
+
+
 def _read_compressed_vector(e57: E57File, points_node, fields: list[Field], wanted: set[str],
                             step: int) -> dict[str, np.ndarray]:
+    # deslab: streams are decoded packet by packet, so a 50M point scan fits in a few hundred MB
     section = int(points_node.get("fileOffset"))
     count = int(points_node.get("recordCount"))
     hdr = e57.read_logical(section, 32)
     sec_id, _r, sec_len, data_off, _index_off = struct.unpack("<B7sQQQ", hdr)
     if sec_id != 1:
         raise ValueError("bad compressed vector section")
-    streams = [bytearray() for _ in fields]
+    streams = {i: _Stream(f, count, step) for i, f in enumerate(fields) if f.name in wanted}
     pos = data_off
     end = e57.logical_to_physical(section, sec_len)
     while pos < end:
@@ -132,17 +176,15 @@ def _read_compressed_vector(e57: E57File, points_node, fields: list[Field], want
             lens = struct.unpack_from("<" + "H" * nstreams, packet, 6)
             p = 6 + 2 * nstreams
             for i, ln in enumerate(lens):
-                if fields[i].name in wanted:
-                    streams[i] += packet[p:p + ln]
+                if i in streams:
+                    streams[i].feed(packet[p:p + ln])
                 p += ln
         elif ptype not in (0, 2):
             raise ValueError(f"bad E57 packet type {ptype}")
         pos = e57.logical_to_physical(pos, plen)
-    out = {}
-    for fld, buf in zip(fields, streams):
-        if fld.name in wanted:
-            out[fld.name] = _decode(bytes(buf), fld, count)[::step]
-    return out
+    out = {fields[i].name: s.result() for i, s in streams.items()}
+    n = min(len(v) for v in out.values())
+    return {k: v[:n] for k, v in out.items()}
 
 
 def _quat_matrix(w, x, y, z):
