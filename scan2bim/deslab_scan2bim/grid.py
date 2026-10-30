@@ -46,6 +46,29 @@ def fill_segment(img, p, q, width):
     img[y0:y1 + 1, x0:x1 + 1] |= dist <= width / 2
 
 
+def fill_box(img, p, q, width):
+    """Set the cells of the rectangle around segment p-q (cell units), square ends included."""
+    H, W = img.shape
+    p, q = np.asarray(p, float), np.asarray(q, float)
+    d = q - p
+    L = float(np.hypot(*d))
+    if L < 1e-9:
+        return
+    u = d / L
+    h = width / 2
+    lo = np.floor(np.minimum(p, q) - h - 1).astype(int)
+    hi = np.ceil(np.maximum(p, q) + h + 1).astype(int)
+    x0, y0 = max(lo[0], 0), max(lo[1], 0)
+    x1, y1 = min(hi[0], W - 1), min(hi[1], H - 1)
+    if x1 < x0 or y1 < y0:
+        return
+    ys, xs = np.mgrid[y0:y1 + 1, x0:x1 + 1]
+    rx, ry = xs + 0.5 - p[0], ys + 0.5 - p[1]
+    along = rx * u[0] + ry * u[1]
+    across = np.abs(-rx * u[1] + ry * u[0])
+    img[y0:y1 + 1, x0:x1 + 1] |= (along >= -h) & (along <= L + h) & (across <= h)
+
+
 def label(m):
     """4-connected components by row runs and union-find. Returns (labels, count)."""
     H, W = m.shape

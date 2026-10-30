@@ -35,9 +35,15 @@ in a niche, rotated 7°).
 6. Openings: a gap in a face with a lintel above it. Along the gap, in 5 cm steps, the lowest
    material behind the face decides: the floor (doorway, door leaf, balcony door) or a sill board
    (window, sill height). A balcony block comes out as a door and a window.
-7. Wall ends are moved onto the centre lines of the walls they meet (L and T joints).
+7. Walls are always closed: wall ends are moved onto the centre lines of the walls they meet.
+   An L corner is closed when both ends are within 1.3 m of it, a free end runs on to a crossing
+   wall up to 0.8 m away (T joint), collinear pieces up to 0.8 m apart are joined, and a piece
+   shorter than 0.6 m that joins nothing is dropped as noise.
 8. Rooms: scanned floor/ceiling area cut by the walls (openings closed), 2 cm raster, outline
    traced, simplified and snapped to the wall faces. Each room has its own floor level and height.
+9. Floor slab: one slab under the rooms and the walls, to the outer wall faces, top at the main floor.
+10. Interior doors get one height (median of the measured 1.95–2.45 m heads); a door in a wall with
+    a window (balcony block) keeps its own head.
 
 ## Scene format `deslab.scan2bim/1`
 
@@ -59,6 +65,7 @@ Metres, model frame (see `transform`). Floor of the largest room at z = 0.
   "rooms": [{"id": "R1", "number": 1, "name": "Помещение 1",
              "polygon": [{"x": 0, "y": 0}], "floor": 0.0, "ceiling": 3.31,
              "height": 3.31, "area": 36.18}],
+  "slabs": [{"id": "S1", "polygon": [{"x": 0, "y": 0}], "floor": 0.0}],
   "assumptions": ["W5: only one side scanned, thickness 380 mm by default"],
   "warnings": []
 }

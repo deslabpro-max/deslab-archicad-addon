@@ -23,6 +23,8 @@ def render(scene, path, scale=100, margin=40):
     def T(p):
         return (margin + (p[0] - x0) * scale, H - margin - (p[1] - y0) * scale)
 
+    for sl in scene.get("slabs", []):
+        d.polygon([T(P(p)) for p in sl["polygon"]], outline=(120, 120, 200), fill=(238, 238, 248))
     for r in scene["rooms"]:
         poly = [P(p) for p in r["polygon"]]
         d.polygon([T(p) for p in poly], outline=(0, 150, 0), fill=(235, 250, 235))

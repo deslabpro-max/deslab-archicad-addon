@@ -10,7 +10,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from deslab_scan2bim.analyze import Options, analyze  # noqa: E402
+from deslab_scan2bim import grid  # noqa: E402
+from deslab_scan2bim.analyze import Options, Wall, analyze, join_walls  # noqa: E402
 
 D = 0.015
 H = 3.0
@@ -76,7 +77,44 @@ def main():
     near(windows[0]["width"], 1.5, 0.02)
     near(windows[0]["sill"], 0.9, 0.02)
     near(windows[0]["height"], 1.5, 0.02)
+    # one slab under the rooms and the walls, to the outer wall faces
+    slabs = scene["slabs"]
+    assert len(slabs) == 1, slabs
+    poly = [(p["x"], p["y"]) for p in slabs[0]["polygon"]]
+    assert grid.is_simple(poly), poly
+    xs = [w[k]["x"] + s * w["thickness"] / 2 for w in scene["walls"] for k in ("start", "end") for s in (-1, 1)]
+    near(min(x for x, _ in poly), min(xs), 0.02)
+    near(max(x for x, _ in poly), max(xs), 0.02)
+    check_closed(scene["walls"])
+    check_join()
     print("ok:", len(scene["walls"]), "walls,", len(scene["rooms"]), "rooms")
+
+
+def check_closed(walls):
+    """Every wall end is another wall's end or lies on another wall's centre line."""
+    for w in walls:
+        for k in ("start", "end"):
+            e = np.array([w[k]["x"], w[k]["y"]])
+            ok = False
+            for o in walls:
+                if o is w:
+                    continue
+                p, q = np.array([o["start"]["x"], o["start"]["y"]]), np.array([o["end"]["x"], o["end"]["y"]])
+                d = q - p
+                t = np.clip(np.dot(e - p, d) / np.dot(d, d), 0, 1)
+                ok |= np.linalg.norm(p + t * d - e) < 0.005
+            assert ok, f"{w['id']} {k} is open"
+
+
+def check_join():
+    """An L corner with a 1 m gap and a T joint with a 0.5 m gap are closed."""
+    a = Wall(axis=1, c=0.0, a=0.0, b=4.0, thickness=0.2, room_side=0, measured=True)   # along x at y=0
+    b = Wall(axis=0, c=5.0, a=1.0, b=4.0, thickness=0.2, room_side=0, measured=True)   # along y at x=5
+    t = Wall(axis=0, c=2.0, a=0.5, b=3.0, thickness=0.1, room_side=0, measured=True)   # stops 0.5 short of a
+    walls = [a, b, t]
+    join_walls(walls)
+    assert np.allclose(a.end, (5.0, 0.0)) and np.allclose(b.beg, (5.0, 0.0)), (a.end, b.beg)
+    assert np.allclose(t.beg, (2.0, 0.0)), t.beg
 
 
 if __name__ == "__main__":

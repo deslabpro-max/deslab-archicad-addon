@@ -11,6 +11,9 @@
 #include "FileSystem.hpp"
 #include "ObjectStateJSONConversion.hpp"
 #include "Process.hpp"
+#include "ElementGDLParameterCommands.hpp"
+
+#include <initializer_list>
 
 namespace {
 
@@ -155,6 +158,73 @@ GS::Optional<API_Attr_Head> FindAttribute (API_AttrTypeID typeID, const GS::UniS
     return head;
 }
 
+GS::UniString LowerCased (const GS::UniString& text)
+{
+#ifdef ServerMainVers_3000
+    return text.GetLowerCased ();
+#else
+    return text.ToLowerCase ();
+#endif
+}
+
+// deslab: an attribute by one of the names, else the first one whose name contains one of the
+// parts (case-insensitive). Names and parts are UTF-8.
+GS::Optional<API_Attr_Head> FindAttributeLike (API_AttrTypeID typeID, std::initializer_list<const char*> names, std::initializer_list<const char*> parts)
+{
+    for (const char* name : names) {
+        const auto found = FindAttribute (typeID, GS::UniString (name, CC_UTF8));
+        if (found.HasValue ()) {
+            return found;
+        }
+    }
+    GS::Array<API_Attribute> attrs;
+    ACAPI_Attribute_GetAttributesByType (typeID, attrs);
+    GS::Array<GS::Pair<GS::UniString, API_Attr_Head>> named;
+    for (API_Attribute& attr : attrs) {
+        GS::UniString name;
+        API_Attribute full = {};
+        full.header.typeID = typeID;
+        full.header.index = attr.header.index;
+        full.header.uniStringNamePtr = &name;
+        if (ACAPI_Attribute_Get (&full) == NoError) {
+            API_Attr_Head head = full.header;
+            head.uniStringNamePtr = nullptr;
+            named.Push (GS::Pair<GS::UniString, API_Attr_Head> (LowerCased (name), head));
+        }
+        DisposeAttribute (full);
+        DisposeAttribute (attr);
+    }
+    for (const char* part : parts) {
+        const GS::UniString lowerPart = LowerCased (GS::UniString (part, CC_UTF8));
+        for (const auto& item : named) {
+            if (item.first.Contains (lowerPart)) {
+                return item.second;
+            }
+        }
+    }
+    return GS::NoValue;
+}
+
+// deslab: walls and slabs are concrete unless a material is given (never the default brick).
+GS::Optional<API_Attr_Head> MaterialOrConcrete (const GS::UniString& name)
+{
+    if (!name.IsEmpty ()) {
+        return FindAttribute (API_BuildingMaterialID, name);
+    }
+    return FindAttributeLike (API_BuildingMaterialID,
+        { "\xD0\x96\xD0\xB5\xD0\xBB\xD0\xB5\xD0\xB7\xD0\xBE\xD0\xB1\xD0\xB5\xD1\x82\xD0\xBE\xD0\xBD - \xD0\x9A\xD0\xBE\xD0\xBD\xD1\x81\xD1\x82\xD1\x80\xD1\x83\xD0\xBA\xD1\x86\xD0\xB8\xD0\xBE\xD0\xBD\xD0\xBD\xD1\x8B\xD0\xB9", "\xD0\x91\xD0\xB5\xD1\x82\xD0\xBE\xD0\xBD - \xD0\x9A\xD0\xBE\xD0\xBD\xD1\x81\xD1\x82\xD1\x80\xD1\x83\xD0\xBA\xD1\x86\xD0\xB8\xD0\xBE\xD0\xBD\xD0\xBD\xD1\x8B\xD0\xB9" }, { "\xD0\xB6\xD0\xB5\xD0\xBB\xD0\xB5\xD0\xB7\xD0\xBE\xD0\xB1\xD0\xB5\xD1\x82\xD0\xBE\xD0\xBD", "\xD0\xB1\xD0\xB5\xD1\x82\xD0\xBE\xD0\xBD", "concrete" });
+}
+
+// deslab: windows are white plastic (PVC) unless a surface or a favorite is given.
+GS::Optional<API_Attr_Head> WindowSurface (const GS::UniString& name)
+{
+    if (!name.IsEmpty ()) {
+        return FindAttribute (API_MaterialID, name);
+    }
+    return FindAttributeLike (API_MaterialID,
+        { "\xD0\x9F\xD0\x92\xD0\xA5 - \xD0\x91\xD0\xB5\xD0\xBB\xD1\x8B\xD0\xB9", "\xD0\x9F\xD0\xBB\xD0\xB0\xD1\x81\xD1\x82\xD0\xB8\xD0\xBA - \xD0\x91\xD0\xB5\xD0\xBB\xD1\x8B\xD0\xB9" }, { "\xD0\xBF\xD0\xB2\xD1\x85", "pvc", "\xD0\xBF\xD0\xBB\xD0\xB0\xD1\x81\xD1\x82\xD0\xB8\xD0\xBA - \xD0\xB1\xD0\xB5\xD0\xBB", "\xD0\xBA\xD1\x80\xD0\xB0\xD1\x81\xD0\xBA\xD0\xB0 - \xD0\xB3\xD0\xBB\xD1\x8F\xD0\xBD\xD1\x86\xD0\xB5\xD0\xB2\xD0\xB0\xD1\x8F \xD0\xB1\xD0\xB5\xD0\xBB\xD0\xB0\xD1\x8F", "\xD0\xB1\xD0\xB5\xD0\xBB\xD0\xB8\xD0\xBB\xD0\xB0" });
+}
+
 } // namespace
 
 BuildModelFromScanCommand::BuildModelFromScanCommand () :
@@ -232,6 +302,7 @@ GS::Optional<GS::UniString> BuildModelFromScanCommand::GetInputParametersSchema 
                 },
                 "additionalProperties": false
             },
+            "windowSurface": { "type": "string", "description": "Surface of the window frames and sashes. Default: white plastic (a PVC or glossy white surface of the project), unless favorites.window is given." },
             "slabThickness": { "type": "number", "exclusiveMinimum": 0, "description": "Thickness of the floor slabs, their top at the room floor. Default 0.22." },
             "buildWalls": { "type": "boolean", "description": "Default true." },
             "buildOpenings": { "type": "boolean", "description": "Default true." },
@@ -353,8 +424,8 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         wallGuids.Push (APINULLGuid);
     }
     if (GetFlag (parameters, "buildWalls", true) && !sceneWalls.IsEmpty ()) {
-        const auto measuredMaterial = FindAttribute (API_BuildingMaterialID, GetString (materials, "measuredWalls"));
-        const auto assumedMaterial = FindAttribute (API_BuildingMaterialID, GetString (materials, "assumedWalls"));
+        const auto measuredMaterial = MaterialOrConcrete (GetString (materials, "measuredWalls"));
+        const auto assumedMaterial = MaterialOrConcrete (GetString (materials, "assumedWalls"));
         GS::ObjectState wallParameters;
         const auto& wallsData = wallParameters.AddList<GS::ObjectState> ("wallsData");
         for (const GS::ObjectState& wall : sceneWalls) {
@@ -437,7 +508,8 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 }
             }
         }
-        auto collect = [&] (const GS::ObjectState& response, const GS::Array<GS::UniString>& ids, const auto& list, const char* what) {
+        GS::Array<API_Guid> createdWindows;
+        auto collect = [&] (const GS::ObjectState& response, const GS::Array<GS::UniString>& ids, const auto& list, const char* what, GS::Array<API_Guid>* created) {
             const GS::Array<GS::ObjectState> results = ResultItems (response);
             for (UIndex i = 0; i < results.GetSize () && i < ids.GetSize (); ++i) {
                 API_Guid guid = APINULLGuid;
@@ -446,16 +518,49 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     item.Add ("elementId", CreateGuidObjectState (guid));
                     list (item);
                     layerFor (guid, "openings");
+                    if (created != nullptr) {
+                        created->Push (guid);
+                    }
                 } else {
                     errorList (GS::UniString (what) + " " + ids[i] + ": " + ErrorMessage (results[i]));
                 }
             }
         };
         if (!doorIds.IsEmpty ()) {
-            collect (CreateDoorsCommand ().Execute (doorParameters, processControl), doorIds, doorList, "Door");
+            collect (CreateDoorsCommand ().Execute (doorParameters, processControl), doorIds, doorList, "Door", nullptr);
         }
         if (!windowIds.IsEmpty ()) {
-            collect (CreateWindowsCommand ().Execute (windowParameters, processControl), windowIds, windowList, "Window");
+            collect (CreateWindowsCommand ().Execute (windowParameters, processControl), windowIds, windowList, "Window", &createdWindows);
+        }
+        // deslab: frames and sashes in white plastic, unless a window favorite brings its own look
+        const GS::UniString windowSurfaceName = GetString (parameters, "windowSurface");
+        if (!createdWindows.IsEmpty () && (GetString (favorites, "window").IsEmpty () || !windowSurfaceName.IsEmpty ())) {
+            const auto surface = WindowSurface (windowSurfaceName);
+            if (!surface.HasValue ()) {
+                errorList (GS::UniString ("Window surface not found: ") + (windowSurfaceName.IsEmpty () ? GS::UniString ("white plastic") : windowSurfaceName));
+            } else {
+                GS::ObjectState gdlParameters;
+                const auto& elements = gdlParameters.AddList<GS::ObjectState> ("elementsWithGDLParameters");
+                for (const API_Guid& guid : createdWindows) {
+                    GS::ObjectState element;
+                    element.Add ("elementId", CreateGuidObjectState (guid));
+                    const auto& values = element.AddList<GS::ObjectState> ("gdlParameters");
+                    for (const char* name : { "gs_frame_mat", "gs_frame_mat2", "gs_sash_mat", "gs_sash_mat2" }) {
+                        values (GS::ObjectState ("name", GS::UniString (name), "value", static_cast<double> (GetAttributeIndex (surface.Get ().index))));
+                    }
+                    elements (element);
+                }
+                const GS::ObjectState result = SetGDLParametersOfElementsCommand ().Execute (gdlParameters, processControl);
+                GS::Array<GS::ObjectState> executionResults;
+                result.Get ("executionResults", executionResults);
+                for (const GS::ObjectState& executionResult : executionResults) {
+                    bool success = true;
+                    executionResult.Get ("success", success);
+                    if (!success) {
+                        errorList (GS::UniString ("Window surface: ") + ErrorMessage (executionResult));
+                    }
+                }
+            }
         }
     }
 
@@ -469,11 +574,18 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         }
         return coordinates;
     };
-    if (GetFlag (parameters, "buildSlabs", true) && !sceneRooms.IsEmpty ()) {
-        const auto slabMaterial = FindAttribute (API_BuildingMaterialID, GetString (materials, "slabs"));
+    // deslab: the scene's slabs follow the outer outline of the walls; older scenes have none,
+    // then each room gets a slab of its own outline.
+    GS::Array<GS::ObjectState> sceneSlabs;
+    scene.Get ("slabs", sceneSlabs);
+    if (sceneSlabs.IsEmpty ()) {
+        sceneSlabs = sceneRooms;
+    }
+    if (GetFlag (parameters, "buildSlabs", true) && !sceneSlabs.IsEmpty ()) {
+        const auto slabMaterial = MaterialOrConcrete (GetString (materials, "slabs"));
         GS::ObjectState slabParameters;
         const auto& slabsData = slabParameters.AddList<GS::ObjectState> ("slabsData");
-        for (const GS::ObjectState& room : sceneRooms) {
+        for (const GS::ObjectState& room : sceneSlabs) {
             GS::ObjectState data;
             const GS::UniString favorite = GetString (favorites, "slab");
             if (!favorite.IsEmpty ()) {
@@ -495,8 +607,8 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             slabsData (data);
         }
         const GS::Array<GS::ObjectState> results = ResultItems (CreateSlabsCommand ().Execute (slabParameters, processControl));
-        for (UIndex i = 0; i < results.GetSize () && i < sceneRooms.GetSize (); ++i) {
-            const GS::UniString id = GetString (sceneRooms[i], "id");
+        for (UIndex i = 0; i < results.GetSize () && i < sceneSlabs.GetSize (); ++i) {
+            const GS::UniString id = GetString (sceneSlabs[i], "id");
             API_Guid guid = APINULLGuid;
             if (GetCreatedGuid (results[i], guid)) {
                 GS::ObjectState item ("id", id);

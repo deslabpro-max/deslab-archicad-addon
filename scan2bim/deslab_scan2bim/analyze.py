@@ -521,13 +521,48 @@ def _line(w):
     return p, q
 
 
-def join_walls(walls):
-    """Move the wall ends onto the centre lines of the walls they run into (L and T joints)."""
+def join_walls(walls, corner_reach=1.3, tee_reach=0.8):
+    """Close the walls: move the wall ends onto the centre lines of the walls they meet.
+
+    deslab: walls are always closed. A scan leaves gaps at corners (furniture, shadows), so
+    L corners are closed when both ends are within corner_reach of the corner, and a free end
+    runs on to a crossing wall up to tee_reach away (T joints).
+    """
     for w in walls:
         p, q = _line(w)
         w.beg, w.end = p, q
+    joined = set()
+
+    def ends(w):
+        return (("beg", w.beg), ("end", w.end))
+
+    # L corners: the nearest ends of two crossing walls, closest pairs first
+    pairs = []
+    for i, w in enumerate(walls):
+        for o in walls[i + 1:]:
+            if o.axis == w.axis:
+                continue
+            x = _intersect(w, o)
+            if x is None:
+                continue
+            we, wp = min(ends(w), key=lambda e: np.linalg.norm(e[1] - x))
+            oe, op = min(ends(o), key=lambda e: np.linalg.norm(e[1] - x))
+            dw, do = np.linalg.norm(wp - x), np.linalg.norm(op - x)
+            # the corner must lie off the far end of both walls, not inside either of them
+            if dw <= corner_reach and do <= corner_reach and _beyond_or_at(w, we, x) and _beyond_or_at(o, oe, x):
+                pairs.append((dw + do, w, we, o, oe, x))
+    for _, w, we, o, oe, x in sorted(pairs, key=lambda t: t[0]):
+        if (id(w), we) in joined or (id(o), oe) in joined:
+            continue
+        setattr(w, we, x)
+        setattr(o, oe, x)
+        joined |= {(id(w), we), (id(o), oe)}
+
+    # T joints: a free end runs on to the centre line of the wall in front of it
     for w in walls:
         for end_name in ("beg", "end"):
+            if (id(w), end_name) in joined:
+                continue
             e = getattr(w, end_name)
             other_end = w.end if end_name == "beg" else w.beg
             d = e - other_end
@@ -543,32 +578,45 @@ def join_walls(walls):
                     continue
                 s = ((p[0] - e[0]) * r[1] - (p[1] - e[1]) * r[0]) / denom  # along d from e
                 u = ((p[0] - e[0]) * d[1] - (p[1] - e[1]) * d[0]) / denom  # along r from p (0..1)
-                lr = np.linalg.norm(r)
-                reach = o.thickness / 2 + 0.08
-                if not (-reach <= s <= reach + w.thickness * 0.0 + 0.05):
+                if not (-(o.thickness / 2 + 0.08) <= s <= tee_reach + o.thickness / 2):
                     continue
-                slack = (w.thickness / 2 + 0.15) / lr
+                slack = (w.thickness / 2 + 0.15) / np.linalg.norm(r)
                 if not (-slack <= u <= 1 + slack):
                     continue
                 if best is None or abs(s) < abs(best[0]):
                     best = (s, e + s * d)
             if best is not None:
                 setattr(w, end_name, best[1])
-    # a wall end that now lies beyond the other wall's end pulls that end along (L corners)
-    for w in walls:
-        for end_name in ("beg", "end"):
-            e = getattr(w, end_name)
-            for o in walls:
-                if o is w or o.axis == w.axis:
-                    continue
-                for oe in ("beg", "end"):
-                    pe = getattr(o, oe)
-                    if np.linalg.norm(pe - e) < max(w.thickness, o.thickness) / 2 + 0.1:
-                        # snap both to the intersection of the centre lines
-                        x = _intersect(w, o)
-                        if x is not None:
-                            setattr(w, end_name, x)
-                            setattr(o, oe, x)
+                joined.add((id(w), end_name))
+
+    # collinear pieces of one wall with a short gap between them become one wall
+    for i, w in enumerate(walls):
+        for o in walls[i + 1:]:
+            if o.axis != w.axis or abs(o.thickness - w.thickness) > 0.03 or abs(o.c - w.c) > 0.05:
+                continue
+            for we, wp in ends(w):
+                for oe, op in ends(o):
+                    if (id(w), we) in joined or (id(o), oe) in joined:
+                        continue
+                    if np.linalg.norm(wp - op) <= tee_reach and np.dot(wp - op, _center(w) - _center(o)) > 0:
+                        m = (wp + op) / 2
+                        setattr(w, we, m)
+                        setattr(o, oe, m)
+                        joined |= {(id(w), we), (id(o), oe)}
+    return joined
+
+
+def _center(w):
+    return (np.asarray(w.beg) + np.asarray(w.end)) / 2
+
+
+def _beyond_or_at(w, end_name, x, tol=0.05):
+    """True when x lies on the outer side of the wall end end_name (or at it)."""
+    e = getattr(w, end_name)
+    other = w.end if end_name == "beg" else w.beg
+    d = e - other
+    L = np.linalg.norm(d)
+    return L > 1e-9 and np.dot(x - e, d / L) >= -(w.thickness / 2 + tol)
 
 
 def _intersect(w, o):
@@ -599,11 +647,13 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
     free = scanned & ~barrier
     labels, n = grid.label(free)
     rooms = []
+    kept = np.zeros((H, W), bool)
     for k in range(1, n + 1):
         mk = labels == k
         area = mk.sum() * RES * RES
         if area < opt.min_room_area:
             continue
+        kept |= mk
         cells = np.flatnonzero(mk.ravel())
         sel = mk.ravel()[iy * W + ix]
         zr = z[sel]
@@ -618,7 +668,66 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
         rooms.append({"polygon": poly, "floor": rf, "ceiling": rc, "area": area, "cells": len(cells),
                       "simple": grid.is_simple(poly)})
     rooms.sort(key=lambda r: -r["area"])
-    return rooms
+    solid = np.zeros((H, W), bool)
+    for w in walls:
+        grid.fill_box(solid, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES)
+    return rooms, _outline(grid.close(kept, 3) | solid, x0, y0, walls)
+
+
+def _outline(mask, x0, y0, walls):
+    """deslab: outer outline of the rooms and their walls (the floor slab), snapped to the outer
+    wall faces. None when there are no rooms."""
+    if not mask.any():
+        return None
+    labels, n = grid.label(mask)
+    if n == 0:
+        return None
+    sizes = np.bincount(labels.ravel())[1:]
+    blob = labels == (int(np.argmax(sizes)) + 1)
+    # fill the holes: background not connected to the border
+    back, nb = grid.label(~blob)
+    border = set(np.unique(np.concatenate([back[0], back[-1], back[:, 0], back[:, -1]]))) - {0}
+    blob |= (back > 0) & ~np.isin(back, list(border))
+    poly = [(x0 + cx * RES, y0 + cy * RES) for cx, cy in grid.trace(blob)]
+    poly = grid.clean(grid.simplify(poly, 0.04))
+    snapped = grid.clean(_snap_polygon(_square(poly), walls))
+    return snapped if grid.is_simple(snapped) else poly
+
+
+def _square(poly, tol=0.01):
+    """Turn short slanted edges (corners cut by the simplification) into an axis step that
+    turns off the previous edge."""
+    out = []
+    n = len(poly)
+    for i in range(n):
+        p, q = np.array(poly[i]), np.array(poly[(i + 1) % n])
+        out.append(tuple(p))
+        dx, dy = abs(q[0] - p[0]), abs(q[1] - p[1])
+        if dx <= tol or dy <= tol or max(dx, dy) > 0.5:
+            continue
+        prev = p - np.array(poly[i - 1])
+        horizontal = abs(prev[0]) >= abs(prev[1])
+        out.append((float(p[0]), float(q[1])) if horizontal else (float(q[0]), float(p[1])))
+    return grid.clean(out)
+
+
+def _even_door_heights(scene, lo=1.95, hi=2.45, default=2.1):
+    """deslab: interior doors get one height (the median of the plausible measured ones).
+    A door next to a window (balcony block) keeps the window head."""
+    doors = [o for w in scene["walls"] if not any(x["kind"] == "window" for x in w["openings"])
+             for o in w["openings"] if o["kind"] == "door"]
+    if not doors:
+        return
+    measured = [o["sill"] + o["height"] for o in doors if lo <= o["sill"] + o["height"] <= hi]
+    head = round(float(np.median(measured)), 2) if measured else default
+    changed = []
+    for o in doors:
+        if abs(o["sill"] + o["height"] - head) > 0.005:
+            changed.append(f"{o['id']} {int(round((o['sill'] + o['height']) * 1000))}")
+        o["height"] = round(head - o["sill"], 3)
+    if changed:
+        scene["assumptions"].append(
+            f"doors: one height {int(round(head * 1000))} mm (measured {', '.join(changed)})")
 
 
 def _mode(v, default):
@@ -640,7 +749,7 @@ def _snap_polygon(poly, walls):
         d = d / L
         n = np.array([-d[1], d[0]])
         for s in (1, -1):
-            faces.append((w.beg + s * n * w.thickness / 2, d, L))
+            faces.append((w.beg + s * n * w.thickness / 2, d, L, w.thickness))
     n = len(poly)
     lines = []
     for i in range(n):
@@ -653,13 +762,13 @@ def _snap_polygon(poly, walls):
         e = e / L
         mid = (p + q) / 2
         best = None
-        for o, d, fl in faces:
+        for o, d, fl, th in faces:
             if abs(abs(np.dot(e, d)) - 1) > 0.002:
                 continue
             nrm = np.array([-d[1], d[0]])
             dist = abs(np.dot(mid - o, nrm))
             along = np.dot(mid - o, d)
-            if dist < 0.05 and -0.1 <= along <= fl + 0.1 and (best is None or dist < best[0]):
+            if dist < 0.05 and -0.1 - th / 2 <= along <= fl + 0.1 + th / 2 and (best is None or dist < best[0]):
                 best = (dist, o, d)
         lines.append((best[1], best[2]) if best else (p, e))
     out = []
@@ -696,9 +805,15 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
     lines = split_lines(lines)
     walls = build_walls(lines, opt)
     attach_openings(walls, lines)
-    join_walls(walls)
-    walls = merge_walls(drop_inside(walls))
-    rooms = find_rooms(rot, floor, ceiling, walls, lines, opt)
+    for w in walls:
+        w.beg, w.end = _line(w)
+    walls = drop_inside(walls)
+    joined = join_walls(walls)
+    # deslab: a short piece that joins nothing at either end is scan noise, not a wall
+    walls = [w for w in walls if w.openings or np.linalg.norm(w.end - w.beg) >= 0.6
+             or (id(w), "beg") in joined or (id(w), "end") in joined]
+    walls = merge_walls(walls)
+    rooms, outline = find_rooms(rot, floor, ceiling, walls, lines, opt)
 
     # model origin: main floor at z = 0, lower-left corner of the walls at (0, 0)
     allpts = np.array([p for w in walls for p in (w.beg, w.end)])
@@ -720,6 +835,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
         "levels": {"floor": 0.0, "ceiling": round(ceiling - main_floor, 3)},
         "walls": [],
         "rooms": [],
+        "slabs": [],
         "assumptions": [],
         "warnings": [],
     }
@@ -768,6 +884,14 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
         if not w.measured:
             scene["assumptions"].append(
                 f"W{i}: only one side scanned, thickness {int(round(w.thickness * 1000))} mm by default")
+    _even_door_heights(scene)
+    if outline is not None:
+        # deslab: one floor slab under the rooms and the walls, its top at the main floor
+        scene["slabs"].append({"id": "S1", "polygon": [xy(p) for p in outline], "floor": 0.0})
+        other = [k for k, r in enumerate(rooms, 1) if abs(r["floor"] - main_floor) > 0.02]
+        if other:
+            scene["assumptions"].append(
+                "S1: one slab at the main floor; rooms " + ", ".join(f"R{k}" for k in other) + " have their own floor level")
     for k, r in enumerate(rooms, 1):
         scene["rooms"].append({
             "id": f"R{k}",
