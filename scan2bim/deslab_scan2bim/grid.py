@@ -164,3 +164,47 @@ def simplify(poly, tol):
     second = np.vstack([p[i1:], p[:1]])
     out = dp(first) + dp(second)
     return [(float(a), float(b)) for a, b in out]
+
+
+def _cross(o, a, b):
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _segments_cross(p1, p2, q1, q2):
+    d1, d2 = _cross(q1, q2, p1), _cross(q1, q2, p2)
+    d3, d4 = _cross(p1, p2, q1), _cross(p1, p2, q2)
+    return (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0) and d1 * d2 < 0 and d3 * d4 < 0
+
+
+def is_simple(poly):
+    """True when no two non-adjacent edges of the closed polygon cross."""
+    n = len(poly)
+    if n < 3:
+        return False
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:
+                continue
+            if _segments_cross(a, b, poly[j], poly[(j + 1) % n]):
+                return False
+    return True
+
+
+def clean(poly, min_edge=0.02):
+    """Drop near-duplicate points and spikes (an edge that turns back on the previous one)."""
+    pts = [tuple(p) for p in poly]
+    changed = True
+    while changed and len(pts) > 3:
+        changed = False
+        n = len(pts)
+        for i in range(n):
+            a, b, c = np.array(pts[i - 1]), np.array(pts[i]), np.array(pts[(i + 1) % n])
+            u, v = b - a, c - b
+            lu, lv = np.hypot(*u), np.hypot(*v)
+            spike = lu > 1e-9 and lv > 1e-9 and np.dot(u, v) / (lu * lv) < -0.95
+            if lu < min_edge or spike:
+                del pts[i]
+                changed = True
+                break
+    return pts

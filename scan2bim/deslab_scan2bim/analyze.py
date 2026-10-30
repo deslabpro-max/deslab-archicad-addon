@@ -611,9 +611,12 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
         rc = _mode(zr[zr > floor + 2.0], ceiling)
         contour = grid.trace(mk)
         poly = [(x0 + (cx) * RES, y0 + (cy) * RES) for cx, cy in contour]
-        poly = grid.simplify(poly, 0.04)
-        poly = _snap_polygon(poly, walls)
-        rooms.append({"polygon": poly, "floor": rf, "ceiling": rc, "area": area, "cells": len(cells)})
+        poly = grid.clean(grid.simplify(poly, 0.04))
+        snapped = grid.clean(_snap_polygon(poly, walls))
+        # deslab: Archicad refuses self-intersecting slab and zone outlines
+        poly = snapped if grid.is_simple(snapped) else poly
+        rooms.append({"polygon": poly, "floor": rf, "ceiling": rc, "area": area, "cells": len(cells),
+                      "simple": grid.is_simple(poly)})
     rooms.sort(key=lambda r: -r["area"])
     return rooms
 
@@ -776,4 +779,6 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
             "height": round(r["ceiling"] - r["floor"], 3),
             "area": round(float(r["area"]), 2),
         })
+        if not r["simple"]:
+            scene["warnings"].append(f"R{k}: outline crosses itself, slab and zone may fail")
     return scene
