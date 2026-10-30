@@ -27,6 +27,7 @@
 #include "ElementGDLParameterCommands.hpp"
 #include "ElementCreationCommands.hpp"
 #include "ExtendedElementCommands.hpp"
+#include "ScanToBimCommands.hpp" // deslab
 #include "ElementGroupingCommands.hpp"
 #include "AttributeCommands.hpp"
 #include "TeamworkCommands.hpp"
@@ -662,6 +663,14 @@ GSErrCode Initialize (void)
         err |= RegisterCommand<CreateOpeningsCommand> (
             elementCommands, "1.4.0",
             "Creates Opening elements in the given host elements."
+        );
+        // deslab: point cloud -> walls, doors, windows, floor slabs and zones.
+        err |= RegisterCommand<BuildModelFromScanCommand> (
+            elementCommands, "1.7.4",
+            "deslab: builds walls, doors, windows, floor slabs and zones from a point cloud. The E57 is analysed by "
+            "the deslab-scan2bim helper into a scene JSON (or a scene is given directly), then the elements are "
+            "created with the CreateWalls/CreateDoors/CreateWindows/CreateSlabs/CreateZones logic, with optional "
+            "favorites, building materials and layers."
         );
         err |= RegisterCommand<GetOpeningDefaultCommand> (
             elementCommands, "1.7.3",
