@@ -3,7 +3,7 @@ name: Build Add-On AC27 Win
 on:
   push:
     branches: [ '**' ]
-    paths: [ 'archicad-addon/**', '.github/workflows/build_ac27_win.yml' ]
+    paths: [ 'archicad-addon/**', 'scan2bim/**', '.github/workflows/build_ac27_win.yml' ]
   workflow_dispatch:
 
 permissions:
@@ -35,3 +35,50 @@ jobs:
         gh release view ac27-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
           gh release create ac27-latest -R "$GITHUB_REPOSITORY" --prerelease --title "AC27 Win, latest main build" --notes "Built from main by build_ac27_win.yml."
         gh release upload ac27-latest -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx
+    # deslab: other branches go to the "ac27-dev" pre-release, so a branch build can be tried on the drafting PC
+    # (Actions artifacts cannot be downloaded there).
+    - name: Publish to the "ac27-dev" release (other branches)
+      if: github.ref != 'refs/heads/main'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        gh release view ac27-dev -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+          gh release create ac27-dev -R "$GITHUB_REPOSITORY" --prerelease --title "AC27 Win, latest branch build" --notes "Built from a non-main branch by build_ac27_win.yml. For testing only." || true
+        gh release upload ac27-dev -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx
+
+  # deslab: the point cloud helper (scan2bim/) as a Windows program, so the PC needs no Python.
+  build_scan2bim_win:
+    runs-on: [ windows-2022 ]
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: python -m pip install numpy pyinstaller
+    - name: Test
+      run: python scan2bim/tests/test_synthetic.py
+    - name: Build deslab-scan2bim.exe
+      run: pyinstaller --noconfirm --onedir --name deslab-scan2bim --paths scan2bim --exclude-module PIL --distpath scan2bim/dist --workpath scan2bim/build scan2bim/run_scan2bim.py
+    - name: Smoke test
+      run: scan2bim/dist/deslab-scan2bim/deslab-scan2bim.exe --version
+    - name: Zip
+      shell: pwsh
+      run: Compress-Archive -Path scan2bim/dist/deslab-scan2bim -DestinationPath deslab-scan2bim-win.zip
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: deslab-scan2bim Win
+        path: deslab-scan2bim-win.zip
+    - name: Publish to the release
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        if [ "$GITHUB_REF" = "refs/heads/main" ]; then tag=ac27-latest; else tag=ac27-dev; fi
+        gh release view $tag -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+          gh release create $tag -R "$GITHUB_REPOSITORY" --prerelease --title "AC27 Win, $tag" --notes "Built by build_ac27_win.yml." || true
+        gh release upload $tag -R "$GITHUB_REPOSITORY" --clobber deslab-scan2bim-win.zip
