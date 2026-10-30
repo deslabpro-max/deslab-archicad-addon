@@ -195,7 +195,7 @@ def _refine_face(f: Face, pts, floor, ceiling):
 
 # ---------------------------------------------------------------- walls
 
-@dataclass
+@dataclass(eq=False)  # walls are compared by identity
 class Wall:
     axis: int
     c: float            # centre line position at t = (a+b)/2
@@ -521,17 +521,17 @@ def _line(w):
     return p, q
 
 
-def join_walls(walls, corner_reach=1.3, tee_reach=0.8):
+def join_walls(walls, corner_reach=1.3, tee_reach=0.8, joined=None):
     """Close the walls: move the wall ends onto the centre lines of the walls they meet.
 
     deslab: walls are always closed. A scan leaves gaps at corners (furniture, shadows), so
     L corners are closed when both ends are within corner_reach of the corner, and a free end
     runs on to a crossing wall up to tee_reach away (T joints).
     """
-    for w in walls:
-        p, q = _line(w)
-        w.beg, w.end = p, q
-    joined = set()
+    if joined is None:
+        for w in walls:
+            w.beg, w.end = _line(w)
+        joined = set()
 
     def ends(w):
         return (("beg", w.beg), ("end", w.end))
@@ -604,6 +604,74 @@ def join_walls(walls, corner_reach=1.3, tee_reach=0.8):
                         setattr(o, oe, m)
                         joined |= {(id(w), we), (id(o), oe)}
     return joined
+
+
+def _joined_ends(walls, tol=0.005):
+    """The wall ends that lie on another wall's centre line."""
+    joined = set()
+    for w in walls:
+        for k in ("beg", "end"):
+            e = getattr(w, k)
+            for o in walls:
+                if o is w:
+                    continue
+                d = o.end - o.beg
+                dd = float(np.dot(d, d))
+                if dd < 1e-12:
+                    continue
+                t = np.clip(np.dot(e - o.beg, d) / dd, 0, 1)
+                if np.linalg.norm(o.beg + t * d - e) < tol:
+                    joined.add((id(w), k))
+                    break
+    return joined
+
+
+def _span(w):
+    """(position across, low, high along) of the wall's centre line, in model axes."""
+    t = 1 - w.axis  # coordinate along the wall
+    lo, hi = sorted((float(w.beg[t]), float(w.end[t])))
+    return float((w.beg[w.axis] + w.end[w.axis]) / 2), lo, hi
+
+
+def prune_walls(walls, joined):
+    """deslab: walls are closed and clean. Drop, as scan noise:
+    - a one-sided wall that overlaps a longer parallel wall (a frame, a reveal, the same wall
+      seen twice); its openings move to that wall;
+    - a short piece (under 0.6 m, no openings) with a free end, alongside a parallel wall within
+      0.6 m (a ledge), or with both ends free."""
+    def free_ends(w):
+        return sum((id(w), e) not in joined for e in ("beg", "end"))
+
+    drop = set()
+    for w in sorted(walls, key=lambda w: np.linalg.norm(w.end - w.beg)):
+        if w.measured:
+            continue
+        cw, lw, hw = _span(w)
+        L = hw - lw
+        for o in walls:
+            if o is w or id(o) in drop or o.axis != w.axis:
+                continue
+            co, lo, ho = _span(o)
+            if np.linalg.norm(o.end - o.beg) < L:
+                continue
+            overlap = min(hw, ho) - max(lw, lo)
+            if abs(cw - co) < (w.thickness + o.thickness) / 2 - 0.02 and overlap >= 0.7 * L:
+                o.openings += [op for op in w.openings if lo - 0.05 <= op["a"] and op["b"] <= ho + 0.05]
+                drop.add(id(w))
+                break
+    for w in walls:
+        if id(w) in drop or w.openings:
+            continue
+        cw, lw, hw = _span(w)
+        L = hw - lw
+        if L >= 0.6 or free_ends(w) == 0:
+            continue
+        ledge = any(o is not w and id(o) not in drop and o.axis == w.axis
+                    and abs(_span(o)[0] - cw) < 0.6 and _span(o)[1] - 0.05 <= lw and hw <= _span(o)[2] + 0.05
+                    for o in walls)
+        if ledge or free_ends(w) == 2:
+            drop.add(id(w))
+    return [w for w in walls if id(w) not in drop]
 
 
 def _center(w):
@@ -809,9 +877,9 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
         w.beg, w.end = _line(w)
     walls = drop_inside(walls)
     joined = join_walls(walls)
-    # deslab: a short piece that joins nothing at either end is scan noise, not a wall
-    walls = [w for w in walls if w.openings or np.linalg.norm(w.end - w.beg) >= 0.6
-             or (id(w), "beg") in joined or (id(w), "end") in joined]
+    walls = prune_walls(walls, joined)
+    # ends that were joined to a dropped piece run on to the next wall
+    join_walls(walls, joined=_joined_ends(walls))
     walls = merge_walls(walls)
     rooms, outline = find_rooms(rot, floor, ceiling, walls, lines, opt)
 

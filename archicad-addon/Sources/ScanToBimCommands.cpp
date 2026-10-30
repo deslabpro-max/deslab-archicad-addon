@@ -546,7 +546,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     element.Add ("elementId", CreateGuidObjectState (guid));
                     const auto& values = element.AddList<GS::ObjectState> ("gdlParameters");
                     for (const char* name : { "gs_frame_mat", "gs_frame_mat2", "gs_sash_mat", "gs_sash_mat2" }) {
-                        values (GS::ObjectState ("name", GS::UniString (name), "value", static_cast<double> (GetAttributeIndex (surface.Get ().index))));
+                        values (GS::ObjectState ("name", GS::UniString (name), "value", GetAttributeIndex (surface.Get ().index)));
                     }
                     elements (element);
                 }
