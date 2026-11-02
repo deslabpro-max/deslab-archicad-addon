@@ -743,10 +743,19 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
         # as Archicad joins them), a free end stops where it is; no square caps sticking out
         ext = [_partner_half(w, e, walls) / RES for e in (w.beg, w.end)]
         grid.fill_box(barrier, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES, *ext)
-    # deslab: a room fills its walls: unscanned spots (furniture, shadows) up to 0.4 m from the
-    # scanned floor and holes inside are part of it, so the zone outline follows the walls
-    free = grid.dilate_box(scanned, int(round(0.4 / RES))) & ~barrier
-    labels, n = grid.label(free)
+    # an opening left between two free wall ends (a doorway without a lintel) is closed for the
+    # rooms and the slab, so a room does not run out through it
+    joined = _joined_ends(walls)
+    ends = [getattr(w, k) for w in walls for k in ("beg", "end") if (id(w), k) not in joined]
+    for i, p in enumerate(ends):
+        q = min(ends[i + 1:], key=lambda e: np.linalg.norm(e - p), default=None)
+        if q is not None and np.linalg.norm(q - p) <= 1.0:
+            grid.fill_segment(barrier, (p - (x0, y0)) / RES, (q - (x0, y0)) / RES, 0.1 / RES)
+    labels, n = grid.label(scanned & ~barrier)
+    # deslab: a room fills its walls: it grows up to 0.4 m from its scanned floor over unscanned
+    # spots (furniture, shadows) without crossing a wall, and holes inside are part of it, so the
+    # zone outline follows the walls
+    labels = _grow(labels, ~barrier, int(round(0.4 / RES)))
     rooms = []
     kept = np.zeros((H, W), bool)
     for k in range(1, n + 1):
@@ -770,6 +779,19 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
                       "simple": grid.is_simple(poly)})
     rooms.sort(key=lambda r: -r["area"])
     return rooms, _outline(grid.close(kept, 3) | barrier, x0, y0, walls)
+
+
+def _grow(labels, allowed, steps):
+    """Grow the labelled regions by one cell per step into free allowed cells."""
+    labels = labels.copy()
+    for _ in range(steps):
+        grown = labels.copy()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            shifted = np.roll(np.roll(labels, dy, 0), dx, 1)
+            take = (grown == 0) & (shifted > 0) & allowed
+            grown[take] = shifted[take]
+        labels = grown
+    return labels
 
 
 def _partner_half(w, e, walls, tol=0.005):

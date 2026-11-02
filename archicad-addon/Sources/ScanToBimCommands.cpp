@@ -562,17 +562,6 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 }
             }
         };
-        if (!createdWindows.IsEmpty () && defaultLook) {
-            GS::ObjectState modifyParameters;
-            const auto& windowsWithDetails = modifyParameters.AddList<GS::ObjectState> ("windowsWithDetails");
-            for (const auto& window : createdWindows) {
-                GS::ObjectState details;
-                details.Add ("elementId", CreateGuidObjectState (window.first));
-                details.Add ("revealDepthOffset", GetNumber (parameters, "windowSetback", 0.12));
-                windowsWithDetails (details);
-            }
-            report (ModifyWindowsCommand ().Execute (modifyParameters, processControl), "Window setback");
-        }
         if (!createdWindows.IsEmpty () && (defaultLook || !windowSurfaceName.IsEmpty ())) {
             const auto surface = WindowSurface (windowSurfaceName);
             if (!surface.HasValue ()) {
@@ -598,6 +587,17 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 elements (element);
             }
             report (SetGDLParametersOfElementsCommand ().Execute (gdlParameters, processControl), "Window look");
+        }
+        if (!createdWindows.IsEmpty () && defaultLook) {
+            GS::ObjectState modifyParameters;
+            const auto& windowsWithDetails = modifyParameters.AddList<GS::ObjectState> ("windowsWithDetails");
+            for (const auto& window : createdWindows) {
+                GS::ObjectState details;
+                details.Add ("elementId", CreateGuidObjectState (window.first));
+                details.Add ("revealDepthOffset", GetNumber (parameters, "windowSetback", 0.12));
+                windowsWithDetails (details);
+            }
+            report (ModifyWindowsCommand ().Execute (modifyParameters, processControl), "Window setback");
         }
     }
 
