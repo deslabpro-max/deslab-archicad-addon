@@ -51,7 +51,7 @@ GS::ObjectState	CreateElementsCommandBase::Execute (const GS::ObjectState& param
     notification.notifID = APINotifyElement_BeginEvents;
     AddElementNotificationClientCommand::ElementEventHandlerProc (&notification);
 
-    ACAPI_CallUndoableCommand ("Create " + elemTypeName, [&] () -> GSErrCode {
+    const GSErrCode undoErr = ACAPI_CallUndoableCommand ("Create " + elemTypeName, [&] () -> GSErrCode {
         API_Element element = {};
         API_ElementMemo memo = {};
         const GS::OnExit guard ([&memo] () { ACAPI_DisposeElemMemoHdls (&memo); });
@@ -196,6 +196,16 @@ GS::ObjectState	CreateElementsCommandBase::Execute (const GS::ObjectState& param
     notification.notifID = APINotifyElement_EndEvents;
     AddElementNotificationClientCommand::ElementEventHandlerProc (&notification);
 
+    // deslab: when Archicad refuses the change (a modal dialog is open or another command runs),
+    // nothing was created; say so instead of answering with an empty element list.
+    if (undoErr != NoError && !dataArray.IsEmpty ()) {
+        GS::Array<GS::ObjectState> created;
+        response.Get ("elements", created);
+        if (created.IsEmpty ()) {
+            return CreateErrorResponse (undoErr,
+                "Archicad refused to change the model. Close any open dialog in Archicad and run the command again.");
+        }
+    }
     return response;
 }
 
