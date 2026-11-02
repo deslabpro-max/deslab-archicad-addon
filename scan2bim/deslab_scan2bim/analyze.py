@@ -27,6 +27,7 @@ class Options:
     max_thickness: float = 0.90
     min_face_length: float = 0.20
     min_room_area: float = 1.0
+    outside_level: float = 0.08         # a space this much off the main floor level is outside the flat
     coverage: float = 0.55              # share of the wall height a cell must be scanned to count as wall
 
 
@@ -868,18 +869,41 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
     # zone outline follows the walls
     labels = _grow(labels, ~barrier, int(round(0.4 / RES)))
     rooms = []
-    kept = np.zeros((H, W), bool)
+    masks = []
     for k in range(1, n + 1):
         mk = grid.fill_holes(labels == k) & ~barrier
         area = mk.sum() * RES * RES
         if area < opt.min_room_area:
             continue
-        kept |= mk
-        cells = np.flatnonzero(mk.ravel())
         sel = mk.ravel()[iy * W + ix]
         zr = z[sel]
-        rf = _mode(zr[zr < floor + 0.3], floor)
-        rc = _mode(zr[zr > floor + 2.0], ceiling)
+        masks.append((mk, area, _mode(zr[zr < floor + 0.3], floor), _mode(zr[zr > floor + 2.0], ceiling)))
+    # deslab: a space on another floor level than the main room (a finished common corridor or
+    # landing seen through the entrance door) is outside the flat: it is left out, with the walls
+    # that bound only it
+    outside = []
+    if masks:
+        main_floor = max(masks, key=lambda m: m[1])[2]
+        outside = [m for m in masks if abs(m[2] - main_floor) >= opt.outside_level]
+        masks = [m for m in masks if abs(m[2] - main_floor) < opt.outside_level]
+    kept = np.zeros((H, W), bool)
+    for m in masks:
+        kept |= m[0]
+    if outside:
+        near = grid.dilate_box(kept, 3)
+        keep_walls = []
+        for w in walls:
+            box = np.zeros((H, W), bool)
+            grid.fill_box(box, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES)
+            if (box & near).any():
+                keep_walls.append(w)
+        walls[:] = keep_walls
+        barrier = np.zeros((H, W), bool)
+        for w in walls:
+            ext = [_partner_half(w, e, walls) / RES for e in (w.beg, w.end)]
+            grid.fill_box(barrier, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES, *ext)
+    for mk, area, rf, rc in masks:
+        cells = np.flatnonzero(mk.ravel())
         contour = grid.trace(mk)
         poly = [(x0 + (cx) * RES, y0 + (cy) * RES) for cx, cy in contour]
         poly = grid.clean(grid.simplify(poly, 0.04))
@@ -889,7 +913,8 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
         rooms.append({"polygon": poly, "floor": rf, "ceiling": rc, "area": area, "cells": len(cells),
                       "simple": grid.is_simple(poly)})
     rooms.sort(key=lambda r: -r["area"])
-    return rooms, _outline(grid.close(kept, 3) | barrier, x0, y0, walls)
+    left_out = [{"area": float(m[1]), "floor": float(m[2])} for m in outside]
+    return rooms, _outline(grid.close(kept, 3) | barrier, x0, y0, walls), left_out
 
 
 def _grow(labels, allowed, steps):
@@ -1063,7 +1088,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
     # ends that were joined to a dropped piece run on to the next wall
     join_walls(walls, joined=_joined_ends(walls))
     walls = merge_walls(walls)
-    rooms, outline = find_rooms(rot, floor, ceiling, walls, lines, opt)
+    rooms, outline, left_out = find_rooms(rot, floor, ceiling, walls, lines, opt)
 
     # model origin: main floor at z = 0, lower-left corner of the walls at (0, 0)
     allpts = np.array([p for w in walls for p in (w.beg, w.end)])
@@ -1139,6 +1164,10 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
         if not w.measured:
             scene["assumptions"].append(
                 f"W{i}: only one side scanned, thickness {int(round(w.thickness * 1000))} mm by default")
+    for r in left_out:
+        scene["assumptions"].append(
+            f"a space of {r['area']:.1f} m2 with its floor {int(round((r['floor'] - main_floor) * 1000))} mm off the "
+            "main floor is outside the flat (common corridor) and left out")
     _even_door_heights(scene)
     if outline is not None:
         # deslab: one floor slab under the rooms and the walls, its top at the main floor
