@@ -984,6 +984,7 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
             ts = np.arange(0.025, L, 0.05) / L
             reach = w.thickness / 2 + 0.1
             hit = 0
+            borders = []
             for t in ts:
                 c = w.beg + t * d
                 for sgn in (1, -1):
@@ -991,10 +992,13 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
                     i, j = int(q[1]), int(q[0])
                     if 0 <= i < H and 0 <= j < W and kept[i, j]:
                         hit += 1
+                        borders.append(t * L)
                         break
             if hit >= max(1, 0.25 * len(ts)):
-                keep_walls.append(w)
-        walls[:] = keep_walls
+                keep_walls.append((w, borders))
+        walls[:] = [w for w, _ in keep_walls]
+        for w, borders in keep_walls:
+            _trim_outside(w, borders, walls)
         barrier = np.zeros((H, W), bool)
         for w in walls:
             ext = [_partner_half(w, e, walls) / RES for e in (w.beg, w.end)]
@@ -1025,6 +1029,70 @@ def _grow(labels, allowed, steps):
             grown[take] = shifted[take]
         labels = grown
     return labels
+
+
+def _junctions(w, walls):
+    """Positions along beg -> end of w where another wall meets or crosses it."""
+    d = w.end - w.beg
+    L = float(np.linalg.norm(d))
+    u = d / L
+    n = np.array([-u[1], u[0]])
+    out = []
+    for o in walls:
+        if o is w:
+            continue
+        od = o.end - o.beg
+        OL = float(np.linalg.norm(od))
+        if OL < 1e-6:
+            continue
+        ou = od / OL
+        den = float(np.dot(ou, n))
+        if abs(den) < 0.5:
+            continue
+        # where the centre line of o crosses the centre line of w
+        k = -float(np.dot(o.beg - w.beg, n)) / den
+        if -(w.thickness / 2 + 0.05) <= k <= OL + w.thickness / 2 + 0.05:
+            s = float(np.dot(o.beg + k * ou - w.beg, u))
+            if -0.05 <= s <= L + 0.05:
+                out.append(s)
+    return sorted(out)
+
+
+def _trim_outside(w, borders, walls, tail=0.3):
+    """deslab: cut the end of a wall that runs on past the flat into a space that was left out
+    (a common corridor) back to the last wall it meets, so no free tail is left."""
+    d = w.end - w.beg
+    L = float(np.linalg.norm(d))
+    if not borders or L < 1e-6:
+        return
+    u = d / L
+    js = _junctions(w, walls)
+    lo, hi = 0.0, L
+    s_lo, s_hi = min(borders), max(borders)
+    if s_lo > tail:
+        cut = [j for j in js if j < s_lo + 0.1]
+        # only when nothing meets the tail beyond the cut
+        if cut and max(cut) > tail and len(cut) == 1:
+            lo = max(cut)
+    if L - s_hi > tail:
+        cut = [j for j in js if j > s_hi - 0.1]
+        if cut and L - min(cut) > tail and len(cut) == 1:
+            hi = min(cut)
+    if lo == 0.0 and hi == L:
+        return
+    beg, end = w.beg + lo * u, w.beg + hi * u
+    k = 1 - w.axis
+    ta, tb = float(beg[k]), float(end[k])
+    keep = []
+    for o in w.openings:
+        m = (o["a"] + o["b"]) / 2
+        if min(ta, tb) < m < max(ta, tb):
+            keep.append(o)
+    w.openings = keep
+    w.beg, w.end = beg, end
+    mid = (ta + tb) / 2
+    w.c = w.c + w.slope * (mid - (w.a + w.b) / 2)
+    w.a, w.b = min(ta, tb), max(ta, tb)
 
 
 def _partner_half(w, e, walls, tol=0.005):

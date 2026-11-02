@@ -54,7 +54,8 @@ in a niche, rotated 7°).
    zone follows the walls and not the furniture shadows. Each room has its own floor level and height.
    A space whose floor is 8 cm or more off the main room's floor (a finished common corridor or
    landing seen through the entrance door) is outside the flat: it is left out with the walls
-   that bound only it, and the scene says so in `assumptions`.
+   that bound only it, and the scene says so in `assumptions`. A flat wall that runs on along
+   that space is cut back to the last wall it meets, so it leaves no free tail.
 10. Floor slab: one slab under the rooms and the walls, to the outer wall faces (mitred corners, never
     past a wall), top at the main floor.
 11. Interior doors get one height (median of the measured 1.95–2.45 m heads); a door in a wall with
