@@ -257,6 +257,49 @@ def merge_lines(faces):
     return lines
 
 
+def extend_to_corners(lines, pts, floor, ceiling, reach=3.2):
+    """A facade line that stops at an opening next to a corner (the pier at the corner is too
+    short to be found) runs on to the perpendicular wall when a lintel spans the gap; the gap
+    from the reveal to the old end becomes an opening of the line."""
+    x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+    for f in lines:
+        tt = y if f.axis == 0 else x
+        cc = x if f.axis == 0 else y
+        for end in ("a", "b"):
+            e = getattr(f, end)
+            out = -1 if end == "a" else 1
+            perp = [p for p in lines if p.axis != f.axis
+                    and 0.3 <= (p.c - e) * out <= reach
+                    and p.a - 0.15 <= f.at(e) <= p.b + 0.15
+                    and p.side == -out and p.b - p.a >= 1.0]
+            if not perp:
+                continue
+            p = min(perp, key=lambda p: abs(p.c - e))
+            lo, hi = sorted((p.c, e))
+            near = (np.abs(cc - f.at(e)) < 0.03) & (tt > lo + 0.05) & (tt < hi - 0.05)
+            q = (hi - lo) / 4  # the middle of the gap, away from the reveals
+            head = _contiguous_from_top(z[near & (tt > lo + q) & (tt < hi - q)] - floor, 0.0, ceiling - floor)
+            if head is None or head < 1.5 or head > ceiling - floor - 0.15:
+                continue  # no lintel, or only the ceiling over the gap
+            edges = np.arange(lo + 0.05, hi - 0.05, 0.1)
+            top = near & (z - floor > head)
+            covered = np.histogram(tt[top], bins=np.append(edges, hi - 0.05))[0] > 0
+            if len(covered) == 0 or covered.mean() < 0.7:
+                continue
+            # the reveal next to the corner: a short face from this line into the wall
+            reveals = [q for q in lines if q.axis == f.axis ^ 1 and q is not p
+                       and lo + 0.05 < q.c < hi - 0.05 and q.b - q.a < 0.95
+                       and min(abs(q.a - f.at(q.c)), abs(q.b - f.at(q.c))) < 0.06]
+            r = min(reveals, key=lambda q: abs(q.c - p.c)).c if reveals else p.c
+            na, nb = (p.c, f.b) if end == "a" else (f.a, p.c)
+            f.c = f.at((na + nb) / 2)  # c is taken at the middle of the line
+            if end == "a":
+                f.gaps.insert(0, (r, f.a))
+            else:
+                f.gaps.append((f.b, r))
+            f.a, f.b = na, nb
+
+
 def _is_reveal(f, lines):
     """A short face that spans the depth of a wall between its two faces: a door or window reveal."""
     if f.b - f.a > 0.95:
@@ -358,10 +401,36 @@ def build_walls(lines, opt: Options):
             if paired and not windows:
                 t = max(paired, key=lambda w: w.b - w.a).thickness
             w = Wall(f.axis, f.c - f.side * t / 2, a, b, t, f.side, False, f.slope)
+            w.backed = bool(paired and not windows)  # deslab: its back face is a measured one
             w.faces = [f]
             walls.append(w)
             f.used.append((a, b))
     return walls
+
+
+def drop_plates(walls, pts, floor):
+    """deslab: drop one-sided walls that are thin plates seen from both sides (an open door
+    leaf, a board leaning on a wall): a wall scanned from one side has nothing right behind
+    its face, a plate has its other side a few centimetres back."""
+    x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+    zz = z - floor
+    band = (zz > 0.5) & (zz < 2.0)
+    keep = []
+    for w in walls:
+        if w.measured or w.b - w.a < 0.3:
+            keep.append(w)
+            continue
+        f = w.faces[0]
+        tt = y if f.axis == 0 else x
+        cc = x if f.axis == 0 else y
+        sel = band & (tt > w.a + 0.1) & (tt < w.b - 0.1)
+        off = (cc[sel] - f.at(tt[sel])) * f.side
+        behind = tt[sel][(off < -0.02) & (off > -0.12)]
+        edges = np.arange(w.a + 0.1, w.b - 0.1, 0.1)
+        if len(edges) and (np.histogram(behind, bins=np.append(edges, w.b - 0.1))[0] >= 2).mean() >= 0.5:
+            continue
+        keep.append(w)
+    return keep
 
 
 def _free(f, a, b):
@@ -436,6 +505,11 @@ def classify_gaps(lines, pts, floor, ceiling):
             if kinds.count("solid") > len(kinds) / 2:
                 continue
             kinds = ["door" if k == "solid" else k for k in kinds]
+            glass = _glass_plane(offs, zs, ts, g0, g1, head)
+            if glass is not None and "door" in kinds:
+                # glazing down to the floor (a French window, a balcony door): built as a window
+                # without sill boards, like a balcony door
+                kinds = ["glazed" if k == "door" else k for k in kinds]
             for kind, i0, i1 in _segments(kinds, min_bins=5):
                 a, b = edges[i0], edges[i1]
                 if i0 == 0:
@@ -443,10 +517,33 @@ def classify_gaps(lines, pts, floor, ceiling):
                 if i1 == len(kinds):
                     b = g1
                 sill = float(np.median(sills[i0:i1])) if kind == "window" else 0.0
+                if kind == "glazed":
+                    kind = "balconyDoor"
                 o = {"kind": kind, "a": float(a), "b": float(b), "sill": round(sill, 3), "head": round(head, 3)}
                 f.openings.append(o)
-                if kind == "window":
+                if kind in ("window", "balconyDoor"):
                     f.window_gaps.append((g0, g1))
+
+
+def _glass_plane(offs, zs, ts, g0, g1, head):
+    """A glass plane in the depth of the opening: at mid height, the points behind the face lie
+    in one thin plane at least 0.2 m deep in the wall (a closed door leaf sits at the face, an
+    open one stands across, another room lies further back) along most of the gap."""
+    mid = (offs < -0.05) & (zs > 0.8) & (zs < min(2.0, head - 0.3))
+    if np.count_nonzero(mid) < 30:
+        return None
+    o, t = offs[mid], ts[mid]
+    med = float(np.median(o))
+    if med > -0.2:
+        return None
+    on = np.abs(o - med) < 0.04
+    if np.count_nonzero(on) < 0.5 * len(o):
+        return None
+    edges = np.arange(g0, g1, 0.1)
+    covered = np.histogram(t[on], bins=np.append(edges, g1))[0] > 0
+    if covered.mean() < 0.4:
+        return None
+    return med
 
 
 def _segments(kinds, min_bins):
@@ -613,7 +710,8 @@ def straighten(walls, max_gap=0.3, min_len=0.25):
     def length(w):
         return float(np.linalg.norm(w.end - w.beg))
 
-    for o in sorted(walls, key=length, reverse=True):
+    # walls with a measured back face lead, then the longer ones
+    for o in sorted(walls, key=lambda w: (not (w.measured or getattr(w, "backed", False)), -length(w))):
         co, lo, ho = _span(o)
         for w in walls:
             if w is o or w.axis != o.axis or length(w) > length(o):
@@ -625,11 +723,24 @@ def straighten(walls, max_gap=0.3, min_len=0.25):
                 continue
             if w.measured and o.measured and abs(w.thickness - o.thickness) > 0.03:
                 continue
+            o_backed = o.measured or getattr(o, "backed", False)
+            if o_backed and not w.measured and w.room_side:
+                # a deep step on the room side (a shaft box, a pier, 0.3 m or more) stays: the
+                # one-sided wall keeps its scanned face and takes the back face of the measured one
+                s = w.room_side
+                face, o_face, o_back = cw + s * w.thickness / 2, co + s * o.thickness / 2, co - s * o.thickness / 2
+                t = (face - o_back) * s
+                if abs(face - o_face) >= 0.3 and 0.08 <= t <= 0.9:
+                    w.c, w.thickness = (face + o_back) / 2, t
+                    w.backed = True
+                    w.beg, w.end = _line(w)
+                    continue
             mid_w, mid_o = (w.a + w.b) / 2, (o.a + o.b) / 2
             w.c = o.c + o.slope * (mid_w - mid_o)
             w.slope = o.slope
-            if o.measured and not w.measured:
+            if o_backed and not w.measured:
                 w.thickness = o.thickness
+                w.backed = True
             w.beg, w.end = _line(w)
     return [w for w in walls if w.openings or length(w) >= min_len]
 
@@ -937,9 +1048,11 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
 
     faces, _, _ = find_faces(rot, floor, ceiling, opt)
     lines = merge_lines(faces)
+    extend_to_corners(lines, rot, floor, ceiling)
     classify_gaps(lines, rot, floor, ceiling)
     lines = split_lines(lines)
     walls = build_walls(lines, opt)
+    walls = drop_plates(walls, rot, floor)
     attach_openings(walls, lines)
     for w in walls:
         w.beg, w.end = _line(w)
@@ -1017,7 +1130,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
                 "sill": o["sill"],
                 "height": round(o["head"] - o["sill"], 3),
             })
-        if any(o["kind"] == "window" for o in item["openings"]):
+        if any(o["kind"] in ("window", "balconyDoor") for o in item["openings"]):
             # deslab: a door in a wall with windows is a balcony door (built as a window)
             for o in item["openings"]:
                 if o["kind"] == "door":

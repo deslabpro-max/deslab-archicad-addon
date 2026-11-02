@@ -31,12 +31,18 @@ in a niche, rotated 7°).
 5. Walls: faces that look at each other 5–900 mm apart are one wall of the measured thickness.
    A face seen from one side only becomes a wall of default thickness behind it (640 mm when it
    has a window, else 380 mm, or the measured thickness of the same wall where part of it was seen
-   from both sides). Door and window reveals and frames inside a niche are not walls.
+   from both sides). Door and window reveals and frames inside a niche are not walls, nor are
+   thin plates seen from both sides (an open door leaf, a board). A facade face that stops at an
+   opening next to a corner runs on to the corner wall when a lintel spans the gap.
 6. Openings: a gap in a face with a lintel above it. Along the gap, in 5 cm steps, the lowest
    material behind the face decides: the floor (doorway, door leaf, balcony door) or a sill board
-   (window, sill height). A balcony block comes out as a door and a window.
+   (window, sill height). A balcony block comes out as a door and a window. A glass plane at
+   least 0.2 m deep in the opening down to the floor (French window, glazed facade) makes it a
+   `balconyDoor`: a window without sill boards.
 7. No jogs: a wall continuing a longer parallel wall end to end, off its line by less than half
-   the thickness, goes onto that line (a one-sided wall takes the measured thickness); short
+   the thickness, goes onto that line (a one-sided wall takes the measured thickness). A step of
+   0.3 m or more on the room side (a shaft box, a pier) stays: the one-sided piece keeps its face
+   and takes the back face of the measured wall, so the back stays straight. Short
    connectors (under 0.25 m) are dropped. A one-sided wall lying on another wall is dropped and
    its openings move to that wall.
 8. Walls are always closed: wall ends are moved onto the centre lines of the walls they meet.
