@@ -284,7 +284,7 @@ def extend_to_corners(lines, pts, floor, ceiling, reach=3.2):
                 continue
             p = min(perp, key=lambda p: abs(p.c - e))
             lo, hi = sorted((p.c, e))
-            if _has_back(f, lines, lo, hi):
+            if _has_back(f, lines, min(lo, f.a), max(hi, f.b)):
                 continue  # facades only: an interior wall has its other face to go by
             near = (np.abs(cc - f.at(e)) < 0.03) & (tt > lo + 0.05) & (tt < hi - 0.05)
             q = (hi - lo) / 4  # the middle of the gap, away from the reveals
@@ -352,6 +352,44 @@ def drop_inside(walls):
         if not inside:
             keep.append(w)
     return keep
+
+
+def merge_overlaps(walls):
+    """deslab: two walls on one line, of one thickness, that overlap (a measured piece and a
+    one-sided wall from the rest of its face) are one wall."""
+    merged = True
+    while merged:
+        merged = False
+        for w in walls:
+            for o in walls:
+                if o is w or o.axis != w.axis or abs(o.thickness - w.thickness) > 0.03:
+                    continue
+                cw, lw, hw = _span(w)
+                co, lo, ho = _span(o)
+                if abs(cw - co) > 0.03 or min(hw, ho) - max(lw, lo) < 0.05:
+                    continue
+                keep, gone = (w, o) if hw - lw >= ho - lo else (o, w)
+                t = 1 - keep.axis
+                pts = [keep.beg, keep.end, gone.beg, gone.end]
+                ends = sorted(pts, key=lambda p: p[t])
+                if keep.beg[t] <= keep.end[t]:
+                    keep.beg, keep.end = ends[0].copy(), ends[-1].copy()
+                else:
+                    keep.beg, keep.end = ends[-1].copy(), ends[0].copy()
+                keep.a, keep.b = min(keep.a, gone.a), max(keep.b, gone.b)
+                keep.measured = keep.measured or gone.measured
+                if keep.measured:
+                    keep.room_side = 0
+                for op in gone.openings:
+                    if not any(min(p["b"], op["b"]) - max(p["a"], op["a"]) > 0 for p in keep.openings):
+                        keep.openings.append(op)
+                keep.faces += [f for f in gone.faces if f not in keep.faces]
+                walls.remove(gone)
+                merged = True
+                break
+            if merged:
+                break
+    return walls
 
 
 def merge_walls(walls):
@@ -1146,6 +1184,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
     walls = prune_walls(walls, joined)
     # ends that were joined to a dropped piece run on to the next wall
     join_walls(walls, joined=_joined_ends(walls))
+    walls = merge_overlaps(walls)
     walls = merge_walls(walls)
     rooms, outline, left_out = find_rooms(rot, floor, ceiling, walls, lines, opt)
 
