@@ -19,6 +19,25 @@ def dilate(m, r):
     return _shift_or(m, r)
 
 
+def dilate_box(m, r):
+    """Square dilation by r cells, in linear time (running sums along each axis)."""
+    out = m
+    for axis in (0, 1):
+        c = np.cumsum(np.pad(out.astype(np.int32), [(r + 1, r) if a == axis else (0, 0) for a in (0, 1)]), axis=axis)
+        n = out.shape[axis]
+        hi = np.take(c, np.arange(2 * r + 1, 2 * r + 1 + n), axis=axis)
+        lo = np.take(c, np.arange(0, n), axis=axis)
+        out = (hi - lo) > 0
+    return out
+
+
+def fill_holes(m):
+    """m with the background pockets that do not reach the border filled."""
+    back, _ = label(~m)
+    border = np.unique(np.concatenate([back[0], back[-1], back[:, 0], back[:, -1]]))
+    return m | ((back > 0) & ~np.isin(back, border))
+
+
 def erode(m, r):
     return ~_shift_or(~m, r)
 
@@ -46,8 +65,9 @@ def fill_segment(img, p, q, width):
     img[y0:y1 + 1, x0:x1 + 1] |= dist <= width / 2
 
 
-def fill_box(img, p, q, width):
-    """Set the cells of the rectangle around segment p-q (cell units), square ends included."""
+def fill_box(img, p, q, width, ext_p=None, ext_q=None):
+    """Set the cells of the rectangle around segment p-q (cell units), carried on past p and q by
+    ext_p and ext_q (default: half the width, square ends)."""
     H, W = img.shape
     p, q = np.asarray(p, float), np.asarray(q, float)
     d = q - p
@@ -56,6 +76,8 @@ def fill_box(img, p, q, width):
         return
     u = d / L
     h = width / 2
+    ext_p = h if ext_p is None else ext_p
+    ext_q = h if ext_q is None else ext_q
     lo = np.floor(np.minimum(p, q) - h - 1).astype(int)
     hi = np.ceil(np.maximum(p, q) + h + 1).astype(int)
     x0, y0 = max(lo[0], 0), max(lo[1], 0)
@@ -66,7 +88,7 @@ def fill_box(img, p, q, width):
     rx, ry = xs + 0.5 - p[0], ys + 0.5 - p[1]
     along = rx * u[0] + ry * u[1]
     across = np.abs(-rx * u[1] + ry * u[0])
-    img[y0:y1 + 1, x0:x1 + 1] |= (along >= -h) & (along <= L + h) & (across <= h)
+    img[y0:y1 + 1, x0:x1 + 1] |= (along >= -ext_p) & (along <= L + ext_q) & (across <= h)
 
 
 def label(m):

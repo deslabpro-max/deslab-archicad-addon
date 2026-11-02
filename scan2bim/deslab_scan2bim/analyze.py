@@ -606,6 +606,34 @@ def join_walls(walls, corner_reach=1.3, tee_reach=0.8, joined=None):
     return joined
 
 
+def straighten(walls, max_gap=0.3, min_len=0.25):
+    """deslab: no jogs. A wall that continues a longer parallel wall end to end, off its line
+    by less than the walls' half thickness, goes onto that line (a one-sided wall also takes the
+    thickness of a measured one); short connectors left between them are dropped."""
+    def length(w):
+        return float(np.linalg.norm(w.end - w.beg))
+
+    for o in sorted(walls, key=length, reverse=True):
+        co, lo, ho = _span(o)
+        for w in walls:
+            if w is o or w.axis != o.axis or length(w) > length(o):
+                continue
+            cw, lw, hw = _span(w)
+            gap = max(lw - ho, lo - hw)
+            off = abs(cw - co)
+            if gap > max_gap or gap < -max(w.thickness, o.thickness) or off < 1e-3 or off > max(w.thickness, o.thickness) / 2 + 0.05:
+                continue
+            if w.measured and o.measured and abs(w.thickness - o.thickness) > 0.03:
+                continue
+            mid_w, mid_o = (w.a + w.b) / 2, (o.a + o.b) / 2
+            w.c = o.c + o.slope * (mid_w - mid_o)
+            w.slope = o.slope
+            if o.measured and not w.measured:
+                w.thickness = o.thickness
+            w.beg, w.end = _line(w)
+    return [w for w in walls if w.openings or length(w) >= min_len]
+
+
 def _joined_ends(walls, tol=0.005):
     """The wall ends that lie on another wall's centre line."""
     joined = set()
@@ -652,7 +680,7 @@ def prune_walls(walls, joined):
             if o is w or id(o) in drop or o.axis != w.axis:
                 continue
             co, lo, ho = _span(o)
-            if np.linalg.norm(o.end - o.beg) < L:
+            if not o.measured and np.linalg.norm(o.end - o.beg) < L:
                 continue
             overlap = min(hw, ho) - max(lw, lo)
             if abs(cw - co) < (w.thickness + o.thickness) / 2 - 0.02 and overlap >= 0.7 * L:
@@ -711,13 +739,18 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
     scanned = grid.close(scanned, 4)
     barrier = np.zeros((H, W), bool)
     for w in walls:
-        grid.fill_segment(barrier, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES)
-    free = scanned & ~barrier
+        # deslab: an end runs on by half the thickness of the wall it meets (a mitred corner,
+        # as Archicad joins them), a free end stops where it is; no square caps sticking out
+        ext = [_partner_half(w, e, walls) / RES for e in (w.beg, w.end)]
+        grid.fill_box(barrier, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES, *ext)
+    # deslab: a room fills its walls: unscanned spots (furniture, shadows) up to 0.4 m from the
+    # scanned floor and holes inside are part of it, so the zone outline follows the walls
+    free = grid.dilate_box(scanned, int(round(0.4 / RES))) & ~barrier
     labels, n = grid.label(free)
     rooms = []
     kept = np.zeros((H, W), bool)
     for k in range(1, n + 1):
-        mk = labels == k
+        mk = grid.fill_holes(labels == k) & ~barrier
         area = mk.sum() * RES * RES
         if area < opt.min_room_area:
             continue
@@ -730,16 +763,29 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
         contour = grid.trace(mk)
         poly = [(x0 + (cx) * RES, y0 + (cy) * RES) for cx, cy in contour]
         poly = grid.clean(grid.simplify(poly, 0.04))
-        snapped = grid.clean(_snap_polygon(poly, walls))
+        snapped = grid.clean(_snap_polygon(_square(poly), walls))
         # deslab: Archicad refuses self-intersecting slab and zone outlines
         poly = snapped if grid.is_simple(snapped) else poly
         rooms.append({"polygon": poly, "floor": rf, "ceiling": rc, "area": area, "cells": len(cells),
                       "simple": grid.is_simple(poly)})
     rooms.sort(key=lambda r: -r["area"])
-    solid = np.zeros((H, W), bool)
-    for w in walls:
-        grid.fill_box(solid, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES)
-    return rooms, _outline(grid.close(kept, 3) | solid, x0, y0, walls)
+    return rooms, _outline(grid.close(kept, 3) | barrier, x0, y0, walls)
+
+
+def _partner_half(w, e, walls, tol=0.005):
+    """Half the thickness of the crossing wall whose centre line the end e lies on, else 0."""
+    best = 0.0
+    for o in walls:
+        if o is w or o.axis == w.axis:
+            continue
+        d = o.end - o.beg
+        dd = float(np.dot(d, d))
+        if dd < 1e-12:
+            continue
+        t = np.clip(np.dot(e - o.beg, d) / dd, 0, 1)
+        if np.linalg.norm(o.beg + t * d - e) < tol:
+            best = max(best, o.thickness / 2)
+    return best
 
 
 def _outline(mask, x0, y0, walls):
@@ -876,6 +922,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
     for w in walls:
         w.beg, w.end = _line(w)
     walls = drop_inside(walls)
+    walls = straighten(walls)
     joined = join_walls(walls)
     walls = prune_walls(walls, joined)
     # ends that were joined to a dropped piece run on to the next wall
@@ -948,6 +995,11 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
                 "sill": o["sill"],
                 "height": round(o["head"] - o["sill"], 3),
             })
+        if any(o["kind"] == "window" for o in item["openings"]):
+            # deslab: a door in a wall with windows is a balcony door (built as a window)
+            for o in item["openings"]:
+                if o["kind"] == "door":
+                    o["kind"] = "balconyDoor"
         scene["walls"].append(item)
         if not w.measured:
             scene["assumptions"].append(

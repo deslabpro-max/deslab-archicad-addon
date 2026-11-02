@@ -302,6 +302,7 @@ GS::Optional<GS::UniString> BuildModelFromScanCommand::GetInputParametersSchema 
                 },
                 "additionalProperties": false
             },
+            "windowSetback": { "type": "number", "description": "How far the window frames sit back from the outer wall face (outer reveal). Default 0.12, unless favorites.window is given." },
             "windowSurface": { "type": "string", "description": "Surface of the window frames and sashes. Default: white plastic (a PVC or glossy white surface of the project), unless favorites.window is given." },
             "slabThickness": { "type": "number", "exclusiveMinimum": 0, "description": "Thickness of the floor slabs, their top at the room floor. Default 0.22." },
             "buildWalls": { "type": "boolean", "description": "Default true." },
@@ -479,6 +480,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         const auto& windowsData = windowParameters.AddList<GS::ObjectState> ("windowsData");
         GS::Array<GS::UniString> doorIds;
         GS::Array<GS::UniString> windowIds;
+        GS::Array<bool> windowIsDoor;
         for (UIndex i = 0; i < sceneWalls.GetSize (); ++i) {
             if (wallGuids[i] == APINULLGuid) {
                 continue;
@@ -486,7 +488,11 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             GS::Array<GS::ObjectState> openings;
             sceneWalls[i].Get ("openings", openings);
             for (const GS::ObjectState& opening : openings) {
-                const bool isWindow = GetString (opening, "kind") == "window";
+                // deslab: a balcony door is built as a window down to the floor (white plastic,
+                // opening inwards), not as an interior door
+                const GS::UniString kind = GetString (opening, "kind");
+                const bool isBalconyDoor = kind == "balconyDoor";
+                const bool isWindow = kind == "window" || isBalconyDoor;
                 GS::ObjectState data;
                 GS::ObjectState wallId;
                 wallId.Add ("guid", APIGuidToString (wallGuids[i]));
@@ -498,18 +504,26 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 const GS::UniString favorite = GetString (favorites, isWindow ? "window" : "door");
                 if (!favorite.IsEmpty ()) {
                     data.Add ("favoriteName", favorite);
+                } else if (isWindow) {
+                    // deslab: one sash up to 0.9 m, two up to 1.9 m, three above
+                    const double width = GetNumber (opening, "width", 0.9);
+                    data.Add ("libraryPartName", GS::UniString (width <= 0.9 ? "\xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27" : (width <= 1.9 ? "\xD0\x94\xD0\xB2\xD1\x83\xD1\x81\xD1\x82\xD0\xB2\xD0\xBE\xD1\x80\xD1\x87\xD0\xB0\xD1\x82\xD0\xBE\xD0\xB5 \xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27" : "\xD0\xA2\xD1\x80\xD0\xB5\xD1\x85\xD1\x81\xD1\x82\xD0\xB2\xD0\xBE\xD1\x80\xD1\x87\xD0\xB0\xD1\x82\xD0\xBE\xD0\xB5 \xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27"), CC_UTF8));
                 }
                 if (isWindow) {
+                    // deslab: a one-sided wall has the scanned room on its left, and the sashes
+                    // open to the left side with oSide set
+                    data.Add ("oSide", true);
                     windowsData (data);
                     windowIds.Push (GetString (opening, "id"));
+                    windowIsDoor.Push (isBalconyDoor);
                 } else {
                     doorsData (data);
                     doorIds.Push (GetString (opening, "id"));
                 }
             }
         }
-        GS::Array<API_Guid> createdWindows;
-        auto collect = [&] (const GS::ObjectState& response, const GS::Array<GS::UniString>& ids, const auto& list, const char* what, GS::Array<API_Guid>* created) {
+        GS::Array<GS::Pair<API_Guid, bool>> createdWindows;  // the window and whether it is a balcony door
+        auto collect = [&] (const GS::ObjectState& response, const GS::Array<GS::UniString>& ids, const auto& list, const char* what, bool windows) {
             const GS::Array<GS::ObjectState> results = ResultItems (response);
             for (UIndex i = 0; i < results.GetSize () && i < ids.GetSize (); ++i) {
                 API_Guid guid = APINULLGuid;
@@ -518,8 +532,8 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     item.Add ("elementId", CreateGuidObjectState (guid));
                     list (item);
                     layerFor (guid, "openings");
-                    if (created != nullptr) {
-                        created->Push (guid);
+                    if (windows) {
+                        createdWindows.Push (GS::Pair<API_Guid, bool> (guid, windowIsDoor[i]));
                     }
                 } else {
                     errorList (GS::UniString (what) + " " + ids[i] + ": " + ErrorMessage (results[i]));
@@ -527,40 +541,63 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             }
         };
         if (!doorIds.IsEmpty ()) {
-            collect (CreateDoorsCommand ().Execute (doorParameters, processControl), doorIds, doorList, "Door", nullptr);
+            collect (CreateDoorsCommand ().Execute (doorParameters, processControl), doorIds, doorList, "Door", false);
         }
         if (!windowIds.IsEmpty ()) {
-            collect (CreateWindowsCommand ().Execute (windowParameters, processControl), windowIds, windowList, "Window", &createdWindows);
+            collect (CreateWindowsCommand ().Execute (windowParameters, processControl), windowIds, windowList, "Window", true);
         }
-        // deslab: frames and sashes in white plastic, unless a window favorite brings its own look
+        // deslab: unless a window favorite brings its own look, windows sit back from the facade
+        // (outer reveal), have white plastic frames and sashes, handles, an outer sill and an
+        // inner board; a balcony door has no sills
         const GS::UniString windowSurfaceName = GetString (parameters, "windowSurface");
-        if (!createdWindows.IsEmpty () && (GetString (favorites, "window").IsEmpty () || !windowSurfaceName.IsEmpty ())) {
+        const bool defaultLook = GetString (favorites, "window").IsEmpty ();
+        auto report = [&] (const GS::ObjectState& result, const char* what) {
+            GS::Array<GS::ObjectState> executionResults;
+            result.Get ("executionResults", executionResults);
+            for (const GS::ObjectState& executionResult : executionResults) {
+                bool success = true;
+                executionResult.Get ("success", success);
+                if (!success) {
+                    errorList (GS::UniString (what) + ": " + ErrorMessage (executionResult));
+                }
+            }
+        };
+        if (!createdWindows.IsEmpty () && defaultLook) {
+            GS::ObjectState modifyParameters;
+            const auto& windowsWithDetails = modifyParameters.AddList<GS::ObjectState> ("windowsWithDetails");
+            for (const auto& window : createdWindows) {
+                GS::ObjectState details;
+                details.Add ("elementId", CreateGuidObjectState (window.first));
+                details.Add ("revealDepthOffset", GetNumber (parameters, "windowSetback", 0.12));
+                windowsWithDetails (details);
+            }
+            report (ModifyWindowsCommand ().Execute (modifyParameters, processControl), "Window setback");
+        }
+        if (!createdWindows.IsEmpty () && (defaultLook || !windowSurfaceName.IsEmpty ())) {
             const auto surface = WindowSurface (windowSurfaceName);
             if (!surface.HasValue ()) {
                 errorList (GS::UniString ("Window surface not found: ") + (windowSurfaceName.IsEmpty () ? GS::UniString ("white plastic") : windowSurfaceName));
-            } else {
-                GS::ObjectState gdlParameters;
-                const auto& elements = gdlParameters.AddList<GS::ObjectState> ("elementsWithGDLParameters");
-                for (const API_Guid& guid : createdWindows) {
-                    GS::ObjectState element;
-                    element.Add ("elementId", CreateGuidObjectState (guid));
-                    const auto& values = element.AddList<GS::ObjectState> ("gdlParameters");
+            }
+            GS::ObjectState gdlParameters;
+            const auto& elements = gdlParameters.AddList<GS::ObjectState> ("elementsWithGDLParameters");
+            for (const auto& window : createdWindows) {
+                GS::ObjectState element;
+                element.Add ("elementId", CreateGuidObjectState (window.first));
+                const auto& values = element.AddList<GS::ObjectState> ("gdlParameters");
+                if (surface.HasValue ()) {
                     for (const char* name : { "gs_frame_mat", "gs_frame_mat2", "gs_sash_mat", "gs_sash_mat2" }) {
                         values (GS::ObjectState ("name", GS::UniString (name), "value", GetAttributeIndex (surface.Get ().index)));
                     }
-                    elements (element);
                 }
-                const GS::ObjectState result = SetGDLParametersOfElementsCommand ().Execute (gdlParameters, processControl);
-                GS::Array<GS::ObjectState> executionResults;
-                result.Get ("executionResults", executionResults);
-                for (const GS::ObjectState& executionResult : executionResults) {
-                    bool success = true;
-                    executionResult.Get ("success", success);
-                    if (!success) {
-                        errorList (GS::UniString ("Window surface: ") + ErrorMessage (executionResult));
-                    }
+                if (defaultLook) {
+                    const bool balconyDoor = window.second;
+                    values (GS::ObjectState ("name", GS::UniString ("gs_window_handle"), "value", true));
+                    values (GS::ObjectState ("name", GS::UniString ("gs_sill_outside"), "value", !balconyDoor));
+                    values (GS::ObjectState ("name", GS::UniString ("gs_board_inside"), "value", !balconyDoor));
                 }
+                elements (element);
             }
+            report (SetGDLParametersOfElementsCommand ().Execute (gdlParameters, processControl), "Window look");
         }
     }
 

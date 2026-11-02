@@ -35,15 +35,21 @@ in a niche, rotated 7°).
 6. Openings: a gap in a face with a lintel above it. Along the gap, in 5 cm steps, the lowest
    material behind the face decides: the floor (doorway, door leaf, balcony door) or a sill board
    (window, sill height). A balcony block comes out as a door and a window.
-7. Walls are always closed: wall ends are moved onto the centre lines of the walls they meet.
+7. No jogs: a wall continuing a longer parallel wall end to end, off its line by less than half
+   the thickness, goes onto that line (a one-sided wall takes the measured thickness); short
+   connectors (under 0.25 m) are dropped. A one-sided wall lying on another wall is dropped and
+   its openings move to that wall.
+8. Walls are always closed: wall ends are moved onto the centre lines of the walls they meet.
    An L corner is closed when both ends are within 1.3 m of it, a free end runs on to a crossing
    wall up to 0.8 m away (T joint), collinear pieces up to 0.8 m apart are joined, and a piece
    shorter than 0.6 m that joins nothing is dropped as noise.
-8. Rooms: scanned floor/ceiling area cut by the walls (openings closed), 2 cm raster, outline
-   traced, simplified and snapped to the wall faces. Each room has its own floor level and height.
-9. Floor slab: one slab under the rooms and the walls, to the outer wall faces, top at the main floor.
-10. Interior doors get one height (median of the measured 1.95–2.45 m heads); a door in a wall with
-    a window (balcony block) keeps its own head.
+9. Rooms: scanned floor/ceiling area grown by 0.4 m and cut by the walls (openings closed), holes
+   filled, 2 cm raster, outline traced, simplified, squared and snapped to the wall faces, so the
+   zone follows the walls and not the furniture shadows. Each room has its own floor level and height.
+10. Floor slab: one slab under the rooms and the walls, to the outer wall faces (mitred corners, never
+    past a wall), top at the main floor.
+11. Interior doors get one height (median of the measured 1.95–2.45 m heads); a door in a wall with
+    a window is a balcony door (`balconyDoor`) and keeps its own head.
 
 ## Scene format `deslab.scan2bim/1`
 
@@ -59,7 +65,7 @@ Metres, model frame (see `transform`). Floor of the largest room at z = 0.
     "id": "W1", "start": {"x": 1.16, "y": 7.85}, "end": {"x": 3.43, "y": 7.85},
     "thickness": 0.281, "height": 3.319, "bottom": 0.0,
     "measuredThickness": true, "kind": "interior | exterior | unknown",
-    "openings": [{"id": "W1.1", "kind": "door | window", "centerOffset": 1.2,
+    "openings": [{"id": "W1.1", "kind": "door | window | balconyDoor", "centerOffset": 1.2,
                   "width": 0.8, "sill": 0.0, "height": 2.1}]
   }],
   "rooms": [{"id": "R1", "number": 1, "name": "Помещение 1",
