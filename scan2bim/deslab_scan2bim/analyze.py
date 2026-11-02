@@ -258,6 +258,13 @@ def merge_lines(faces):
     return lines
 
 
+def _has_back(f, lines, lo, hi):
+    """Another face of the same wall behind f over [lo, hi]: f is an interior wall there, not a
+    facade seen from inside only."""
+    return any(q.axis == f.axis and q.side == -f.side and -0.9 <= (q.c - f.c) * f.side <= -0.05
+               and q.a < hi and q.b > lo for q in lines if q is not f)
+
+
 def extend_to_corners(lines, pts, floor, ceiling, reach=3.2):
     """A facade line that stops at an opening next to a corner (the pier at the corner is too
     short to be found) runs on to the perpendicular wall when a lintel spans the gap; the gap
@@ -277,6 +284,8 @@ def extend_to_corners(lines, pts, floor, ceiling, reach=3.2):
                 continue
             p = min(perp, key=lambda p: abs(p.c - e))
             lo, hi = sorted((p.c, e))
+            if _has_back(f, lines, lo, hi):
+                continue  # facades only: an interior wall has its other face to go by
             near = (np.abs(cc - f.at(e)) < 0.03) & (tt > lo + 0.05) & (tt < hi - 0.05)
             q = (hi - lo) / 4  # the middle of the gap, away from the reveals
             head = _contiguous_from_top(z[near & (tt > lo + q) & (tt < hi - q)] - floor, 0.0, ceiling - floor)
@@ -476,7 +485,7 @@ def classify_gaps(lines, pts, floor, ceiling):
         f.openings = []
         tt = y if f.axis == 0 else x
         cc = x if f.axis == 0 else y
-        for g0, g1 in f.gaps:
+        for g0, g1 in [piece for g in f.gaps for piece in _open_parts(f, g, lines)]:
             g0, g1 = _refine_gap(f, g0, g1, tt, cc, z, floor)
             width = g1 - g0
             if width < 0.4:
@@ -506,7 +515,7 @@ def classify_gaps(lines, pts, floor, ceiling):
             if kinds.count("solid") > len(kinds) / 2:
                 continue
             kinds = ["door" if k == "solid" else k for k in kinds]
-            glass = _glass_plane(offs, zs, ts, g0, g1, head)
+            glass = None if _has_back(f, lines, g0, g1) else _glass_plane(offs, zs, ts, g0, g1, head)
             if glass is not None and "door" in kinds:
                 # glazing down to the floor (a French window, a balcony door): built as a window
                 # without sill boards, like a balcony door
@@ -524,6 +533,30 @@ def classify_gaps(lines, pts, floor, ceiling):
                 f.openings.append(o)
                 if kind in ("window", "balconyDoor"):
                     f.window_gaps.append((g0, g1))
+
+
+def _open_parts(f, gap, lines, min_len=0.4):
+    """deslab: the parts of a gap not closed by a face standing in front of it (a pier or a
+    shaft box in front of the wall), each starting at the reveal next to it when there is one."""
+    parts = [gap]
+    for q in lines:
+        if q.axis == f.axis and q.side == f.side and 0.05 <= (q.c - f.c) * f.side <= 0.9:
+            parts = [r for a, b in parts for r in ((a, min(b, q.a)), (max(a, q.b), b)) if r[1] - r[0] > 1e-6]
+    out = []
+    for a, b in parts:
+        if b - a < min_len:
+            continue
+        # a reveal: a short face across the line, from its plane into the wall
+        rev = [r.c for r in lines if r.axis != f.axis and r.b - r.a < 0.95 and a - 0.01 < r.c < b + 0.01
+               and min(abs(r.a - f.at(r.c)), abs(r.b - f.at(r.c))) < 0.06]
+        if (a, b) != gap:
+            near_a = [c for c in rev if c - a < 0.15]
+            near_b = [c for c in rev if b - c < 0.15]
+            a = max(near_a) if near_a else a
+            b = min(near_b) if near_b else b
+        if b - a >= min_len:
+            out.append((a, b))
+    return out
 
 
 def _glass_plane(offs, zs, ts, g0, g1, head):
@@ -606,9 +639,20 @@ def attach_openings(walls, lines):
     for w in walls:
         for f in w.faces:
             for o in getattr(f, "openings", []):
-                if o["a"] >= w.a - 0.01 and o["b"] <= w.b + 0.01 and not any(
-                        abs(p["a"] - o["a"]) < 0.1 and abs(p["b"] - o["b"]) < 0.1 for p in w.openings):
+                over = min(o["b"], w.b) - max(o["a"], w.a)
+                if over < 0.7 * (o["b"] - o["a"]):
+                    continue
+                # an opening at the end of a one-sided piece, where the measured part of the wall
+                # begins, ends with the piece
+                o = dict(o, a=max(o["a"], w.a), b=min(o["b"], w.b))
+                # deslab: one opening seen from both faces of a wall: keep the narrower, the
+                # reveal-to-reveal width (an opening never overlaps another one)
+                same = [p for p in w.openings if min(p["b"], o["b"]) - max(p["a"], o["a"])
+                        > 0.5 * min(p["b"] - p["a"], o["b"] - o["a"])]
+                if not same:
                     w.openings.append(dict(o))
+                elif o["b"] - o["a"] < same[0]["b"] - same[0]["a"]:
+                    w.openings[w.openings.index(same[0])] = dict(o)
 
 
 # ---------------------------------------------------------------- junctions
@@ -890,12 +934,27 @@ def find_rooms(pts, floor, ceiling, walls, lines, opt: Options):
     for m in masks:
         kept |= m[0]
     if outside:
-        near = grid.dilate_box(kept, 3)
+        # a wall stays when a good part of its length borders the flat (a corridor wall that only
+        # touches the flat's wall with its end does not)
         keep_walls = []
         for w in walls:
-            box = np.zeros((H, W), bool)
-            grid.fill_box(box, (w.beg - (x0, y0)) / RES, (w.end - (x0, y0)) / RES, w.thickness / RES)
-            if (box & near).any():
+            d = w.end - w.beg
+            L = float(np.linalg.norm(d))
+            if L < 1e-6:
+                continue
+            n = np.array([-d[1], d[0]]) / L
+            ts = np.arange(0.025, L, 0.05) / L
+            reach = w.thickness / 2 + 0.1
+            hit = 0
+            for t in ts:
+                c = w.beg + t * d
+                for sgn in (1, -1):
+                    q = ((c + sgn * reach * n) - (x0, y0)) / RES
+                    i, j = int(q[1]), int(q[0])
+                    if 0 <= i < H and 0 <= j < W and kept[i, j]:
+                        hit += 1
+                        break
+            if hit >= max(1, 0.25 * len(ts)):
                 keep_walls.append(w)
         walls[:] = keep_walls
         barrier = np.zeros((H, W), bool)
