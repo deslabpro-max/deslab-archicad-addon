@@ -1101,7 +1101,7 @@ GS::ObjectState ExecuteCreateWithElements (const GS::String& commandName, Func&&
     notification.notifID = APINotifyElement_BeginEvents;
     AddElementNotificationClientCommand::ElementEventHandlerProc (&notification);
 
-    ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
+    const GSErrCode undoErr = ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
         createFunc (results);
         return NoError;
     });
@@ -1110,6 +1110,12 @@ GS::ObjectState ExecuteCreateWithElements (const GS::String& commandName, Func&&
     notification.notifID = APINotifyElement_EndEvents;
     AddElementNotificationClientCommand::ElementEventHandlerProc (&notification);
 
+    // deslab: when Archicad refuses the change (a modal dialog is open or another command runs),
+    // the create function never runs; say so instead of answering with an empty element list.
+    if (undoErr != NoError && results.IsEmpty ()) {
+        return CreateErrorResponse (undoErr,
+            "Archicad refused to change the model. Close any open dialog in Archicad and run the command again.");
+    }
     return CreateElementListResponse (results);
 }
 
@@ -1118,11 +1124,16 @@ GS::ObjectState ExecuteModifyWithResults (const GS::String& commandName, Func&& 
 {
     GS::Array<GS::ObjectState> results;
 
-    ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
+    const GSErrCode undoErr = ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
         modifyFunc (results);
         return NoError;
     });
 
+    // deslab: see ExecuteCreateWithElements.
+    if (undoErr != NoError && results.IsEmpty ()) {
+        return CreateErrorResponse (undoErr,
+            "Archicad refused to change the model. Close any open dialog in Archicad and run the command again.");
+    }
     return CreateExecutionResultResponse (results);
 }
 
