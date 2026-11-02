@@ -12,6 +12,15 @@ from .analyze import Options, analyze
 from .e57 import read_points
 
 
+def _dump(pts, prefix, part=2_000_000):
+    import numpy as np
+    pts = np.asarray(pts, dtype=np.float64)
+    origin = np.floor(pts.min(axis=0)) if len(pts) else np.zeros(3)
+    cm = np.clip(np.round((pts - origin) * 100.0), -32768, 32767).astype(np.int16)
+    for i in range(0, max(len(cm), 1), part):
+        np.savez_compressed(f"{prefix}.{i // part}.npz", xyz=cm[i:i + part], origin=origin)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="deslab-scan2bim", description=__doc__)
     ap.add_argument("e57")
@@ -20,6 +29,8 @@ def main(argv=None):
     ap.add_argument("--step", type=int, default=Options.step, help="keep every n-th point")
     ap.add_argument("--exterior-thickness", type=float, default=Options.exterior_thickness)
     ap.add_argument("--default-thickness", type=float, default=Options.default_thickness)
+    ap.add_argument("--dump", help="also write the read points as <DUMP>.N.npz parts "
+                    "(centimetres, int16, up to 2M points each) for offline debugging")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
 
@@ -28,6 +39,8 @@ def main(argv=None):
     t0 = time.time()
     try:
         pts = read_points(args.e57, step=opt.step)
+        if args.dump:
+            _dump(pts, args.dump)
         scene = analyze(pts, opt, source=args.e57)
     except Exception as exc:  # the add-on shows this text to the user
         json.dump({"format": "deslab.scan2bim/1", "error": str(exc)},

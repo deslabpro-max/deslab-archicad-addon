@@ -6,7 +6,7 @@ the scene is the interface a model can review or correct later (e.g. "this wall 
 partition", "room 3 is a bathroom") before the add-on builds it.
 
 ```
-deslab-scan2bim cloud.e57 -o cloud.e57.scene.json [--png plan.png] [--step 4]
+deslab-scan2bim cloud.e57 -o cloud.e57.scene.json [--png plan.png] [--step 4] [--dump points]
                [--exterior-thickness 0.64] [--default-thickness 0.38]
 ```
 
