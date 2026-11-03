@@ -418,6 +418,36 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             layerJobs.Push (GS::Pair<API_Guid, GS::UniString> (guid, name));
         }
     };
+    // Sets the collected layers and empties the list. A missing layer is reported once.
+    GS::HashTable<GS::UniString, Int32> layerIndices;
+    auto applyLayers = [&] () {
+        if (layerJobs.IsEmpty ()) {
+            return;
+        }
+        GS::ObjectState detailParameters;
+        const auto& elementsWithDetails = detailParameters.AddList<GS::ObjectState> ("elementsWithDetails");
+        for (const auto& job : layerJobs) {
+            if (!layerIndices.ContainsKey (job.second)) {
+                const auto layer = FindAttribute (API_LayerID, job.second);
+                layerIndices.Add (job.second, layer.HasValue () ? GetAttributeIndex (layer.Get ().index) : -1);
+                if (!layer.HasValue ()) {
+                    errorList (GS::UniString ("Layer not found: ") + job.second);
+                }
+            }
+            const Int32 layerIndex = layerIndices[job.second];
+            if (layerIndex < 0) {
+                continue;
+            }
+            GS::ObjectState details;
+            details.Add ("layerIndex", layerIndex);
+            GS::ObjectState item;
+            item.Add ("elementId", CreateGuidObjectState (job.first));
+            item.Add ("details", details);
+            elementsWithDetails (item);
+        }
+        layerJobs.Clear ();
+        SetDetailsOfElementsCommand ().Execute (detailParameters, processControl);
+    };
 
     // 3. Walls, in scene order.
     GS::Array<API_Guid> wallGuids;
@@ -471,6 +501,10 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             }
         }
     }
+
+    // deslab: walls go onto their layer before the openings. A wall left on a hidden layer of the
+    // Wall tool defaults refuses every door and window ("Failed to create window").
+    applyLayers ();
 
     // 4. Doors and windows in their walls.
     if (GetFlag (parameters, "buildOpenings", true)) {
@@ -694,32 +728,8 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         }
     }
 
-    // 6. Layers.
-    if (!layerJobs.IsEmpty ()) {
-        GS::ObjectState detailParameters;
-        const auto& elementsWithDetails = detailParameters.AddList<GS::ObjectState> ("elementsWithDetails");
-        GS::HashTable<GS::UniString, Int32> layerIndices;
-        for (const auto& job : layerJobs) {
-            if (!layerIndices.ContainsKey (job.second)) {
-                const auto layer = FindAttribute (API_LayerID, job.second);
-                layerIndices.Add (job.second, layer.HasValue () ? GetAttributeIndex (layer.Get ().index) : -1);
-                if (!layer.HasValue ()) {
-                    errorList (GS::UniString ("Layer not found: ") + job.second);
-                }
-            }
-            const Int32 layerIndex = layerIndices[job.second];
-            if (layerIndex < 0) {
-                continue;
-            }
-            GS::ObjectState details;
-            details.Add ("layerIndex", layerIndex);
-            GS::ObjectState item;
-            item.Add ("elementId", CreateGuidObjectState (job.first));
-            item.Add ("details", details);
-            elementsWithDetails (item);
-        }
-        SetDetailsOfElementsCommand ().Execute (detailParameters, processControl);
-    }
+    // 6. Layers of the other elements.
+    applyLayers ();
 
     return response;
 }
