@@ -241,7 +241,6 @@ def plan_opening_labels(scene, profile, obstacles=None):
     corners = [p for r in rooms for p in r]
     flat = (min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)) if corners else None
     flat_mid = ((flat[0] + flat[2]) / 2, (flat[1] + flat[3]) / 2) if flat else None
-    line_h = cfg["textHeight"] * cfg["lineSpacing"]
     weight = cfg.get("lengthCost", 20)
 
     def text_of(o):
@@ -255,8 +254,11 @@ def plan_opening_labels(scene, profile, obstacles=None):
             template = cfg["door"]
         runs = _runs(template, values)
         lines = "".join(r["text"] for r in runs).split("\n")
-        width = max(len(l) for l in lines) * cfg["textHeight"] * cfg["charWidth"] + 0.1
-        return runs, width, len(lines) * line_h
+        # text block size on the plan, from the paper size measured in Archicad (label test,
+        # 03.11.2026: «hподокон 962» 16.5 mm, «hокна 2744» 15.3 mm, a line 4.3 mm at 1:45)
+        k = cfg.get("drawingScale", 45) / 1000.0
+        width = (max(len(l) for l in lines) * cfg.get("charMm", 1.4) + cfg.get("padMm", 1.5)) * k
+        return runs, width, len(lines), cfg.get("lineMm", 4.32) * k
 
     def inner_side(c, n, half_t):
         def room_area(side):
@@ -287,8 +289,8 @@ def plan_opening_labels(scene, profile, obstacles=None):
         half_t = float(wall.get("thickness", 0.2)) / 2
         items = []
         for o, c, _, _, u, n in _opening_points(wall):
-            runs, width, height = text_of(o)
-            items.append((o, c, u, n, runs, width, height))
+            runs, width, nlines, line = text_of(o)
+            items.append((o, c, u, n, runs, width, (nlines, line)))
         if not items:
             continue
         u, n = items[0][2], items[0][3]
@@ -296,21 +298,25 @@ def plan_opening_labels(scene, profile, obstacles=None):
         vertical_wall = abs(u[1]) > abs(u[0])
         best = None
         for side_rank, side in enumerate((n_in, _mul(n_in, -1))):
-            # deslab: Archicad sets the text to the left of the shelf end (run 7): a shelf to the
-            # left would put the text beyond it, onto the wall. Shelves always run to the right.
-            prefer = 1.0
+            # deslab: how Archicad draws the label (test of 03.11.2026): the text block is hung at
+            # the shelf end (left edge for a shelf to the right, right edge for one to the left),
+            # one line stands on the shelf, two lines sit above and below it. The shelf end is put
+            # 1 cm past the elbow, so the block starts right at the elbow. A vertical wall: the
+            # shelf runs on away from the wall; a horizontal one: to the right if free.
+            shelves = ((1.0 if side[0] >= 0 else -1.0),) if vertical_wall else (1.0, -1.0)
             for lean in (0.0,):  # deslab: square leaders only (a slanted one drew an endless shelf, run 7b)
                 lead_dir = _unit(_add(side, _mul(u, lean)))
                 for length in cfg["leaderLengths"]:
-                    for shelf in (prefer,):
-                        total = side_rank * 200 + abs(lean) * 15 + length * weight
+                    for shelf in shelves:
+                        total = side_rank * 200 + length * weight + (3 if shelf != shelves[0] else 0)
                         taken = list(placed)
                         result = []
-                        for o, c, _, _, runs, width, height in items:
+                        for o, c, _, _, runs, width, (nlines, line) in items:
                             dot = _add(c, _mul(side, half_t))
                             mid = _add(dot, _mul(lead_dir, length))
-                            x0 = mid[0] if shelf > 0 else mid[0] - width
-                            box = (x0, mid[1], x0 + width, mid[1] + height)
+                            x0 = mid[0] + 0.01 if shelf > 0 else mid[0] - 0.01 - width
+                            y0, y1 = (mid[1], mid[1] + line) if nlines == 1 else (mid[1] - line, mid[1] + line)
+                            box = (x0, y0, x0 + width, y1)
                             total += one_cost(dot, mid, lead_dir, box, u, half_t, taken)
                             taken.append(box)
                             result.append((o, runs, dot, mid, shelf, width, box))
@@ -321,7 +327,7 @@ def plan_opening_labels(scene, profile, obstacles=None):
             placed.append(box)
             labels.append({"opening": o["id"], "wall": wall["id"], "runs": runs, "cost": round(total / len(result), 1),
                            "begCoordinate": _xy(dot), "midCoordinate": _xy(mid),
-                           "endCoordinate": _xy(_add(mid, (shelf * width, 0.0)))})
+                           "endCoordinate": _xy(_add(mid, (shelf * 0.01, 0.0)))})
     return labels
 
 
@@ -569,6 +575,45 @@ def _check_details(response, report, what):
         report.errors.append(f"{what}: не применено к {len(bad)} элементам ({bad[0].get('error', {}).get('message', '')})")
 
 
+def _find_key(obj, key):
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        for v in obj.values():
+            found = _find_key(v, key)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_key(v, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _redo_endless_labels(ac, data, guids, report, max_mm=50.0):
+    """deslab: now and then Archicad makes a label with a text block hundreds of metres wide,
+    drawn as an endless shelf (runs 7b and the label test). Such a label is deleted and made
+    again once; a normal block is 15-18 mm on paper."""
+    live = [(i, g) for i, g in enumerate(guids) if g]
+    if not live:
+        return guids
+    try:
+        details = ac.tapir("GetDetailsOfElements", {"elements": _elements([g for _, g in live])}).get("detailsOfElements", [])
+    except Exception:
+        return guids
+    bad = [i for (i, _), d in zip(live, details) if (_find_key(d, "boxWidth") or 0) > max_mm]
+    if not bad:
+        return guids
+    ac.tapir("DeleteElements", {"elements": _elements([guids[i] for i in bad])})
+    again = _created(ac.tapir("CreateLabels", {"labelsData": [data[i] for i in bad]}), "elements", report, "Выноска")
+    guids = list(guids)
+    for i, g in zip(bad, again):
+        guids[i] = g
+    report.steps.append({"step": "выноски с бесконечной полкой пересозданы", "seconds": 0, "count": len(bad)})
+    return guids
+
+
 def set_layer(ac, guids, index, report, what):
     guids = [g for g in guids if g]
     if not guids or not index:
@@ -701,6 +746,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         data.append(item)
     if data:
         guids = _created(ac.tapir("CreateLabels", {"labelsData": data}), "elements", report, "Выноска")
+        guids = _redo_endless_labels(ac, data, guids, report)
         guids = [g for g in guids if g]
         ac.tapir("UnlockElements", {"elements": _elements(guids)})
         set_layer(ac, guids, idx.get(L["labels"]), report, "выноски")

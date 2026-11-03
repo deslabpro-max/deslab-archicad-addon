@@ -88,6 +88,10 @@
     "textHeight": 0.125,
     "lineSpacing": 1.6,
     "charWidth": 0.62,
+    "drawingScale": 45,
+    "charMm": 1.4,
+    "padMm": 1.5,
+    "lineMm": 4.32,
     "lengthCost": 20,
     "leaderLengths": [
       0.6,
