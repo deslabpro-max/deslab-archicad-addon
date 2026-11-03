@@ -100,7 +100,10 @@
   },
   "dimensions": {
     "offsetFromFace": 0.35,
-    "minEdge": 0.3
+    "minEdge": 0.3,
+    "mergeStep": 0.45,
+    "offsetStep": 0.35,
+    "maxShifts": 2
   },
   "wet": {
     "bathroom": {

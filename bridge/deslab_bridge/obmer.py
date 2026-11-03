@@ -205,12 +205,7 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         if abs(u[0]) > 0.99 or abs(u[1]) > 0.99:  # axis-aligned walls: their exact rectangle
             walls.append(_rect_of_segment(a, b, float(wall.get("thickness", 0.2)) / 2))
     for ch in chains or []:
-        pts = [_pt(p) for p in ch["points"]]
-        n = _unit(_sub(_pt(ch["referencePoint"]), pts[0]))
-        d = _pt(ch["direction"])
-        off = _dot(_sub(_pt(ch["referencePoint"]), pts[0]), _left(d))
-        a = _add(pts[0], _mul(_left(d), off))
-        b = _add(pts[-1], _mul(_left(d), off))
+        a, b = _chain_line(ch)
         dims.append(_rect_of_segment(a, b, cfg["dimensionBand"]))
     for t in texts or []:
         c = (t["coordinate"]["x"], t["coordinate"]["y"])
@@ -229,10 +224,11 @@ def plan_opening_labels(scene, profile, obstacles=None):
     and must not wander in a different direction each time):
     - the dot is on the opening, at its centre on the wall face of the side the label goes to;
     - windows and balcony doors: the leader goes OUT of the flat, square to the facade;
-      doors: into the room on the side with more free space;
+      doors: into the room on the side with more free space, inside the outline of the flat;
     - the leader is square to the wall, as short as possible (0.6 to 1.8 m from the face) so that
       the text clears the walls, the dimension chains, the «Н» texts, the zone stamps and the
-      other labels; only when no square position is free, a 45° leader is tried;
+      other labels, and the leader does not cross another wall; only when no square position
+      is free, a 45° leader is tried;
     - the shelf is horizontal; it runs away from the wall for a vertical wall, and to the right
       (+x) for a horizontal one, unless that side is taken.
     """
@@ -241,6 +237,8 @@ def plan_opening_labels(scene, profile, obstacles=None):
     rooms = [[_pt(p) for p in r["polygon"]] for r in scene.get("rooms", [])]
     placed = []
     labels = []
+    corners = [p for r in rooms for p in r]
+    flat = (min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)) if corners else None
     line_h = cfg["textHeight"] * cfg["lineSpacing"]
     for wall in scene.get("walls", []):
         half_t = float(wall.get("thickness", 0.2)) / 2
@@ -281,6 +279,11 @@ def plan_opening_labels(scene, profile, obstacles=None):
                             cost += 100 * sum(_box_hits(box, d) for d in obstacles["dims"])
                             cost += 100 * sum(_box_hits(box, m) for m in obstacles["marks"] + placed)
                             cost += 8 * sum(_seg_hits_box(dot, mid, d) for d in obstacles["dims"])
+                            # deslab: the leader must not run through another wall
+                            cost += 100 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, half_t + 0.05)), mid, w) for w in obstacles["walls"])
+                            # a door label stays inside the outline of the flat (off the sheet otherwise)
+                            if not window and flat and not (flat[0] <= box[0] and box[2] <= flat[2] and flat[1] <= box[1] and box[3] <= flat[3]):
+                                cost += 50
                             cost += 8 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, m) for m in obstacles["marks"] + placed)
                             if best is None or cost < best[0]:
                                 best = (cost, dot, mid, shelf, box)
@@ -292,40 +295,146 @@ def plan_opening_labels(scene, profile, obstacles=None):
     return labels
 
 
-def plan_dimension_chains(scene, profile):
-    """Per room edge: a chain from corner to corner through the opening edges on that edge.
+def _chain_line(ch):
+    """The dimension line of a chain as a segment (from the first to the last point)."""
+    d = _pt(ch["direction"])
+    ref = _pt(ch["referencePoint"])
+    ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
+    return _add(ref, _mul(d, min(ts))), _add(ref, _mul(d, max(ts)))
 
-    Points are given as coordinates; the caller places a hotspot at each point and dimensions
-    the hotspots (associative to them), as the rules say for free points."""
+
+def _chain_conflict(c1, c2, band):
+    """True when two dimension lines (with their text band) overlap or cross away from their
+    ends. Inner chains of two neighbouring walls cross near the room corner; that is allowed."""
+    a1, b1 = _chain_line(c1)
+    a2, b2 = _chain_line(c2)
+    d1, d2 = _pt(c1["direction"]), _pt(c2["direction"])
+    if abs(_dot(d1, d2)) > 0.99:  # parallel: bands overlap?
+        if abs(_dot(_sub(a2, a1), _left(d1))) >= 2 * band:
+            return False
+        t = sorted([_dot(_sub(a2, a1), d1), _dot(_sub(b2, a1), d1)])
+        return t[0] < _len(_sub(b1, a1)) - 0.01 and t[1] > 0.01
+    # crossing point of the two lines
+    den = d1[0] * d2[1] - d1[1] * d2[0]
+    if abs(den) < 1e-9:
+        return False
+    w = _sub(a2, a1)
+    t1 = (w[0] * d2[1] - w[1] * d2[0]) / den
+    t2 = (w[0] * d1[1] - w[1] * d1[0]) / den
+    l1, l2 = _len(_sub(b1, a1)), _len(_sub(b2, a2))
+    if not (-band < t1 < l1 + band and -band < t2 < l2 + band):
+        return False
+    # near the corner: the crossing is no further from the end of one line than the other line
+    # stands off its own wall face
+    near_end1 = min(abs(t1), abs(l1 - t1)) <= c2.get("offset", 0.35) + 0.05
+    near_end2 = min(abs(t2), abs(l2 - t2)) <= c1.get("offset", 0.35) + 0.05
+    return not (near_end1 and near_end2)
+
+
+def plan_dimension_chains(scene, profile):
+    """Inner dimension chains of each room, corner to corner through the opening edges.
+
+    Rule (Игорь, 03.11.2026: dimensions must not run onto other dimension lines):
+    - one chain per room edge, on a line offsetFromFace inside the room;
+    - a short step in a wall (up to mergeStep) does not get its own line next to the main one:
+      the two parallel faces on either side of it go into ONE chain on the deeper line, and the
+      step itself gets its own small chain only when it is at least minEdge long;
+    - inner chains of neighbouring walls may cross at the room corner; any other overlap or
+      crossing moves the shorter chain one offsetStep further into the room (up to maxShifts);
+      what still conflicts is reported in the chain as "conflict".
+    The caller places a hotspot at each point and dimensions the hotspots."""
     cfg = profile["dimensions"]
+    merge_step = cfg.get("mergeStep", 0.45)
+    step = cfg.get("offsetStep", 0.35)
+    band = profile["labels"].get("dimensionBand", 0.18)
     openings = [(wall, o, c, e1, e2, u) for wall in scene.get("walls", []) for o, c, e1, e2, u, _ in _opening_points(wall)]
+
+    def opening_points(a, u, length):
+        pts = []
+        for wall, o, c, e1, e2, wu in openings:
+            if abs(_dot(wu, u)) < 0.99:
+                continue
+            if abs(_dot(_sub(c, a), _left(u))) > float(wall.get("thickness", 0.2)) / 2 + 0.06:
+                continue
+            for e in (e1, e2):
+                t = _dot(_sub(e, a), u)
+                if 0.02 < t < length - 0.02:
+                    pts.append(_add(a, _mul(u, t)))
+        return pts
+
     chains = []
     for room in scene.get("rooms", []):
         poly = [_pt(p) for p in room["polygon"]]
         ccw = polygon_area(poly) > 0
+        count = len(poly)
+        edges = []
         for i, a in enumerate(poly):
-            b = poly[(i + 1) % len(poly)]
-            edge = _sub(b, a)
-            length = _len(edge)
-            if length < cfg["minEdge"]:
+            b = poly[(i + 1) % count]
+            length = _len(_sub(b, a))
+            u = _unit(_sub(b, a)) if length > 1e-9 else (1.0, 0.0)
+            n = _left(u) if ccw else _mul(_left(u), -1)
+            edges.append({"i": i, "a": a, "b": b, "u": u, "n": n, "len": length})
+        # group parallel faces split by a short step: edge i, short edge i+1, edge i+2
+        group = list(range(count))
+
+        def root(k):
+            while group[k] != k:
+                k = group[k]
+            return k
+        steps = set()
+        for e in edges:
+            if count < 5:
+                break
+            s, f = edges[(e["i"] + 1) % count], edges[(e["i"] + 2) % count]
+            if (s["len"] <= merge_step and _dot(e["u"], f["u"]) > 0.99 and abs(_dot(s["u"], e["u"])) < 0.1
+                    and abs(_dot(_sub(f["a"], e["b"]), e["n"])) <= merge_step):
+                group[root(f["i"])] = root(e["i"])
+                steps.add(s["i"])
+        members = {}
+        for e in edges:
+            members.setdefault(root(e["i"]), []).append(e)
+        for key in sorted(members):
+            ms = members[key]
+            u, n = ms[0]["u"], ms[0]["n"]
+            if len(ms) == 1 and (ms[0]["len"] < cfg["minEdge"]):
                 continue
-            u = _unit(edge)
-            inward = _left(u) if ccw else _mul(_left(u), -1)
-            points = [0.0, length]
-            for wall, o, c, e1, e2, wu in openings:
-                if abs(_dot(wu, u)) < 0.99:
-                    continue
-                dist = abs(_dot(_sub(c, a), _left(u)))
-                if dist > float(wall.get("thickness", 0.2)) / 2 + 0.06:
-                    continue
-                for e in (e1, e2):
-                    t = _dot(_sub(e, a), u)
-                    if 0.02 < t < length - 0.02:
-                        points.append(t)
-            points = sorted(set(round(t, 4) for t in points))
-            ref = _add(a, _mul(inward, cfg["offsetFromFace"]))
-            chains.append({"room": room["id"], "edge": i, "direction": _xy(u), "referencePoint": _xy(ref),
-                           "points": [_xy(_add(a, _mul(u, t))) for t in points]})
+            pts = []
+            for e in ms:
+                pts += [e["a"], e["b"]] + opening_points(e["a"], u, e["len"])
+            origin = ms[0]["a"]
+            depths = [_dot(_sub(e["a"], origin), n) for e in ms]
+            depth = max(depths)
+            ref = _add(origin, _mul(n, depth + cfg["offsetFromFace"]))
+            ordered = sorted(pts, key=lambda p: _dot(_sub(p, origin), u))
+            kept = []
+            for p in ordered:
+                if not kept or abs(_dot(_sub(p, kept[-1]), u)) > 0.002:
+                    kept.append(p)
+            if len(kept) < 2:
+                continue
+            chains.append({"room": room["id"], "edge": ms[0]["i"], "edges": [e["i"] for e in ms],
+                           "direction": _xy(u), "normal": _xy(n), "referencePoint": _xy(ref),
+                           "offset": round(depth - min(depths) + cfg["offsetFromFace"], 4),
+                           "points": [_xy(p) for p in kept]})
+    # move the shorter of two conflicting chains further in, a few times at most
+    def length(ch):
+        a, b = _chain_line(ch)
+        return _len(_sub(b, a))
+    for _ in range(cfg.get("maxShifts", 2)):
+        moved = False
+        for i, c1 in enumerate(chains):
+            for c2 in chains[i + 1:]:
+                if _chain_conflict(c1, c2, band):
+                    short = c1 if length(c1) <= length(c2) else c2
+                    short["referencePoint"] = _xy(_add(_pt(short["referencePoint"]), _mul(_pt(short["normal"]), step)))
+                    short["offset"] = round(short["offset"] + step, 4)
+                    moved = True
+        if not moved:
+            break
+    for i, c1 in enumerate(chains):
+        for c2 in chains[i + 1:]:
+            if _chain_conflict(c1, c2, band):
+                c1.setdefault("conflict", []).append(c2["edge"])
     return chains
 
 
@@ -536,6 +645,9 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
         dim_guids = [g for g in _created(ac.tapir("CreateAssociativeDimensions", {"dimensionsData": dims}), "elements", report, "Размер") if g]
         ac.tapir("UnlockElements", {"elements": _elements(dim_guids)})
         set_layer(ac, dim_guids, idx.get(L["dimensions"]), report, "размеры")
+    for ch in chains:
+        if ch.get("conflict"):
+            report.errors.append(f"Размер {ch['room']}/{ch['edge']}: наложение на цепочки {ch['conflict']}, поправить вручную")
     report.step("размерные цепочки", chains=len(chains), dimensions=len(dim_guids))
 
     # 5. Wet zones.

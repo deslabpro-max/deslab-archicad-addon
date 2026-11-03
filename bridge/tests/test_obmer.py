@@ -60,6 +60,17 @@ def test_dimensions():
     assert [p["y"] for p in east["points"]] == [0.0, 0.6, 1.4, 3.0]
 
 
+def test_dimension_step_is_one_chain():
+    # a 0.27 m step in the south wall: one chain on the deeper face, no crossing with the west chain
+    poly = [(0, 0), (3, 0), (3, 0.27), (6, 0.27), (6, 4), (0, 4)]
+    scene = {"walls": [], "rooms": [{"id": "R", "polygon": [{"x": x, "y": y} for x, y in poly]}]}
+    chains = obmer.plan_dimension_chains(scene, PROFILE)
+    south = [c for c in chains if c["edges"] == [0, 2]]
+    assert south and abs(south[0]["referencePoint"]["y"] - 0.62) < 1e-6, chains
+    assert [p["x"] for p in south[0]["points"]] == [0.0, 3.0, 6.0]
+    assert len(chains) == 4 and not any(c.get("conflict") for c in chains), chains
+
+
 def test_partitions_and_overrides():
     scene = obmer.apply_room_overrides(dict(SCENE, rooms=[dict(SCENE["rooms"][0])]), {"R1": {"name": "Санузел", "wet": "bathroom"}})
     assert scene["rooms"][0]["name"] == "Санузел"
