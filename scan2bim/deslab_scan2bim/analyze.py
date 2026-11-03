@@ -845,6 +845,48 @@ def straighten(walls, max_gap=0.3, min_len=0.25):
     return [w for w in walls if w.openings or length(w) >= min_len]
 
 
+def align_backs(walls, reach=0.6, min_t=0.08, max_t=0.9):
+    """deslab: one straight back face (Игорь, 03.11.2026: a jog at the entrance door and a step
+    on the outer face of the left wall). Two walls on one line, end to end (across a crossing
+    wall up to `reach`), keep their scanned room faces, real steps included, but share one back
+    face: a one-sided wall takes the back face of a measured wall, else of the longer one, and
+    its thickness follows. Returns True when a wall moved, so the joints are redone."""
+    def length(w):
+        return float(np.linalg.norm(w.end - w.beg))
+
+    def lead(w):
+        return (w.measured or getattr(w, "backed", False), length(w))
+
+    moved = False
+    for o in sorted(walls, key=lead, reverse=True):
+        co, lo, ho = _span(o)
+        for w in walls:
+            if w is o or w.axis != o.axis or w.measured or not w.room_side or lead(w) > lead(o):
+                continue
+            if o.room_side and o.room_side != w.room_side:
+                continue
+            cw, lw, hw = _span(w)
+            if max(lw - ho, lo - hw) > reach or abs(cw - co) > max(w.thickness, o.thickness) / 2 + 0.05:
+                continue
+            if min(hw, ho) - max(lw, lo) > 0.05:  # side by side, not end to end
+                continue
+            s = w.room_side
+            face, back = cw + s * w.thickness / 2, co - s * o.thickness / 2
+            t = (face - back) * s
+            if not (min_t <= t <= max_t) or abs((cw - s * w.thickness / 2) - back) < 0.005:
+                continue
+            delta = (face + back) / 2 - cw
+            w.thickness = t
+            w.c += delta
+            w.beg = np.array(w.beg, dtype=float)
+            w.end = np.array(w.end, dtype=float)
+            w.beg[w.axis] += delta
+            w.end[w.axis] += delta
+            w.backed = getattr(w, "backed", False) or o.measured or getattr(o, "backed", False)
+            moved = True
+    return moved
+
+
 def _joined_ends(walls, tol=0.005):
     """The wall ends that lie on another wall's centre line."""
     joined = set()
@@ -1271,6 +1313,9 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
     join_walls(walls, joined=_joined_ends(walls))
     walls = merge_overlaps(walls)
     walls = merge_walls(walls)
+    if align_backs(walls):
+        # ends that sat on a moved wall's centre line follow it
+        join_walls(walls, joined=_joined_ends(walls))
     rooms, outline, left_out = find_rooms(rot, floor, ceiling, walls, lines, opt)
 
     # model origin: main floor at z = 0, lower-left corner of the walls at (0, 0)

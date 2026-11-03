@@ -205,6 +205,13 @@ GS::Optional<API_Attr_Head> FindAttributeLike (API_AttrTypeID typeID, std::initi
     return GS::NoValue;
 }
 
+// deslab: the layer named in layers[group], if any.
+GS::Optional<API_Attr_Head> LayerOf (const GS::ObjectState& layers, const char* group)
+{
+    const GS::UniString name = GetString (layers, group);
+    return name.IsEmpty () ? GS::Optional<API_Attr_Head> () : FindAttribute (API_LayerID, name);
+}
+
 // deslab: walls and slabs are concrete unless a material is given (never the default brick).
 GS::Optional<API_Attr_Head> MaterialOrConcrete (const GS::UniString& name)
 {
@@ -224,6 +231,50 @@ GS::Optional<API_Attr_Head> WindowSurface (const GS::UniString& name)
     return FindAttributeLike (API_MaterialID,
         { "\xD0\x9F\xD0\x92\xD0\xA5 - \xD0\x91\xD0\xB5\xD0\xBB\xD1\x8B\xD0\xB9", "\xD0\x9F\xD0\xBB\xD0\xB0\xD1\x81\xD1\x82\xD0\xB8\xD0\xBA - \xD0\x91\xD0\xB5\xD0\xBB\xD1\x8B\xD0\xB9" }, { "\xD0\xBF\xD0\xB2\xD1\x85", "pvc", "\xD0\xBF\xD0\xBB\xD0\xB0\xD1\x81\xD1\x82\xD0\xB8\xD0\xBA - \xD0\xB1\xD0\xB5\xD0\xBB", "\xD0\xBA\xD1\x80\xD0\xB0\xD1\x81\xD0\xBA\xD0\xB0 - \xD0\xB3\xD0\xBB\xD1\x8F\xD0\xBD\xD1\x86\xD0\xB5\xD0\xB2\xD0\xB0\xD1\x8F \xD0\xB1\xD0\xB5\xD0\xBB\xD0\xB0\xD1\x8F", "\xD0\xB1\xD0\xB5\xD0\xBB\xD0\xB8\xD0\xBB\xD0\xB0" });
 }
+
+// deslab: new elements of a type go straight onto a layer through the tool defaults, which are
+// given back afterwards. A wall created on a hidden default layer can be neither moved to another
+// layer nor take doors and windows (Archicad refuses changes on hidden layers).
+class DefaultLayerScope {
+public:
+    DefaultLayerScope (API_ElemTypeID typeID, const GS::Optional<API_Attr_Head>& layer)
+    {
+        if (!layer.HasValue ()) {
+            return;
+        }
+#ifdef ServerMainVers_2600
+        defaults.header.type = typeID;
+#else
+        defaults.header.typeID = typeID;
+#endif
+        if (ACAPI_Element_GetDefaults (&defaults, nullptr) != NoError) {
+            return;
+        }
+        oldLayer = defaults.header.layer;
+        defaults.header.layer = layer.Get ().index;
+        active = Change ();
+    }
+    ~DefaultLayerScope ()
+    {
+        if (active) {
+            defaults.header.layer = oldLayer;
+            Change ();
+        }
+    }
+
+private:
+    bool Change ()
+    {
+        API_Element mask;
+        ACAPI_ELEMENT_MASK_CLEAR (mask);
+        ACAPI_ELEMENT_MASK_SET (mask, API_Elem_Head, layer);
+        return ACAPI_Element_ChangeDefaults (&defaults, nullptr, &mask) == NoError;
+    }
+
+    API_Element defaults = {};
+    API_AttributeIndex oldLayer = {};
+    bool active = false;
+};
 
 } // namespace
 
@@ -486,6 +537,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             }
             wallsData (data);
         }
+        const DefaultLayerScope defaultLayerWall (API_WallID, LayerOf (layers, "walls"));
         const GS::Array<GS::ObjectState> results = ResultItems (CreateWallsCommand ().Execute (wallParameters, processControl));
         for (UIndex i = 0; i < results.GetSize () && i < sceneWalls.GetSize (); ++i) {
             const GS::UniString id = GetString (sceneWalls[i], "id");
@@ -574,9 +626,11 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 }
             }
         };
+        const DefaultLayerScope defaultLayerDoor (API_DoorID, LayerOf (layers, "openings"));
         if (!doorIds.IsEmpty ()) {
             collect (CreateDoorsCommand ().Execute (doorParameters, processControl), doorIds, doorList, "Door", false);
         }
+        const DefaultLayerScope defaultLayerWindow (API_WindowID, LayerOf (layers, "openings"));
         if (!windowIds.IsEmpty ()) {
             collect (CreateWindowsCommand ().Execute (windowParameters, processControl), windowIds, windowList, "Window", true);
         }
@@ -677,6 +731,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             }
             slabsData (data);
         }
+        const DefaultLayerScope defaultLayerSlab (API_SlabID, LayerOf (layers, "slabs"));
         const GS::Array<GS::ObjectState> results = ResultItems (CreateSlabsCommand ().Execute (slabParameters, processControl));
         for (UIndex i = 0; i < results.GetSize () && i < sceneSlabs.GetSize (); ++i) {
             const GS::UniString id = GetString (sceneSlabs[i], "id");
@@ -713,6 +768,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             data.Add ("geometry", geometry);
             zonesData (data);
         }
+        const DefaultLayerScope defaultLayerZone (API_ZoneID, LayerOf (layers, "zones"));
         const GS::Array<GS::ObjectState> results = ResultItems (CreateZonesCommand ().Execute (zoneParameters, processControl));
         for (UIndex i = 0; i < results.GetSize () && i < sceneRooms.GetSize (); ++i) {
             const GS::UniString id = GetString (sceneRooms[i], "id");
