@@ -490,7 +490,10 @@ def plan_dimension_chains(scene, profile):
         for k in range(len(pts) - 1):
             if abs(ts[k + 1] - ts[k]) < short:
                 piece = dict(ch, points=pts[cut:k + 2])
-                piece["textPositions"] = {k + 1 - cut: _xy(_mul(n, gap))}
+                # the offset goes to the side the other texts of the chain stand on: above the
+                # line as it reads (left of the direction turned to read from below or the right)
+                rd = d if (d[0] > 1e-9 or (abs(d[0]) <= 1e-9 and d[1] > 0)) else _mul(d, -1)
+                piece["textPositions"] = {k + 1 - cut: _xy(_mul(_left(rd), gap))}
                 pieces.append(piece)
                 cut = k + 1
         if len(pts) - cut >= 2:

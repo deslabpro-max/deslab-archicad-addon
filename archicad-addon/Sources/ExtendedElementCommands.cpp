@@ -783,6 +783,15 @@ GS::Optional<GS::UniString> PopulateAssociativeDimensionMemo (
         if (point.hasTextPosition) {  // deslab: a fixed text position, as if moved by hand
             dimElem.note.pos = point.textPosition;
             dimElem.note.fixPos = true;
+            // a fixed text keeps its own angle (0 = horizontal, run 10): turn it along the
+            // dimension line, readable (from below or from the right)
+            double angle = std::atan2 (element.dimension.direction.y, element.dimension.direction.x);
+            if (angle > 1.5708 + 1e-6) {
+                angle -= 3.14159265358979;
+            } else if (angle <= -1.5708 + 1e-6) {
+                angle += 3.14159265358979;
+            }
+            dimElem.note.noteAngle = angle;
         }
         dimElem.witnessVal = element.dimension.defWitnessVal;
         dimElem.witnessForm = element.dimension.defWitnessForm;
