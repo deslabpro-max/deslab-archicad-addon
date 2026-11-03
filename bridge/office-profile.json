@@ -109,8 +109,9 @@
     "mergeStep": 0.45,
     "offsetStep": 0.35,
     "maxShifts": 2,
-    "shortSegment": 0.45,
-    "shortTextGap": 0.12
+    "shortSegment": 0.3,
+    "leaderRise": 0.22,
+    "leaderShelf": 0.1
 
   },
   "wet": {

@@ -103,15 +103,20 @@ def test_door_labels_stay_inside():
 
 
 def test_short_segment_text_is_placed():
-    # a door 0.25 m from the corner: the chain is cut after the 250 segment, whose text is fixed
-    # by an offset into the room on the piece's last witness point (Archicad's own convention)
+    # a door 0.25 m from the corner: the 250 text goes on a leader, as in the office template:
+    # from the segment middle on the dimension line square into the room, then a shelf back
+    # over the chain; it sits on the segment's end witness point
     import copy
     scene = copy.deepcopy(SCENE)
     scene["walls"][1]["openings"][0]["centerOffset"] = 0.65  # door 0.25 .. 1.05 on the east wall
     east = [c for c in obmer.plan_dimension_chains(scene, PROFILE) if c["edges"] == [1]]
-    assert [[p["y"] for p in c["points"]] for c in east] == [[0.0, 0.25], [0.25, 1.05, 3.0]], east
-    assert east[0]["textPositions"] == {1: {"x": -0.12, "y": 0.0}}, east[0]
-    assert "textPositions" not in east[1]
+    assert len(east) == 1 and [p["y"] for p in east[0]["points"]] == [0.0, 0.25, 1.05, 3.0], east
+    lead = east[0]["textLeaders"]
+    assert list(lead) == [1], lead
+    x = east[0]["referencePoint"]["x"]
+    assert lead[1]["beg"] == {"x": x, "y": 0.125}
+    assert lead[1]["mid"]["x"] < x and lead[1]["mid"]["y"] == 0.125
+    assert lead[1]["end"]["y"] > 0.125  # the shelf runs back over the chain
 
 
 def test_partitions_and_overrides():

@@ -471,34 +471,27 @@ def plan_dimension_chains(scene, profile):
         for c2 in chains[i + 1:]:
             if _chain_conflict(c1, c2, band):
                 c1.setdefault("conflict", []).append(c2["edge"])
-    # deslab: the text of a short segment (a pier of 0.25 m) does not fit between its witness
-    # lines; Archicad pushes it past the chain end, onto the wall hatch (runs 7-8). Its text is
-    # fixed over the middle of the segment, a little into the room. Archicad (test of
-    # 03.11.2026) takes the text position of a segment from the segment's END witness point, as
-    # an offset from the segment's middle on the dimension line, and that is only reliable on
-    # the last segment of a dimension. So a chain is cut after every short segment: the pieces
-    # lie on the same line and read as one chain.
-    short = cfg.get("shortSegment", 0.45)
-    gap = cfg.get("shortTextGap", 0.12)
-    pieces = []
+    # deslab: a dimension text that does not fit between its witness lines goes on a leader, as
+    # in the office template (Игорь, 03.11.2026; read from «Антон Крючков.pln»): the leader
+    # starts at the middle of the short segment on the dimension line, goes square to the chain
+    # into the room, then a short shelf runs along the chain, back over the chain, and the text
+    # continues past the shelf end. Archicad keeps that text on the segment's END witness point.
+    short = cfg.get("shortSegment", 0.3)
+    rise = cfg.get("leaderRise", 0.22)
+    shelf = cfg.get("leaderShelf", 0.1)
     for ch in chains:
         d, n = _pt(ch["direction"]), _pt(ch["normal"])
         ref = _pt(ch["referencePoint"])
-        pts = ch["points"]
-        ts = [_dot(_sub(_pt(p), ref), d) for p in pts]
-        cut = 0
-        for k in range(len(pts) - 1):
-            if abs(ts[k + 1] - ts[k]) < short:
-                piece = dict(ch, points=pts[cut:k + 2])
-                # the offset goes to the side the other texts of the chain stand on: above the
-                # line as it reads (left of the direction turned to read from below or the right)
-                rd = d if (d[0] > 1e-9 or (abs(d[0]) <= 1e-9 and d[1] > 0)) else _mul(d, -1)
-                piece["textPositions"] = {k + 1 - cut: _xy(_mul(_left(rd), gap))}
-                pieces.append(piece)
-                cut = k + 1
-        if len(pts) - cut >= 2:
-            pieces.append(dict(ch, points=pts[cut:]))
-    chains = pieces
+        ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
+        last = len(ts) - 2
+        for k in range(len(ts) - 1):
+            if abs(ts[k + 1] - ts[k]) >= short:
+                continue
+            beg = _add(ref, _mul(d, (ts[k] + ts[k + 1]) / 2))
+            mid = _add(beg, _mul(n, rise))
+            # back over the chain: at the last segment against the direction, else with it
+            along = _mul(d, -1 if (k == last and k > 0) else 1)
+            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(_add(mid, _mul(along, shelf)))}
     return chains
 
 
@@ -813,9 +806,9 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
             if None in ids or len(ids) < 2:
                 report.errors.append(f"Размер {ch['room']}/{ch['edge']}: точки не созданы")
                 continue
-            tp = ch.get("textPositions", {})
+            tl = ch.get("textLeaders", {})
             d = {"referencePoint": ch["referencePoint"], "direction": ch["direction"], "floorIndex": floor_index,
-                 "witnessPoints": [{"elementId": {"guid": g}, **({"textPosition": tp[j]} if j in tp else {})}
+                 "witnessPoints": [{"elementId": {"guid": g}, **({"textLeader": tl[j]} if j in tl else {})}
                                    for j, g in enumerate(ids)]}
             if F.get("dimension"):
                 d["favoriteName"] = F["dimension"]
