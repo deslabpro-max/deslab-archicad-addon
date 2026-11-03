@@ -13,6 +13,7 @@
 #include "Process.hpp"
 #include "ElementGDLParameterCommands.hpp"
 
+#include <cmath>
 #include <initializer_list>
 
 namespace {
@@ -276,6 +277,74 @@ private:
     bool active = false;
 };
 
+// deslab: Archicad cleans a wall junction (one outline, one hatch) only when the ends meet
+// exactly: an L corner needs the same end point, a T joint the end on the other wall's reference
+// line. The scene is rounded to 0.1 mm, so ends that should meet miss by a hair and the walls
+// overlap with two hatches (run 6, Игорь fixed it by hand). Ends within `tol` of each other
+// become one point; an end within `tol` of another wall's line goes exactly onto it.
+void SnapWallEnds (GS::Array<API_Coord>& beg, GS::Array<API_Coord>& end, double tol = 0.005)
+{
+    const UIndex count = beg.GetSize ();
+    auto at = [&] (UIndex k) -> API_Coord& { return (k % 2 == 0) ? beg[k / 2] : end[k / 2]; };
+    auto dist = [] (const API_Coord& a, const API_Coord& b) { return std::hypot (a.x - b.x, a.y - b.y); };
+    // L corners and collinear joints: one common point (the mean of the cluster)
+    GS::Array<bool> done;
+    for (UIndex k = 0; k < 2 * count; ++k) {
+        done.Push (false);
+    }
+    for (UIndex k = 0; k < 2 * count; ++k) {
+        if (done[k]) {
+            continue;
+        }
+        GS::Array<UIndex> group;
+        group.Push (k);
+        for (UIndex m = k + 1; m < 2 * count; ++m) {
+            if (!done[m] && m / 2 != k / 2 && dist (at (k), at (m)) < tol) {
+                group.Push (m);
+            }
+        }
+        if (group.GetSize () < 2) {
+            continue;
+        }
+        API_Coord mean = { 0.0, 0.0 };
+        for (UIndex m : group) {
+            mean.x += at (m).x / group.GetSize ();
+            mean.y += at (m).y / group.GetSize ();
+        }
+        for (UIndex m : group) {
+            at (m) = mean;
+            done[m] = true;
+        }
+    }
+    // T joints: a free end onto the reference line of the wall it stops at
+    for (UIndex k = 0; k < 2 * count; ++k) {
+        if (done[k]) {
+            continue;
+        }
+        API_Coord& p = at (k);
+        for (UIndex w = 0; w < count; ++w) {
+            if (w == k / 2) {
+                continue;
+            }
+            const API_Coord a = beg[w];
+            const API_Coord b = end[w];
+            const double len2 = (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y);
+            if (len2 < 1e-12) {
+                continue;
+            }
+            const double t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2;
+            if (t <= 0.0 || t >= 1.0) {
+                continue;
+            }
+            const API_Coord q = { a.x + t * (b.x - a.x), a.y + t * (b.y - a.y) };
+            if (dist (p, q) < tol) {
+                p = q;
+                break;
+            }
+        }
+    }
+}
+
 } // namespace
 
 BuildModelFromScanCommand::BuildModelFromScanCommand () :
@@ -510,7 +579,19 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         const auto assumedMaterial = MaterialOrConcrete (GetString (materials, "assumedWalls"));
         GS::ObjectState wallParameters;
         const auto& wallsData = wallParameters.AddList<GS::ObjectState> ("wallsData");
+        // deslab: wall ends that meet are made to meet exactly (clean junctions)
+        GS::Array<API_Coord> wallBeg;
+        GS::Array<API_Coord> wallEnd;
         for (const GS::ObjectState& wall : sceneWalls) {
+            const GS::ObjectState* start = wall.Get ("start");
+            const GS::ObjectState* end = wall.Get ("end");
+            wallBeg.Push ({ start ? GetNumber (*start, "x", 0.0) + dx : 0.0, start ? GetNumber (*start, "y", 0.0) + dy : 0.0 });
+            wallEnd.Push ({ end ? GetNumber (*end, "x", 0.0) + dx : 0.0, end ? GetNumber (*end, "y", 0.0) + dy : 0.0 });
+        }
+        SnapWallEnds (wallBeg, wallEnd);
+        UIndex wallIndex = 0;
+        for (const GS::ObjectState& wall : sceneWalls) {
+            const UIndex thisWall = wallIndex++;
             GS::ObjectState data;
             const GS::UniString favorite = GetString (favorites, "wall");
             if (!favorite.IsEmpty ()) {
@@ -521,8 +602,14 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             if (start == nullptr || end == nullptr) {
                 continue;
             }
-            data.Add ("begCoordinate", Coordinate (*start, dx, dy));
-            data.Add ("endCoordinate", Coordinate (*end, dx, dy));
+            GS::ObjectState begC;
+            begC.Add ("x", wallBeg[thisWall].x);
+            begC.Add ("y", wallBeg[thisWall].y);
+            GS::ObjectState endC;
+            endC.Add ("x", wallEnd[thisWall].x);
+            endC.Add ("y", wallEnd[thisWall].y);
+            data.Add ("begCoordinate", begC);
+            data.Add ("endCoordinate", endC);
             data.Add ("floorIndex", floorIndex);
             data.Add ("zCoordinate", GetNumber (wall, "bottom", 0.0));
             data.Add ("height", GetNumber (wall, "height", 2.7));

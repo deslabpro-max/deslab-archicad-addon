@@ -627,7 +627,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
         # deslab: «Н 3312» centred right under the number circle (the stamp is at the same x),
         # one block with it (Игорь, 03.11.2026)
         data = [{"coordinate": t["coordinate"], "text": t["text"], "floorIndex": floor_index,
-                 "style": {"justification": "Center", "anchor": "MiddleBottom"},
+                 "style": {"justification": "Center", "anchor": "MiddleTop"},
                  **({"favoriteName": F["heightText"]} if F.get("heightText") else {}),
                  **({"layerIndex": idx[L["zones"]]} if idx.get(L["zones"]) else {})} for t in texts]
         guids = _created(ac.tapir("CreateTexts", {"textsData": data}), "elements", report, "Текст Н")
