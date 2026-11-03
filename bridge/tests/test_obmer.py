@@ -104,6 +104,16 @@ def test_build_calls():
     assert "UpdateDrawings" in names and not report["errors"], report
 
 
+def test_origin_moves_model_and_drafting():
+    ac = FakeArchicad()
+    obmer.build_measured_plan(ac, SCENE, PROFILE, origin={"x": 90, "y": 0})
+    build = next(p for c, p in ac.calls if c == "BuildModelFromScan")
+    assert "origin" not in build and build["scene"]["walls"][0]["start"]["x"] == 90
+    text = next(p for c, p in ac.calls if c == "CreateTexts")["textsData"][0]
+    assert abs(text["coordinate"]["x"] - 92) < 1e-6
+    assert SCENE["walls"][0]["start"]["x"] == 0  # the caller's scene is not changed
+
+
 def test_refused_items_are_reported():
     class Refusing(FakeArchicad):
         def tapir(self, command, params=None, timeout=None):

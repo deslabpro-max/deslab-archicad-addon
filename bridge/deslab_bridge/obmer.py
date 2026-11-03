@@ -100,6 +100,26 @@ def apply_room_overrides(scene, rooms):
     return scene
 
 
+def shift_scene(scene, origin):
+    """Moves every coordinate of the scene by origin {"x", "y"}, so the model and its drafting land together."""
+    dx, dy = float((origin or {}).get("x", 0)), float((origin or {}).get("y", 0))
+    if not dx and not dy:
+        return scene
+
+    def move(p):
+        p["x"] = float(p["x"]) + dx
+        p["y"] = float(p["y"]) + dy
+
+    for wall in scene.get("walls", []):
+        move(wall["start"])
+        move(wall["end"])
+    for item in scene.get("rooms", []) + scene.get("slabs", []):
+        for key in ("polygon", "wetPolygon"):
+            for p in item.get(key) or []:
+                move(p)
+    return scene
+
+
 def summarize_scene(scene):
     """Short text of a scene for Claude: what was found and what was assumed."""
     lines = [f"Стен {len(scene.get('walls', []))}, помещений {len(scene.get('rooms', []))}."]
@@ -280,12 +300,12 @@ def analyze_scan(ac, e57_path, **helper_options):
     return response.get("scenePath") or e57_path + ".scene.json"
 
 
-def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_index=0):
+def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_index=0, import_favorites=True):
     """Builds the model and the measured-plan drafting from a scene. Returns a report dict."""
     profile = profile or load_profile()
     if scene.get("format") != SCENE_FORMAT:
         raise ValueError(f"Задание не в формате {SCENE_FORMAT}")
-    scene = apply_room_overrides(json.loads(json.dumps(scene)), rooms)
+    scene = shift_scene(apply_room_overrides(json.loads(json.dumps(scene)), rooms), origin)
     for room in scene.get("rooms", []):
         room.setdefault("name", f"{profile['zone']['defaultName']} {room.get('number', '')}".strip())
     report = Report()
@@ -293,7 +313,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
 
     if not ac.alive():
         raise RuntimeError("Archicad не отвечает. Откройте проект (копию шаблона) и закройте открытые диалоги.")
-    if profile.get("favoritesFile"):
+    if import_favorites and profile.get("favoritesFile"):
         # The office favorites («ОБМЕР шаблон …») are not in every template copy: import them, keep existing ones.
         try:
             ac.tapir("ImportFavorites", {"path": profile["favoritesFile"], "conflictPolicy": "Skip"})
@@ -307,8 +327,6 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
               "favorites": {k: F[k] for k in ("wall", "door", "window", "zone") if F.get(k)},
               "layers": {"walls": L["bearingWalls"], "zones": L["zones"]},
               "materials": {"measuredWalls": profile["walls"]["material"], "assumedWalls": profile["walls"]["material"]}}
-    if origin:
-        params["origin"] = origin
     model = ac.tapir("BuildModelFromScan", params, timeout=600)
     report.errors += model.get("errors", [])
     wall_guid = {w["id"]: _guid(w) for w in model.get("walls", [])}
