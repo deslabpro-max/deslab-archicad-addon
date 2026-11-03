@@ -40,7 +40,7 @@
   },
   "zone": {
     "heightTextFormat": "Н {height_mm}",
-    "heightTextOffset": -0.55,
+    "heightTextOffset": -0.35,
     "defaultName": "Помещение",
     "stampAtCentre": true
   },

@@ -299,7 +299,7 @@ def plan_opening_labels(scene, profile, obstacles=None):
             # deslab: Archicad sets the text to the left of the shelf end (run 7): a shelf to the
             # left would put the text beyond it, onto the wall. Shelves always run to the right.
             prefer = 1.0
-            for lean in (0.0, 1.0, -1.0):
+            for lean in (0.0,):  # deslab: square leaders only (a slanted one drew an endless shelf, run 7b)
                 lead_dir = _unit(_add(side, _mul(u, lean)))
                 for length in cfg["leaderLengths"]:
                     for shelf in (prefer,):
