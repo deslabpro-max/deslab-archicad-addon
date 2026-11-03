@@ -239,6 +239,7 @@ def plan_opening_labels(scene, profile, obstacles=None):
     labels = []
     corners = [p for r in rooms for p in r]
     flat = (min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)) if corners else None
+    flat_mid = ((flat[0] + flat[2]) / 2, (flat[1] + flat[3]) / 2) if flat else None
     line_h = cfg["textHeight"] * cfg["lineSpacing"]
     for wall in scene.get("walls", []):
         half_t = float(wall.get("thickness", 0.2)) / 2
@@ -256,11 +257,20 @@ def plan_opening_labels(scene, profile, obstacles=None):
             width = max(len(l) for l in lines) * cfg["textHeight"] * cfg["charWidth"] + 0.1
             height = len(lines) * line_h
             # which side of the wall is inside the flat
-            probe = _add(c, _mul(n, half_t + 0.15))
-            n_in = n if any(_inside(r, probe) for r in rooms) else _mul(n, -1)
+            # deslab: which side is inside the flat. A probe that lands in no room (an entrance
+            # hall without a zone) falls back to the side facing the middle of the flat.
+            def room_area(side):
+                p = _add(c, _mul(side, half_t + 0.3))
+                return max([abs(polygon_area(r)) for r in rooms if _inside(r, p)] or [0.0])
+            area_n, area_m = room_area(n), room_area(_mul(n, -1))
+            if area_n or area_m:
+                n_in = n if area_n >= area_m else _mul(n, -1)
+            else:
+                n_in = n if flat_mid and _dot(_sub(flat_mid, c), n) >= 0 else _mul(n, -1)
             if window:
                 sides = [_mul(n_in, -1), n_in]
             else:
+                # a door label goes into the room; between two rooms, into the larger one
                 sides = [n_in, _mul(n_in, -1)]
             best = None
             for side_rank, side in enumerate(sides):
@@ -278,10 +288,12 @@ def plan_opening_labels(scene, profile, obstacles=None):
                             cost += 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
                             cost += 100 * sum(_box_hits(box, d) for d in obstacles["dims"])
                             cost += 100 * sum(_box_hits(box, m) for m in obstacles["marks"] + placed)
-                            cost += 8 * sum(_seg_hits_box(dot, mid, d) for d in obstacles["dims"])
+                            cost += 40 * sum(_seg_hits_box(dot, mid, d) for d in obstacles["dims"])
                             # deslab: the leader must not run through another wall
                             cost += 100 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, half_t + 0.05)), mid, w) for w in obstacles["walls"])
                             # a door label stays inside the outline of the flat (off the sheet otherwise)
+                            if not window and side_rank:
+                                cost += 60  # a door label never leaves its room
                             if not window and flat and not (flat[0] <= box[0] and box[2] <= flat[2] and flat[1] <= box[1] and box[3] <= flat[3]):
                                 cost += 50
                             cost += 8 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, m) for m in obstacles["marks"] + placed)

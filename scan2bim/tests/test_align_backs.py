@@ -32,4 +32,16 @@ assert abs((w5.c + w5.thickness / 2) - 1.365) < 1e-6        # the real step stay
 assert w8.thickness == 0.287 and w4.thickness == 0.38        # leaders unchanged
 assert abs(w9.beg[1] - w9.c) < 1e-9 and abs(w5.end[0] - w5.c) < 1e-9
 assert not align_backs([w8, w9, w4, w5])                     # nothing left to do
+
+# run 6: the one-sided wall after the door is skewed (1.06 -> 1.12 over 5.2 m); it becomes
+# parallel to the measured wall, so the outer face is one straight line without a wedge
+w8 = wall(1, 1.075, 1.078, 3.337, 0.287, 0, True)
+w9 = wall(1, 1.09, 3.337, 8.538, 0.324, 1, False)
+w9.slope = 0.06 / 5.2
+w9.beg, w9.end = np.array(w9.point(w9.a), float), np.array(w9.point(w9.b), float)
+assert align_backs([w8, w9])
+assert w9.slope == 0.0
+assert abs(w9.beg[1] - w9.end[1]) < 1e-9
+assert abs(back(w9) - (1.075 - 0.287 / 2)) < 1e-6
+assert abs((w9.c + w9.thickness / 2) - (1.09 + 0.162)) < 1e-6  # mean room face kept
 print("ok align_backs")

@@ -871,17 +871,23 @@ def align_backs(walls, reach=0.6, min_t=0.08, max_t=0.9):
             if min(hw, ho) - max(lw, lo) > 0.05:  # side by side, not end to end
                 continue
             s = w.room_side
-            face, back = cw + s * w.thickness / 2, co - s * o.thickness / 2
+            # deslab: the back face runs on along the leader's back line, with its slope (a slightly
+            # skewed scan wall otherwise leaves a wedge and a jog at the joint, run 6)
+            mid_w, mid_o = (w.a + w.b) / 2, (o.a + o.b) / 2
+            face = w.c + s * w.thickness / 2
+            back = o.c + o.slope * (mid_w - mid_o) - s * o.thickness / 2
             t = (face - back) * s
-            if not (min_t <= t <= max_t) or abs((cw - s * w.thickness / 2) - back) < 0.005:
+            if not (min_t <= t <= max_t):
                 continue
-            delta = (face + back) / 2 - cw
+            if abs((w.c - s * w.thickness / 2) - back) < 0.005 and abs(w.slope - o.slope) < 1e-4:
+                continue
             w.thickness = t
-            w.c += delta
+            w.c = (face + back) / 2
+            w.slope = o.slope
             w.beg = np.array(w.beg, dtype=float)
             w.end = np.array(w.end, dtype=float)
-            w.beg[w.axis] += delta
-            w.end[w.axis] += delta
+            for e in (w.beg, w.end):
+                e[w.axis] = w.point(float(e[1 - w.axis]))[w.axis]
             w.backed = getattr(w, "backed", False) or o.measured or getattr(o, "backed", False)
             moved = True
     return moved

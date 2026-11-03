@@ -49,7 +49,8 @@ in a niche, rotated 7°).
    its openings move to that wall.
 7a. One straight back face: two walls on one line, end to end (also across a crossing wall),
    keep their scanned room faces, small real steps included, but share one back face. A one-sided
-   wall takes the back face of a measured wall, else of the longer one, and its thickness follows;
+   wall takes the back face of a measured wall, else of the longer one, with its slope (a slightly
+   skewed scan wall becomes parallel to it), and its thickness follows;
    the joints are then redone (no jog at the entrance door, no step on the outer face).
 8. Walls are always closed: wall ends are moved onto the centre lines of the walls they meet.
    An L corner is closed when both ends are within 1.3 m of it, a free end runs on to a crossing

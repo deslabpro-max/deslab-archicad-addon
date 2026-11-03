@@ -71,6 +71,19 @@ def test_dimension_step_is_one_chain():
     assert len(chains) == 4 and not any(c.get("conflict") for c in chains), chains
 
 
+def test_door_labels_stay_inside():
+    # an entrance door in the outer wall of a hall without a zone, next to the room: the label
+    # goes into the flat (up), never out of it; the room door goes into the room
+    import copy
+    scene = copy.deepcopy(SCENE)
+    scene["walls"].append({"id": "W5", "start": {"x": 4.05, "y": -0.2}, "end": {"x": 6, "y": -0.2}, "thickness": 0.4,
+                           "kind": "exterior", "openings": [{"id": "W5.1", "kind": "door", "centerOffset": 1.0, "width": 0.9, "sill": 0, "height": 2.1}]})
+    scene["walls"].append({"id": "W6", "start": {"x": 6.2, "y": 0}, "end": {"x": 6.2, "y": 3}, "thickness": 0.4, "kind": "exterior", "openings": []})
+    labels = {l["opening"]: l for l in obmer.plan_opening_labels(scene, PROFILE)}
+    assert labels["W5.1"]["midCoordinate"]["y"] > 0, labels["W5.1"]
+    assert labels["W2.1"]["midCoordinate"]["x"] < 4.05, labels["W2.1"]
+
+
 def test_partitions_and_overrides():
     scene = obmer.apply_room_overrides(dict(SCENE, rooms=[dict(SCENE["rooms"][0])]), {"R1": {"name": "Санузел", "wet": "bathroom"}})
     assert scene["rooms"][0]["name"] == "Санузел"
