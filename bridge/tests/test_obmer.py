@@ -33,11 +33,19 @@ def test_height_text():
 
 
 def test_labels():
-    labels = {l["opening"]: l for l in obmer.plan_opening_labels(SCENE, PROFILE)}
+    texts = obmer.plan_height_texts(SCENE, PROFILE)
+    chains = obmer.plan_dimension_chains(SCENE, PROFILE)
+    obstacles = obmer.label_obstacles(SCENE, PROFILE, texts, chains)
+    labels = {l["opening"]: l for l in obmer.plan_opening_labels(SCENE, PROFILE, obstacles)}
     text = "".join(r["text"] for r in labels["W1.1"]["runs"])
     assert text == "hокна 1950\nhподокон 690", text
     assert any(r.get("effectSubscript") for r in labels["W1.1"]["runs"])
-    assert labels["W1.1"]["midCoordinate"]["y"] > 0  # into the room, not outside
+    # window: the dot on the outer face of the facade, the leader out of the flat, nothing hit
+    assert labels["W1.1"]["begCoordinate"] == {"x": 2.0, "y": -0.4}, labels["W1.1"]
+    assert labels["W1.1"]["midCoordinate"]["y"] < -0.4
+    assert labels["W1.1"]["cost"] < 30, labels["W1.1"]
+    # door: into the room, clear of the dimension band and the «Н» text
+    assert labels["W2.1"]["midCoordinate"]["x"] < 4.0 and labels["W2.1"]["cost"] < 100, labels["W2.1"]
     assert "".join(r["text"] for r in labels["W2.1"]["runs"]) == "hдвери 2100"
 
 
@@ -74,6 +82,8 @@ class FakeArchicad:
     def tapir(self, command, params=None, timeout=None):
         self.calls.append((command, params))
         self.log.append((command, 0))
+        if command == "GetAttributesByType" and params["attributeType"] == "Surface":
+            return {"attributes": [{"name": "Бетон - Гладкий", "attributeId": {"guid": "S0"}}, {"name": "Краска - Белая", "attributeId": {"guid": "S1"}}]}
         if command == "GetAttributesByType":
             return {"attributes": [{"name": n, "index": i + 10} for i, n in enumerate(set(PROFILE["layers"].values()))]}
         if command == "BuildModelFromScan":
@@ -95,12 +105,16 @@ def test_build_calls():
     report = obmer.build_measured_plan(ac, SCENE, PROFILE, rooms={"R1": {"name": "Кухня", "wet": "kitchen"}})
     names = [c for c, _ in ac.calls]
     assert names[:3] == ["ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
-    assert len(names) < 25, names  # a whole sheet in a couple dozen fast calls, not hundreds of Claude turns
+    assert len(names) < 30, names  # a whole sheet in a couple dozen fast calls, not hundreds of Claude turns
     build = ac.calls[2][1]
     assert build["scene"]["rooms"][0]["name"] == "Кухня"
     assert build["favorites"]["zone"] == "ОБМЕР шаблон Зона"
     labels = next(p for c, p in ac.calls if c == "CreateLabels")["labelsData"]
-    assert labels[0]["favoriteName"] == "ОБМЕР шаблон Выноска" and labels[0]["parentElementId"] == {"guid": "OW"}
+    assert labels[0]["favoriteName"] == "ОБМЕР шаблон Выноска" and "parentElementId" not in labels[0]
+    walls = next(p for c, p in ac.calls if c == "ModifyWalls")["wallsWithDetails"]
+    assert all(w["sideMaterial"]["attributeId"] == {"guid": "S1"} for w in walls)
+    boards = next(p for c, p in ac.calls if c == "SetGDLParametersOfElements")["elementsWithGDLParameters"]
+    assert boards[0]["gdlParameters"] == [{"name": "gs_board_inside", "value": False}]
     assert "UpdateDrawings" in names and not report["errors"], report
 
 

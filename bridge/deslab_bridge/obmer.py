@@ -171,22 +171,124 @@ def _runs(template, values):
     return runs
 
 
-def plan_opening_labels(scene, profile):
-    """One label per window or door: «hокна 1950 / hподокон 690», «hдвери 2100»."""
+def _inside(poly, p):
+    x, y = p
+    hit = False
+    for i, a in enumerate(poly):
+        b = poly[(i + 1) % len(poly)]
+        if (a[1] > y) != (b[1] > y) and x < a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]):
+            hit = not hit
+    return hit
+
+
+def _box_hits(box, other):
+    return box[0] < other[2] and other[0] < box[2] and box[1] < other[3] and other[1] < box[3]
+
+
+def _seg_hits_box(a, b, box, steps=12):
+    return any(box[0] <= a[0] + (b[0] - a[0]) * k / steps <= box[2] and box[1] <= a[1] + (b[1] - a[1]) * k / steps <= box[3]
+               for k in range(steps + 1))
+
+
+def _rect_of_segment(a, b, half):
+    return (min(a[0], b[0]) - half, min(a[1], b[1]) - half, max(a[0], b[0]) + half, max(a[1], b[1]) + half)
+
+
+def label_obstacles(scene, profile, texts=None, chains=None):
+    """Boxes (xmin, ymin, xmax, ymax) the labels must keep clear of: walls, dimension lines with
+    their text band, height texts and zone stamps."""
     cfg = profile["labels"]
-    labels = []
+    walls, dims, marks = [], [], []
     for wall in scene.get("walls", []):
+        a, b = _pt(wall["start"]), _pt(wall["end"])
+        u = _unit(_sub(b, a))
+        if abs(u[0]) > 0.99 or abs(u[1]) > 0.99:  # axis-aligned walls: their exact rectangle
+            walls.append(_rect_of_segment(a, b, float(wall.get("thickness", 0.2)) / 2))
+    for ch in chains or []:
+        pts = [_pt(p) for p in ch["points"]]
+        n = _unit(_sub(_pt(ch["referencePoint"]), pts[0]))
+        d = _pt(ch["direction"])
+        off = _dot(_sub(_pt(ch["referencePoint"]), pts[0]), _left(d))
+        a = _add(pts[0], _mul(_left(d), off))
+        b = _add(pts[-1], _mul(_left(d), off))
+        dims.append(_rect_of_segment(a, b, cfg["dimensionBand"]))
+    for t in texts or []:
+        c = (t["coordinate"]["x"], t["coordinate"]["y"])
+        marks.append((c[0] - 0.45, c[1] - 0.2, c[0] + 0.45, c[1] + 0.2))
+    for room in scene.get("rooms", []):
+        c = polygon_centroid([_pt(p) for p in room["polygon"]])
+        r = cfg["stampRadius"]
+        marks.append((c[0] - r, c[1] - r, c[0] + r, c[1] + r))
+    return {"walls": walls, "dims": dims, "marks": marks}
+
+
+def plan_opening_labels(scene, profile, obstacles=None):
+    """One label per window or door: «hокна 1950 / hподокон 690», «hдвери 2100».
+
+    Placement rule (Игорь, 03.11.2026: a label must not cross dimensions, height marks or walls,
+    and must not wander in a different direction each time):
+    - the dot is on the opening, at its centre on the wall face of the side the label goes to;
+    - windows and balcony doors: the leader goes OUT of the flat, square to the facade;
+      doors: into the room on the side with more free space;
+    - the leader is square to the wall, as short as possible (0.6 to 1.8 m from the face) so that
+      the text clears the walls, the dimension chains, the «Н» texts, the zone stamps and the
+      other labels; only when no square position is free, a 45° leader is tried;
+    - the shelf is horizontal; it runs away from the wall for a vertical wall, and to the right
+      (+x) for a horizontal one, unless that side is taken.
+    """
+    cfg = profile["labels"]
+    obstacles = obstacles or {"walls": [], "dims": [], "marks": []}
+    rooms = [[_pt(p) for p in r["polygon"]] for r in scene.get("rooms", [])]
+    placed = []
+    labels = []
+    line_h = cfg["textHeight"] * cfg["lineSpacing"]
+    for wall in scene.get("walls", []):
+        half_t = float(wall.get("thickness", 0.2)) / 2
         for o, c, _, _, u, n in _opening_points(wall):
             window = o["kind"] in ("window", "balconyDoor")
             values = {"height_mm": _mm(o["height"]), "sill_mm": _mm(o.get("sill", 0))}
-            template = cfg["window"] if window and float(o.get("sill", 0)) > 0.05 else cfg["door"]
-            if window and float(o.get("sill", 0)) <= 0.05:
+            if window and float(o.get("sill", 0)) > 0.05:
+                template = cfg["window"]
+            elif window:
                 template = [["h", ""], ["окна", "sub"], [" {height_mm}", ""]]
-            off = cfg["offset"] + float(wall.get("thickness", 0.2)) / 2
-            mid = _add(c, _mul(n, off))
-            labels.append({"opening": o["id"], "wall": wall["id"], "runs": _runs(template, values),
-                           "begCoordinate": _xy(c), "midCoordinate": _xy(mid),
-                           "endCoordinate": _xy(_add(mid, (cfg["shelf"], 0.0)))})
+            else:
+                template = cfg["door"]
+            runs = _runs(template, values)
+            lines = "".join(r["text"] for r in runs).split("\n")
+            width = max(len(l) for l in lines) * cfg["textHeight"] * cfg["charWidth"] + 0.1
+            height = len(lines) * line_h
+            # which side of the wall is inside the flat
+            probe = _add(c, _mul(n, half_t + 0.15))
+            n_in = n if any(_inside(r, probe) for r in rooms) else _mul(n, -1)
+            if window:
+                sides = [_mul(n_in, -1), n_in]
+            else:
+                sides = [n_in, _mul(n_in, -1)]
+            best = None
+            for side_rank, side in enumerate(sides):
+                dot = _add(c, _mul(side, half_t))
+                for lean in (0.0, 1.0, -1.0):
+                    lead_dir = _unit(_add(side, _mul(u, lean)))
+                    for length in cfg["leaderLengths"]:
+                        mid = _add(dot, _mul(lead_dir, length + (0 if lean == 0 else 0.0)))
+                        vertical_wall = abs(u[1]) > abs(u[0])
+                        prefer = (1.0 if side[0] >= 0 else -1.0) if vertical_wall else 1.0
+                        for shelf in (prefer, -prefer):
+                            x0 = mid[0] if shelf > 0 else mid[0] - width
+                            box = (x0, mid[1], x0 + width, mid[1] + height)
+                            cost = side_rank * 30 + abs(lean) * 15 + length * 2 + (0 if shelf == prefer else 3)
+                            cost += 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
+                            cost += 100 * sum(_box_hits(box, d) for d in obstacles["dims"])
+                            cost += 100 * sum(_box_hits(box, m) for m in obstacles["marks"] + placed)
+                            cost += 8 * sum(_seg_hits_box(dot, mid, d) for d in obstacles["dims"])
+                            cost += 8 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, m) for m in obstacles["marks"] + placed)
+                            if best is None or cost < best[0]:
+                                best = (cost, dot, mid, shelf, box)
+            cost, dot, mid, shelf, box = best
+            placed.append(box)
+            labels.append({"opening": o["id"], "wall": wall["id"], "runs": runs, "cost": round(cost, 1),
+                           "begCoordinate": _xy(dot), "midCoordinate": _xy(mid),
+                           "endCoordinate": _xy(_add(mid, (shelf * width, 0.0)))})
     return labels
 
 
@@ -276,6 +378,20 @@ class Report:
         return {"seconds": round(sum(s["seconds"] for s in self.steps), 2), "steps": self.steps, "errors": self.errors}
 
 
+def find_surface(ac, rule):
+    """A surface by its exact name, else the first whose name contains one of rule["like"]."""
+    if not rule:
+        return None
+    surfaces = ac.tapir("GetAttributesByType", {"attributeType": "Surface"}).get("attributes", [])
+    if rule.get("name"):
+        return next((a for a in surfaces if a.get("name") == rule["name"]), None)
+    for part in rule.get("like", []):
+        for a in surfaces:
+            if part in a.get("name", "").lower():
+                return a
+    return None
+
+
 def layer_indices(ac, names):
     result = ac.tapir("GetAttributesByType", {"attributeType": "Layer"})
     by_name = {a["name"]: a["index"] for a in result.get("attributes", []) if "name" in a}
@@ -331,7 +447,8 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     report.errors += model.get("errors", [])
     wall_guid = {w["id"]: _guid(w) for w in model.get("walls", [])}
     opening_guid = {o["id"]: _guid(o) for o in model.get("windows", []) + model.get("doors", [])}
-    zone_guids = [_guid(z) for z in model.get("zones", [])]
+    zone_guid = {z["id"]: _guid(z) for z in model.get("zones", [])}
+    zone_guids = list(zone_guid.values())
     report.step("модель", walls=len(wall_guid), openings=len(opening_guid), zones=len(zone_guids))
 
     partitions = [wall_guid[w["id"]] for w in scene.get("walls", []) if is_partition(w, profile) and w["id"] in wall_guid]
@@ -339,6 +456,33 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     if zone_guids:
         ac.tapir("UnlockElements", {"elements": _elements(zone_guids)})
     report.step("слои стен, зоны разблокированы", partitions=len(partitions))
+
+    # Zone stamps in the middle of the room (the «Н» text goes under them).
+    if profile["zone"].get("stampAtCentre") and zone_guid:
+        items = []
+        for room in scene.get("rooms", []):
+            if room["id"] in zone_guid:
+                c = polygon_centroid([_pt(p) for p in room["polygon"]])
+                items.append({"elementId": {"guid": zone_guid[room["id"]]},
+                              "details": {"typeSpecificDetails": {"stampPosition": _xy(c)}}})
+        ac.tapir("SetDetailsOfElements", {"elementsWithDetails": items})
+
+    # Walls painted on every side and on the ends with one plain surface (no grey concrete in 3D).
+    surface = find_surface(ac, profile["walls"].get("surface"))
+    if surface and wall_guid:
+        paint = {"overridden": True, "attributeId": surface["attributeId"]}
+        ac.tapir("ModifyWalls", {"wallsWithDetails": [
+            {"elementId": {"guid": g}, "referenceMaterial": paint, "oppositeMaterial": paint, "sideMaterial": paint,
+             "inheritEndSurface": False} for g in wall_guid.values()]})
+    elif wall_guid:
+        report.errors.append("Покрытие-краска для стен не найдено: стены остались в покрытии материала.")
+
+    # No inner window board (sill) in a concrete flat.
+    windows = [_guid(w) for w in model.get("windows", [])]
+    if windows and profile["openings"].get("innerBoard") is False:
+        ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": [
+            {"elementId": {"guid": g}, "gdlParameters": [{"name": "gs_board_inside", "value": False}]} for g in windows]})
+    report.step("штампы зон, покраска стен, без подоконников", surface=(surface or {}).get("name"))
 
     # 2. Height texts under the zone stamps.
     texts = plan_height_texts(scene, profile)
@@ -350,8 +494,9 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
         ac.tapir("UnlockElements", {"elements": _elements([g for g in guids if g])})
     report.step("тексты Н", count=len(texts))
 
-    # 3. Opening labels.
-    labels = plan_opening_labels(scene, profile)
+    # 3. Opening labels, clear of walls, dimension chains, «Н» texts, stamps and each other.
+    chains = plan_dimension_chains(scene, profile)
+    labels = plan_opening_labels(scene, profile, label_obstacles(scene, profile, texts, chains))
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}
@@ -360,8 +505,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
         else:  # rules: no blue fill, frame or bold when the favorite is missing
             item["style"] = {"bold": False, "usedContour": False, "usedFill": False}
             item["leaderLine"] = {"framed": False}
-        if lab["opening"] in opening_guid:
-            item["parentElementId"] = {"guid": opening_guid[lab["opening"]]}
+        # Not associative: an associative label moves its dot to the element's own anchor.
         data.append(item)
     if data:
         guids = _created(ac.tapir("CreateLabels", {"labelsData": data}), "elements", report, "Выноска")
@@ -371,7 +515,6 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     report.step("выноски проёмов", count=len(data))
 
     # 4. Dimension chains: hotspots at the points, dimensions on the hotspots.
-    chains = plan_dimension_chains(scene, profile)
     points = [p for ch in chains for p in ch["points"]]
     dim_guids = []
     if points:

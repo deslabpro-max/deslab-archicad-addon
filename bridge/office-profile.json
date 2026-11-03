@@ -24,30 +24,108 @@
   },
   "walls": {
     "partitionMaxThickness": 0.16,
-    "material": "Бетон - Конструкционный"
+    "material": "Бетон - Конструкционный",
+    "surface": {
+      "name": null,
+      "comment": "Игорь 03.11.2026: стены в 3D со всех сторон и с торцов одна однотонная краска, бетон не показываем",
+      "like": [
+        "краска - бел",
+        "краска бел",
+        "краска",
+        "штукатурка - бел",
+        "paint - white",
+        "paint"
+      ]
+    }
   },
   "zone": {
     "heightTextFormat": "Н {height_mm}",
     "heightTextOffset": -0.55,
-    "defaultName": "Помещение"
+    "defaultName": "Помещение",
+    "stampAtCentre": true
   },
   "labels": {
-    "window": [["h", ""], ["окна", "sub"], [" {height_mm}\n", ""], ["h", ""], ["подокон", "sub"], [" {sill_mm}", ""]],
-    "door": [["h", ""], ["двери", "sub"], [" {height_mm}", ""]],
-    "offset": 0.7,
-    "shelf": 0.9
+    "window": [
+      [
+        "h",
+        ""
+      ],
+      [
+        "окна",
+        "sub"
+      ],
+      [
+        " {height_mm}\n",
+        ""
+      ],
+      [
+        "h",
+        ""
+      ],
+      [
+        "подокон",
+        "sub"
+      ],
+      [
+        " {sill_mm}",
+        ""
+      ]
+    ],
+    "door": [
+      [
+        "h",
+        ""
+      ],
+      [
+        "двери",
+        "sub"
+      ],
+      [
+        " {height_mm}",
+        ""
+      ]
+    ],
+    "textHeight": 0.125,
+    "lineSpacing": 1.6,
+    "charWidth": 0.62,
+    "leaderLengths": [
+      0.6,
+      0.9,
+      1.2,
+      1.5,
+      1.8
+    ],
+    "dimensionBand": 0.18,
+    "stampRadius": 0.35
   },
   "dimensions": {
     "offsetFromFace": 0.35,
     "minEdge": 0.3
   },
   "wet": {
-    "bathroom": {"foreground": {"red": 0.55, "green": 0.8, "blue": 0.95}},
-    "kitchen": {"foreground": {"red": 0.6, "green": 0.88, "blue": 0.6}},
-    "legend": {"bathroom": "Мокрая зона санузла", "kitchen": "Мокрая зона кухни"}
+    "bathroom": {
+      "foreground": {
+        "red": 0.55,
+        "green": 0.8,
+        "blue": 0.95
+      }
+    },
+    "kitchen": {
+      "foreground": {
+        "red": 0.6,
+        "green": 0.88,
+        "blue": 0.6
+      }
+    },
+    "legend": {
+      "bathroom": "Мокрая зона санузла",
+      "kitchen": "Мокрая зона кухни"
+    }
   },
   "openings": {
     "doubleSashMinWidth": 1.0,
-    "interiorDoorHeight": 2.1
+    "interiorDoorHeight": 2.1,
+    "innerBoard": false,
+    "comment": "Игорь 03.11.2026: подоконник в бетонной квартире не ставим; если ставим, только белый пластик"
   }
 }

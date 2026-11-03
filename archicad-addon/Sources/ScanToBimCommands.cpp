@@ -581,7 +581,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             collect (CreateWindowsCommand ().Execute (windowParameters, processControl), windowIds, windowList, "Window", true);
         }
         // deslab: unless a window favorite brings its own look, windows sit back from the facade
-        // (outer reveal), have white plastic frames and sashes, handles, an outer sill and an
+        // (outer reveal), have white plastic frames and sashes, handles and an outer sill, but no
         // inner board; a balcony door has no sills
         const GS::UniString windowSurfaceName = GetString (parameters, "windowSurface");
         const bool defaultLook = GetString (favorites, "window").IsEmpty ();
@@ -616,7 +616,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     const bool balconyDoor = window.second;
                     values (GS::ObjectState ("name", GS::UniString ("gs_window_handle"), "value", true));
                     values (GS::ObjectState ("name", GS::UniString ("gs_sill_outside"), "value", !balconyDoor));
-                    values (GS::ObjectState ("name", GS::UniString ("gs_board_inside"), "value", !balconyDoor));
+                    values (GS::ObjectState ("name", GS::UniString ("gs_board_inside"), "value", false)); // deslab: no inner board in a concrete flat (Игорь, 03.11.2026)
                 }
                 elements (element);
             }
