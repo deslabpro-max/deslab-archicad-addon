@@ -596,7 +596,9 @@ def _redo_endless_labels(ac, data, guids, report, max_mm=50.0):
     drawn as an endless shelf (runs 7b and the label test). Such a label is deleted and made
     again once; a normal block is 15-18 mm on paper."""
     def broken(i, d):
-        if (_find_key(d, "boxWidth") or 0) > max_mm:
+        width = _find_key(d, "boxWidth")
+        # an endless shelf (hundreds of mm) or no text drawn at all (0 mm, run 8b)
+        if width is not None and not (5.0 < width < max_mm):
             return True
         mid = _find_key(d, "midCoordinate")
         sent = data[i]["midCoordinate"]
@@ -605,7 +607,7 @@ def _redo_endless_labels(ac, data, guids, report, max_mm=50.0):
 
     guids = list(guids)
     redone = 0
-    for attempt in range(3):
+    for attempt in range(4):
         live = [(i, g) for i, g in enumerate(guids) if g]
         if not live:
             break
@@ -616,8 +618,8 @@ def _redo_endless_labels(ac, data, guids, report, max_mm=50.0):
         bad = [i for (i, _), d in zip(live, details) if broken(i, d)]
         if not bad:
             break
-        if attempt == 2:
-            report.errors.append(f"Выноска с бесконечной полкой осталась после двух попыток ({len(bad)}): удалить и поставить вручную")
+        if attempt == 3:
+            report.errors.append(f"Сломанная выноска (без текста или с бесконечной полкой) осталась после трёх попыток ({len(bad)}): удалить и поставить вручную")
             break
         ac.tapir("DeleteElements", {"elements": _elements([guids[i] for i in bad])})
         again = _created(ac.tapir("CreateLabels", {"labelsData": [data[i] for i in bad]}), "elements", report, "Выноска")
@@ -625,7 +627,7 @@ def _redo_endless_labels(ac, data, guids, report, max_mm=50.0):
             guids[i] = g
         redone += len(bad)
     if redone:
-        report.steps.append({"step": "выноски с бесконечной полкой пересозданы", "seconds": 0, "count": redone})
+        report.steps.append({"step": "сломанные выноски пересозданы", "seconds": 0, "count": redone})
     return guids
 
 
