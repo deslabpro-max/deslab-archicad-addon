@@ -1,0 +1,52 @@
+{
+  "format": "deslab.profile/1",
+  "name": "deslab, шаблон «Антон Крючков.pln», обмерный план",
+  "comment": "Правила черчения в коде. Источник: Архикад\\правила-черчения.md и template-notes.md. Новое замечание Игоря = правка здесь.",
+  "layers": {
+    "bearingWalls": "000 СТЕНЫ НЕСУЩИЕ",
+    "partitions": "001 Обмерный план ПЕРЕГОРОДКИ",
+    "zones": "001 Обмерный план ЗОНЫ",
+    "labels": "001 Обмерный план ВЫНОСКИ",
+    "dimensions": "001 Обмерный план РАЗМЕРЫ",
+    "wetZones": "001 Обмерный план ЗОНЫ"
+  },
+  "favorites": {
+    "zone": "ОБМЕР шаблон Зона",
+    "heightText": "ОБМЕР шаблон Текст Н",
+    "label": "ОБМЕР шаблон Выноска",
+    "dimension": "ОБМЕР шаблон Размер",
+    "wall": null,
+    "window": null,
+    "door": null,
+    "wetBathroom": null,
+    "wetKitchen": null
+  },
+  "walls": {
+    "partitionMaxThickness": 0.16,
+    "material": "Бетон - Конструкционный"
+  },
+  "zone": {
+    "heightTextFormat": "Н {height_mm}",
+    "heightTextOffset": -0.55,
+    "defaultName": "Помещение"
+  },
+  "labels": {
+    "window": [["h", ""], ["окна", "sub"], [" {height_mm}\n", ""], ["h", ""], ["подокон", "sub"], [" {sill_mm}", ""]],
+    "door": [["h", ""], ["двери", "sub"], [" {height_mm}", ""]],
+    "offset": 0.7,
+    "shelf": 0.9
+  },
+  "dimensions": {
+    "offsetFromFace": 0.35,
+    "minEdge": 0.3
+  },
+  "wet": {
+    "bathroom": {"foreground": {"red": 0.55, "green": 0.8, "blue": 0.95}},
+    "kitchen": {"foreground": {"red": 0.6, "green": 0.88, "blue": 0.6}},
+    "legend": {"bathroom": "Мокрая зона санузла", "kitchen": "Мокрая зона кухни"}
+  },
+  "openings": {
+    "doubleSashMinWidth": 1.0,
+    "interiorDoorHeight": 2.1
+  }
+}
