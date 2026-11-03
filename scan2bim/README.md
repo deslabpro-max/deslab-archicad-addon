@@ -38,7 +38,9 @@ in a niche, rotated 7°).
    material behind the face decides: the floor (doorway, door leaf, balcony door) or a sill board
    (window, sill height). A balcony block comes out as a door and a window. A glass plane at
    least 0.2 m deep in the opening down to the floor (French window, glazed facade) makes it a
-   `balconyDoor`: a window without sill boards.
+   `balconyDoor`: a window without sill boards. A recess up to the ceiling (lintel under
+   0.3 m) with the other face of the wall whole behind it is a niche, not a doorway: no
+   opening, and the wall stays closed there.
 7. No jogs: a wall continuing a longer parallel wall end to end, off its line by less than half
    the thickness, goes onto that line (a one-sided wall takes the measured thickness). A step of
    0.3 m or more on the room side (a shaft box, a pier) stays: the one-sided piece keeps its face

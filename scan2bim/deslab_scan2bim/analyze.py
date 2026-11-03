@@ -234,7 +234,8 @@ def split_lines(lines):
     """Split the lines again at the gaps that turned out not to be openings."""
     out = []
     for f in lines:
-        cuts = [g for g in f.gaps if not any(o["a"] >= g[0] - 0.1 and o["b"] <= g[1] + 0.1 for o in f.openings)]
+        cuts = [g for g in f.gaps if g not in getattr(f, "closed", [])
+                and not any(o["a"] >= g[0] - 0.1 and o["b"] <= g[1] + 0.1 for o in f.openings)]
         bounds = [f.a] + [v for g in cuts for v in g] + [f.b]
         for a, b in zip(bounds[0::2], bounds[1::2]):
             part = Face(f.axis, f.at((a + b) / 2), a, b, f.side, f.slope, used=[])
@@ -521,9 +522,10 @@ def classify_gaps(lines, pts, floor, ceiling):
     for f in lines:
         f.window_gaps = []
         f.openings = []
+        f.closed = []
         tt = y if f.axis == 0 else x
         cc = x if f.axis == 0 else y
-        for g0, g1 in [piece for g in f.gaps for piece in _open_parts(f, g, lines)]:
+        for g, (g0, g1) in [(g, piece) for g in f.gaps for piece in _open_parts(f, g, lines)]:
             g0, g1 = _refine_gap(f, g0, g1, tt, cc, z, floor)
             width = g1 - g0
             if width < 0.4:
@@ -538,6 +540,11 @@ def classify_gaps(lines, pts, floor, ceiling):
             head = _contiguous_from_top(zs[mid], 0.0, ceiling - floor)
             if head is None or head < 1.5:
                 continue  # no lintel: the face really ends here
+            if head > ceiling - floor - 0.3 and _back_closed(f, lines, g0, g1):
+                # deslab: a recess up to the ceiling (a wardrobe niche) with the other face of
+                # the wall whole behind it is not a doorway: the wall stays closed there
+                f.closed.append(g)
+                continue
             behind = (offs < -0.03) & (zs < head - 0.08)
             edges = np.arange(g0, g1 + 1e-9, 0.05)
             kinds, sills = [], []
@@ -571,6 +578,16 @@ def classify_gaps(lines, pts, floor, ceiling):
                 f.openings.append(o)
                 if kind in ("window", "balconyDoor"):
                     f.window_gaps.append((g0, g1))
+
+
+def _back_closed(f, lines, lo, hi):
+    """deslab: the other face of the wall runs on behind [lo, hi] without a gap of its own."""
+    for q in lines:
+        if (q is not f and q.axis == f.axis and q.side == -f.side
+                and -0.9 <= (q.c - f.c) * f.side <= -0.05 and q.a <= lo + 0.05 and q.b >= hi - 0.05
+                and not any(min(b, hi) - max(a, lo) > 0.2 * (hi - lo) for a, b in q.gaps)):
+            return True
+    return False
 
 
 def _open_parts(f, gap, lines, min_len=0.4):
