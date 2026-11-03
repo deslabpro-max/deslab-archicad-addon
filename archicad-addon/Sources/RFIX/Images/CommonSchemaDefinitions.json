@@ -3928,6 +3928,17 @@
                 "type": "number",
                 "minimum": 0.0
             },
+            "textLeader": {
+                "type": "object",
+                "description": "deslab: put the text of the segment ending at this point on a leader line (beg, mid, end), as the office template does for texts that do not fit.",
+                "properties": {
+                    "beg": { "$ref": "#/Coordinate2D" },
+                    "mid": { "$ref": "#/Coordinate2D" },
+                    "end": { "$ref": "#/Coordinate2D" }
+                },
+                "additionalProperties": false,
+                "required": ["beg", "mid", "end"]
+            },
             "textPosition": {
                 "$ref": "#/Coordinate2D",
                 "description": "deslab: optional fixed position of the text of the segment that ENDS at this witness point (as if moved by hand), given as an offset from the middle of that segment on the dimension line (tested in Archicad 27). Reliable on the last segment of a dimension. Not read for a static (coordinate) point."
@@ -4007,6 +4018,10 @@
             "nodeId": {
                 "type": "number",
                 "description": "Polygon vertex id of the base element, from its memo's vertexIDs, for elements with a polygon."
+            },
+            "note": {
+                "type": "object",
+                "description": "deslab: the text of the segment ending at this point: fixPos, pos, angle, useLeaderLine and, with a leader, leaderBeg/leaderMid/leaderEnd, anchorAtTextEnd, anchorPoint, leaderShape, leaderPen."
             }
         }
     },

@@ -59,6 +59,12 @@ struct AssociativeDimensionPoint {
     // otherwise be pushed past the chain end, onto the wall hatch)
     bool hasTextPosition = false;
     API_Coord textPosition = {0.0, 0.0};
+    // deslab: the text on a leader line, as in the office template (beg at the segment, mid the
+    // elbow, end the shelf end), when the text does not fit between the witness lines
+    bool hasTextLeader = false;
+    API_Coord leaderBeg = {0.0, 0.0};
+    API_Coord leaderMid = {0.0, 0.0};
+    API_Coord leaderEnd = {0.0, 0.0};
 };
 
 enum class SectionAssociativeDimensionPreset {
@@ -722,6 +728,17 @@ GS::Optional<GS::UniString> ParseAssociativeDimensionPoint (const GS::ObjectStat
         point.hasTextPosition = true;
         point.textPosition = Get2DCoordinateFromObjectState (*textPosition);
     }
+    if (const GS::ObjectState* textLeader = pointData.Get ("textLeader")) {  // deslab
+        const GS::ObjectState* beg = textLeader->Get ("beg");
+        const GS::ObjectState* mid = textLeader->Get ("mid");
+        const GS::ObjectState* end = textLeader->Get ("end");
+        if (beg != nullptr && mid != nullptr && end != nullptr) {
+            point.hasTextLeader = true;
+            point.leaderBeg = Get2DCoordinateFromObjectState (*beg);
+            point.leaderMid = Get2DCoordinateFromObjectState (*mid);
+            point.leaderEnd = Get2DCoordinateFromObjectState (*end);
+        }
+    }
 
     Int32 special = 0;
     if (pointData.Get ("special", special)) {
@@ -792,6 +809,15 @@ GS::Optional<GS::UniString> PopulateAssociativeDimensionMemo (
                 angle += 3.14159265358979;
             }
             dimElem.note.noteAngle = angle;
+        }
+        if (point.hasTextLeader) {  // deslab: the leader decides pos and angle itself (API docs)
+            dimElem.note.fixPos = true;
+            dimElem.note.useLeaderLine = true;
+            dimElem.note.begC = point.leaderBeg;
+            dimElem.note.midC = point.leaderMid;
+            dimElem.note.endC = point.leaderEnd;
+            dimElem.note.leaderShape = API_Segmented;
+            dimElem.note.anchorPoint = APILbl_Underlined;
         }
         dimElem.witnessVal = element.dimension.defWitnessVal;
         dimElem.witnessForm = element.dimension.defWitnessForm;
@@ -7468,6 +7494,24 @@ GS::ObjectState GetDimensionDataCommand::Execute (const GS::ObjectState& paramet
                 witnessPoint.Add ("nodeType", static_cast<Int32> (dimElem.base.base.node_typ));
                 witnessPoint.Add ("nodeStatus", static_cast<Int32> (dimElem.base.base.node_status));
                 witnessPoint.Add ("nodeId", static_cast<Int64> (dimElem.base.base.node_id));
+
+                // deslab: the text this witness point carries (where it is, fixed by hand or not,
+                // on a leader line or not), to copy how the office template places short texts
+                GS::ObjectState note;
+                note.Add ("fixPos", dimElem.note.fixPos);
+                note.Add ("pos", Create2DCoordinateObjectState (dimElem.note.pos));
+                note.Add ("angle", dimElem.note.noteAngle);
+                note.Add ("useLeaderLine", dimElem.note.useLeaderLine);
+                if (dimElem.note.useLeaderLine) {
+                    note.Add ("leaderBeg", Create2DCoordinateObjectState (dimElem.note.begC));
+                    note.Add ("leaderMid", Create2DCoordinateObjectState (dimElem.note.midC));
+                    note.Add ("leaderEnd", Create2DCoordinateObjectState (dimElem.note.endC));
+                    note.Add ("anchorAtTextEnd", dimElem.note.anchorAtTextEnd);
+                    note.Add ("anchorPoint", static_cast<Int32> (dimElem.note.anchorPoint));
+                    note.Add ("leaderShape", static_cast<Int32> (dimElem.note.leaderShape));
+                    note.Add ("leaderPen", static_cast<Int32> (dimElem.note.leaderPen));
+                }
+                witnessPoint.Add ("note", note);
 
                 const API_Guid& baseGuid = dimElem.base.base.guid;
                 if (baseGuid != APINULLGuid) {
