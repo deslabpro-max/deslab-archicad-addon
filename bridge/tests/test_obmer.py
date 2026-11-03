@@ -102,6 +102,17 @@ def test_door_labels_stay_inside():
     assert labels["W2.1"]["midCoordinate"]["x"] < 4.05, labels["W2.1"]
 
 
+def test_short_segment_text_is_placed():
+    # a door 0.25 m from the corner: the 250 text gets a fixed spot over its segment, inside the room
+    import copy
+    scene = copy.deepcopy(SCENE)
+    scene["walls"][1]["openings"][0]["centerOffset"] = 0.65  # door 0.25 .. 1.05 on the east wall
+    east = [c for c in obmer.plan_dimension_chains(scene, PROFILE) if c["edges"] == [1]][0]
+    tp = east["textPositions"]
+    assert list(tp) == [1], tp
+    assert abs(tp[1]["y"] - 0.125) < 1e-6 and tp[1]["x"] < east["referencePoint"]["x"], (tp, east)
+
+
 def test_partitions_and_overrides():
     scene = obmer.apply_room_overrides(dict(SCENE, rooms=[dict(SCENE["rooms"][0])]), {"R1": {"name": "Санузел", "wet": "bathroom"}})
     assert scene["rooms"][0]["name"] == "Санузел"

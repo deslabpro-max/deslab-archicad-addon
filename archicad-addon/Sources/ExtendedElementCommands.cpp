@@ -55,6 +55,10 @@ struct AssociativeDimensionPoint {
     short nodeType = 0;
     short nodeStatus = 0;
     UInt32 nodeId = 0;
+    // deslab: where the text this witness point carries is put (a short segment's text would
+    // otherwise be pushed past the chain end, onto the wall hatch)
+    bool hasTextPosition = false;
+    API_Coord textPosition = {0.0, 0.0};
 };
 
 enum class SectionAssociativeDimensionPreset {
@@ -714,6 +718,10 @@ GS::Optional<GS::UniString> ParseAssociativeDimensionPoint (const GS::ObjectStat
 
     pointData.Get ("line", point.line);
     pointData.Get ("inIndex", point.inIndex);
+    if (const GS::ObjectState* textPosition = pointData.Get ("textPosition")) {  // deslab
+        point.hasTextPosition = true;
+        point.textPosition = Get2DCoordinateFromObjectState (*textPosition);
+    }
 
     Int32 special = 0;
     if (pointData.Get ("special", special)) {
@@ -772,6 +780,10 @@ GS::Optional<GS::UniString> PopulateAssociativeDimensionMemo (
             dimElem.base.loc = point.coordinate;
         }
         dimElem.note = element.dimension.defNote;
+        if (point.hasTextPosition) {  // deslab: a fixed text position, as if moved by hand
+            dimElem.note.pos = point.textPosition;
+            dimElem.note.fixPos = true;
+        }
         dimElem.witnessVal = element.dimension.defWitnessVal;
         dimElem.witnessForm = element.dimension.defWitnessForm;
     }

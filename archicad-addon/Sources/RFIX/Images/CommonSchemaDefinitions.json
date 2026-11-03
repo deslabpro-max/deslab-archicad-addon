@@ -3927,6 +3927,10 @@
             "nodeId": {
                 "type": "number",
                 "minimum": 0.0
+            },
+            "textPosition": {
+                "$ref": "#/Coordinate2D",
+                "description": "deslab: optional fixed position of the dimension text this witness point carries (as if moved by hand). For a short segment whose text Archicad would push past the end of the chain."
             }
         },
         "additionalProperties": false

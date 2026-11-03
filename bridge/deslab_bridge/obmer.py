@@ -471,6 +471,19 @@ def plan_dimension_chains(scene, profile):
         for c2 in chains[i + 1:]:
             if _chain_conflict(c1, c2, band):
                 c1.setdefault("conflict", []).append(c2["edge"])
+    # deslab: the text of a short segment (a pier of 0.25 m) does not fit between its witness
+    # lines; Archicad pushes it past the chain end, onto the wall hatch (runs 7-8). It is put
+    # over the middle of its segment, a little further into the room, at a fixed position.
+    short = cfg.get("shortSegment", 0.45)
+    carrier = 1 if cfg.get("shortTextWitness", "end") == "end" else 0
+    for ch in chains:
+        d, n = _pt(ch["direction"]), _pt(ch["normal"])
+        ref = _pt(ch["referencePoint"])
+        ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
+        for k in range(len(ts) - 1):
+            if abs(ts[k + 1] - ts[k]) < short:
+                pos = _add(_add(ref, _mul(d, (ts[k] + ts[k + 1]) / 2)), _mul(n, cfg.get("shortTextGap", 0.12)))
+                ch.setdefault("textPositions", {})[k + carrier] = _xy(pos)
     return chains
 
 
@@ -785,8 +798,10 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
             if None in ids or len(ids) < 2:
                 report.errors.append(f"Размер {ch['room']}/{ch['edge']}: точки не созданы")
                 continue
+            tp = ch.get("textPositions", {})
             d = {"referencePoint": ch["referencePoint"], "direction": ch["direction"], "floorIndex": floor_index,
-                 "witnessPoints": [{"elementId": {"guid": g}} for g in ids]}
+                 "witnessPoints": [{"elementId": {"guid": g}, **({"textPosition": tp[j]} if j in tp else {})}
+                                   for j, g in enumerate(ids)]}
             if F.get("dimension"):
                 d["favoriteName"] = F["dimension"]
             dims.append(d)
