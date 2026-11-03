@@ -88,6 +88,7 @@
     "textHeight": 0.125,
     "lineSpacing": 1.6,
     "charWidth": 0.62,
+    "lengthCost": 20,
     "leaderLengths": [
       0.6,
       0.9,

@@ -40,10 +40,11 @@ def test_labels():
     text = "".join(r["text"] for r in labels["W1.1"]["runs"])
     assert text == "hокна 1950\nhподокон 690", text
     assert any(r.get("effectSubscript") for r in labels["W1.1"]["runs"])
-    # window: the dot on the outer face of the facade, the leader out of the flat, nothing hit
-    assert labels["W1.1"]["begCoordinate"] == {"x": 2.0, "y": -0.4}, labels["W1.1"]
-    assert labels["W1.1"]["midCoordinate"]["y"] < -0.4
-    assert labels["W1.1"]["cost"] < 30, labels["W1.1"]
+    # window: the dot on the room face, the leader into the room (labels stay inside the flat);
+    # this 4 x 3 m room is too small to clear the «Н» text, but no wall is hit
+    assert labels["W1.1"]["begCoordinate"] == {"x": 2.0, "y": 0.0}, labels["W1.1"]
+    assert labels["W1.1"]["midCoordinate"]["y"] > 0
+    assert labels["W1.1"]["cost"] < 200, labels["W1.1"]
     # door: into the room, clear of the dimension band and the «Н» text
     assert labels["W2.1"]["midCoordinate"]["x"] < 4.0 and labels["W2.1"]["cost"] < 100, labels["W2.1"]
     assert "".join(r["text"] for r in labels["W2.1"]["runs"]) == "hдвери 2100"
@@ -69,6 +70,23 @@ def test_dimension_step_is_one_chain():
     assert south and abs(south[0]["referencePoint"]["y"] - 0.62) < 1e-6, chains
     assert [p["x"] for p in south[0]["points"]] == [0.0, 3.0, 6.0]
     assert len(chains) == 4 and not any(c.get("conflict") for c in chains), chains
+
+
+def test_labels_of_one_wall_in_a_row():
+    # two windows on one long wall of a big room: same leader length, same shelf direction
+    import copy
+    scene = copy.deepcopy(SCENE)
+    scene["walls"][0] = {"id": "W1", "start": {"x": 0, "y": -0.2}, "end": {"x": 9, "y": -0.2}, "thickness": 0.4, "kind": "exterior",
+                         "openings": [{"id": "A", "kind": "window", "centerOffset": 2.0, "width": 1.2, "sill": 0.9, "height": 1.8},
+                                      {"id": "B", "kind": "window", "centerOffset": 6.5, "width": 1.2, "sill": 0.9, "height": 1.8}]}
+    scene["rooms"][0]["polygon"] = [{"x": 0, "y": 0}, {"x": 9, "y": 0}, {"x": 9, "y": 6}, {"x": 0, "y": 6}]
+    texts = obmer.plan_height_texts(scene, PROFILE)
+    chains = obmer.plan_dimension_chains(scene, PROFILE)
+    labels = {l["opening"]: l for l in obmer.plan_opening_labels(scene, PROFILE, obmer.label_obstacles(scene, PROFILE, texts, chains))}
+    a, b = labels["A"], labels["B"]
+    assert a["midCoordinate"]["y"] == b["midCoordinate"]["y"] > 0, (a, b)
+    assert (a["endCoordinate"]["x"] - a["midCoordinate"]["x"]) * (b["endCoordinate"]["x"] - b["midCoordinate"]["x"]) > 0
+    assert a["cost"] < 100, a
 
 
 def test_door_labels_stay_inside():

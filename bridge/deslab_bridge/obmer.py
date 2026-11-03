@@ -198,7 +198,7 @@ def label_obstacles(scene, profile, texts=None, chains=None):
     """Boxes (xmin, ymin, xmax, ymax) the labels must keep clear of: walls, dimension lines with
     their text band, height texts and zone stamps."""
     cfg = profile["labels"]
-    walls, dims, marks = [], [], []
+    walls, dims, marks, dim_dirs = [], [], [], []
     for wall in scene.get("walls", []):
         a, b = _pt(wall["start"]), _pt(wall["end"])
         u = _unit(_sub(b, a))
@@ -206,6 +206,7 @@ def label_obstacles(scene, profile, texts=None, chains=None):
             walls.append(_rect_of_segment(a, b, float(wall.get("thickness", 0.2)) / 2))
     for ch in chains or []:
         a, b = _chain_line(ch)
+        dim_dirs.append(_pt(ch["direction"]))
         dims.append(_rect_of_segment(a, b, cfg["dimensionBand"]))
     for t in texts or []:
         c = (t["coordinate"]["x"], t["coordinate"]["y"])
@@ -214,26 +215,26 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         c = polygon_centroid([_pt(p) for p in room["polygon"]])
         r = cfg["stampRadius"]
         marks.append((c[0] - r, c[1] - r, c[0] + r, c[1] + r))
-    return {"walls": walls, "dims": dims, "marks": marks}
+    return {"walls": walls, "dims": dims, "marks": marks, "dimDirs": dim_dirs}
 
 
 def plan_opening_labels(scene, profile, obstacles=None):
     """One label per window or door: «hокна 1950 / hподокон 690», «hдвери 2100».
 
-    Placement rule (Игорь, 03.11.2026: a label must not cross dimensions, height marks or walls,
-    and must not wander in a different direction each time):
-    - the dot is on the opening, at its centre on the wall face of the side the label goes to;
-    - windows and balcony doors: the leader goes OUT of the flat, square to the facade;
-      doors: into the room on the side with more free space, inside the outline of the flat;
-    - the leader is square to the wall, as short as possible (0.6 to 1.8 m from the face) so that
-      the text clears the walls, the dimension chains, the «Н» texts, the zone stamps and the
-      other labels, and the leader does not cross another wall; only when no square position
-      is free, a 45° leader is tried;
-    - the shelf is horizontal; it runs away from the wall for a vertical wall, and to the right
-      (+x) for a horizontal one, unless that side is taken.
+    Placement rule (Игорь, 03.11.2026, runs 4 and 6):
+    - every label is INSIDE the flat, in the room of its opening (windows too), so the drawing
+      ends at the outline of the flat; between two rooms a door label goes into the larger one;
+    - the dot is on the opening, at its centre on the room face of the wall;
+    - the leader is square to the wall and as short as the free space allows; the text never
+      lies on a wall, a dimension line with its text, a «Н» text, a zone stamp or another label;
+    - all labels of one wall are placed alike (same side, same leader length, same shelf
+      direction), so they stand in one even row; the text lines are left-aligned;
+    - the shelf is horizontal: away from the wall for a vertical wall, to the right (+x) for a
+      horizontal one, unless that side is taken; a 45° leader only when nothing square is free.
     """
     cfg = profile["labels"]
     obstacles = obstacles or {"walls": [], "dims": [], "marks": []}
+    dim_dirs = obstacles.get("dimDirs") or [None] * len(obstacles["dims"])
     rooms = [[_pt(p) for p in r["polygon"]] for r in scene.get("rooms", [])]
     placed = []
     labels = []
@@ -241,67 +242,82 @@ def plan_opening_labels(scene, profile, obstacles=None):
     flat = (min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)) if corners else None
     flat_mid = ((flat[0] + flat[2]) / 2, (flat[1] + flat[3]) / 2) if flat else None
     line_h = cfg["textHeight"] * cfg["lineSpacing"]
+    weight = cfg.get("lengthCost", 20)
+
+    def text_of(o):
+        window = o["kind"] in ("window", "balconyDoor")
+        values = {"height_mm": _mm(o["height"]), "sill_mm": _mm(o.get("sill", 0))}
+        if window and float(o.get("sill", 0)) > 0.05:
+            template = cfg["window"]
+        elif window:
+            template = [["h", ""], ["окна", "sub"], [" {height_mm}", ""]]
+        else:
+            template = cfg["door"]
+        runs = _runs(template, values)
+        lines = "".join(r["text"] for r in runs).split("\n")
+        width = max(len(l) for l in lines) * cfg["textHeight"] * cfg["charWidth"] + 0.1
+        return runs, width, len(lines) * line_h
+
+    def inner_side(c, n, half_t):
+        def room_area(side):
+            p = _add(c, _mul(side, half_t + 0.3))
+            return max([abs(polygon_area(r)) for r in rooms if _inside(r, p)] or [0.0])
+        area_n, area_m = room_area(n), room_area(_mul(n, -1))
+        if area_n or area_m:
+            return n if area_n >= area_m else _mul(n, -1)
+        # an entrance hall without a zone: the side facing the middle of the flat
+        return n if flat_mid and _dot(_sub(flat_mid, c), n) >= 0 else _mul(n, -1)
+
+    def one_cost(dot, mid, lead_dir, box, u, half_t, taken):
+        cost = 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
+        cost += 100 * sum(_box_hits(box, d) for d in obstacles["dims"])
+        cost += 100 * sum(_box_hits(box, m) for m in obstacles["marks"] + taken)
+        for d, dd in zip(obstacles["dims"], dim_dirs):
+            # the chain along the opening's own wall face is crossed by every inner leader
+            if dd is not None and abs(_dot(dd, u)) > 0.99 and _seg_hits_box(dot, _add(dot, _mul(lead_dir, 0.8)), d):
+                continue
+            cost += 40 * _seg_hits_box(dot, mid, d)
+        cost += 100 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, w) for w in obstacles["walls"])
+        cost += 8 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, m) for m in obstacles["marks"] + taken)
+        if flat and not (flat[0] <= box[0] and box[2] <= flat[2] and flat[1] <= box[1] and box[3] <= flat[3]):
+            cost += 60  # off the outline of the flat
+        return cost
+
     for wall in scene.get("walls", []):
         half_t = float(wall.get("thickness", 0.2)) / 2
+        items = []
         for o, c, _, _, u, n in _opening_points(wall):
-            window = o["kind"] in ("window", "balconyDoor")
-            values = {"height_mm": _mm(o["height"]), "sill_mm": _mm(o.get("sill", 0))}
-            if window and float(o.get("sill", 0)) > 0.05:
-                template = cfg["window"]
-            elif window:
-                template = [["h", ""], ["окна", "sub"], [" {height_mm}", ""]]
-            else:
-                template = cfg["door"]
-            runs = _runs(template, values)
-            lines = "".join(r["text"] for r in runs).split("\n")
-            width = max(len(l) for l in lines) * cfg["textHeight"] * cfg["charWidth"] + 0.1
-            height = len(lines) * line_h
-            # which side of the wall is inside the flat
-            # deslab: which side is inside the flat. A probe that lands in no room (an entrance
-            # hall without a zone) falls back to the side facing the middle of the flat.
-            def room_area(side):
-                p = _add(c, _mul(side, half_t + 0.3))
-                return max([abs(polygon_area(r)) for r in rooms if _inside(r, p)] or [0.0])
-            area_n, area_m = room_area(n), room_area(_mul(n, -1))
-            if area_n or area_m:
-                n_in = n if area_n >= area_m else _mul(n, -1)
-            else:
-                n_in = n if flat_mid and _dot(_sub(flat_mid, c), n) >= 0 else _mul(n, -1)
-            if window:
-                sides = [_mul(n_in, -1), n_in]
-            else:
-                # a door label goes into the room; between two rooms, into the larger one
-                sides = [n_in, _mul(n_in, -1)]
-            best = None
-            for side_rank, side in enumerate(sides):
-                dot = _add(c, _mul(side, half_t))
-                for lean in (0.0, 1.0, -1.0):
-                    lead_dir = _unit(_add(side, _mul(u, lean)))
-                    for length in cfg["leaderLengths"]:
-                        mid = _add(dot, _mul(lead_dir, length + (0 if lean == 0 else 0.0)))
-                        vertical_wall = abs(u[1]) > abs(u[0])
-                        prefer = (1.0 if side[0] >= 0 else -1.0) if vertical_wall else 1.0
-                        for shelf in (prefer, -prefer):
+            runs, width, height = text_of(o)
+            items.append((o, c, u, n, runs, width, height))
+        if not items:
+            continue
+        u, n = items[0][2], items[0][3]
+        n_in = inner_side(items[0][1], n, half_t)
+        vertical_wall = abs(u[1]) > abs(u[0])
+        best = None
+        for side_rank, side in enumerate((n_in, _mul(n_in, -1))):
+            prefer = (1.0 if side[0] >= 0 else -1.0) if vertical_wall else 1.0
+            for lean in (0.0, 1.0, -1.0):
+                lead_dir = _unit(_add(side, _mul(u, lean)))
+                for length in cfg["leaderLengths"]:
+                    for shelf in (prefer, -prefer):
+                        total = side_rank * 200 + abs(lean) * 15 + length * weight + (0 if shelf == prefer else 3)
+                        taken = list(placed)
+                        result = []
+                        for o, c, _, _, runs, width, height in items:
+                            dot = _add(c, _mul(side, half_t))
+                            mid = _add(dot, _mul(lead_dir, length))
                             x0 = mid[0] if shelf > 0 else mid[0] - width
                             box = (x0, mid[1], x0 + width, mid[1] + height)
-                            cost = side_rank * 30 + abs(lean) * 15 + length * 2 + (0 if shelf == prefer else 3)
-                            cost += 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
-                            cost += 100 * sum(_box_hits(box, d) for d in obstacles["dims"])
-                            cost += 100 * sum(_box_hits(box, m) for m in obstacles["marks"] + placed)
-                            cost += 40 * sum(_seg_hits_box(dot, mid, d) for d in obstacles["dims"])
-                            # deslab: the leader must not run through another wall
-                            cost += 100 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, half_t + 0.05)), mid, w) for w in obstacles["walls"])
-                            # a door label stays inside the outline of the flat (off the sheet otherwise)
-                            if not window and side_rank:
-                                cost += 60  # a door label never leaves its room
-                            if not window and flat and not (flat[0] <= box[0] and box[2] <= flat[2] and flat[1] <= box[1] and box[3] <= flat[3]):
-                                cost += 50
-                            cost += 8 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, m) for m in obstacles["marks"] + placed)
-                            if best is None or cost < best[0]:
-                                best = (cost, dot, mid, shelf, box)
-            cost, dot, mid, shelf, box = best
+                            total += one_cost(dot, mid, lead_dir, box, u, half_t, taken)
+                            taken.append(box)
+                            result.append((o, runs, dot, mid, shelf, width, box))
+                        if best is None or total < best[0]:
+                            best = (total, result)
+        total, result = best
+        for o, runs, dot, mid, shelf, width, box in result:
             placed.append(box)
-            labels.append({"opening": o["id"], "wall": wall["id"], "runs": runs, "cost": round(cost, 1),
+            labels.append({"opening": o["id"], "wall": wall["id"], "runs": runs, "cost": round(total / len(result), 1),
                            "begCoordinate": _xy(dot), "midCoordinate": _xy(mid),
                            "endCoordinate": _xy(_add(mid, (shelf * width, 0.0)))})
     return labels
@@ -608,7 +624,10 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     # 2. Height texts under the zone stamps.
     texts = plan_height_texts(scene, profile)
     if texts:
+        # deslab: «Н 3312» centred right under the number circle (the stamp is at the same x),
+        # one block with it (Игорь, 03.11.2026)
         data = [{"coordinate": t["coordinate"], "text": t["text"], "floorIndex": floor_index,
+                 "style": {"justification": "Center", "anchor": "MiddleBottom"},
                  **({"favoriteName": F["heightText"]} if F.get("heightText") else {}),
                  **({"layerIndex": idx[L["zones"]]} if idx.get(L["zones"]) else {})} for t in texts]
         guids = _created(ac.tapir("CreateTexts", {"textsData": data}), "elements", report, "Текст Н")
@@ -621,10 +640,12 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}
+        # deslab: the lines of a label start at one edge (Игорь: «hокна» and «hподокон» even)
+        item["style"] = {"justification": "Left"}
         if F.get("label"):
             item["favoriteName"] = F["label"]
         else:  # rules: no blue fill, frame or bold when the favorite is missing
-            item["style"] = {"bold": False, "usedContour": False, "usedFill": False}
+            item["style"].update({"bold": False, "usedContour": False, "usedFill": False})
             item["leaderLine"] = {"framed": False}
         # Not associative: an associative label moves its dot to the element's own anchor.
         data.append(item)
