@@ -296,12 +296,14 @@ def plan_opening_labels(scene, profile, obstacles=None):
         vertical_wall = abs(u[1]) > abs(u[0])
         best = None
         for side_rank, side in enumerate((n_in, _mul(n_in, -1))):
-            prefer = (1.0 if side[0] >= 0 else -1.0) if vertical_wall else 1.0
+            # deslab: Archicad sets the text to the left of the shelf end (run 7): a shelf to the
+            # left would put the text beyond it, onto the wall. Shelves always run to the right.
+            prefer = 1.0
             for lean in (0.0, 1.0, -1.0):
                 lead_dir = _unit(_add(side, _mul(u, lean)))
                 for length in cfg["leaderLengths"]:
-                    for shelf in (prefer, -prefer):
-                        total = side_rank * 200 + abs(lean) * 15 + length * weight + (0 if shelf == prefer else 3)
+                    for shelf in (prefer,):
+                        total = side_rank * 200 + abs(lean) * 15 + length * weight
                         taken = list(placed)
                         result = []
                         for o, c, _, _, runs, width, height in items:
@@ -535,6 +537,38 @@ def layer_indices(ac, names):
     return {n: by_name.get(n) for n in names}
 
 
+def open_layers(ac, names, report):
+    """deslab: Archicad refuses changes on a hidden or locked layer, and that depends on the view
+    open at the moment (run 7 opened in «22. Развертки кухни»: the zone stamps were not moved).
+    The bridge's layers are shown and unlocked for the build. Returns the flags to put back."""
+    attrs = ac.tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", [])
+    ids = [a for a in attrs if a.get("name") in names and a.get("attributeId")]
+    if not ids:
+        return []
+    info = ac.tapir("GetLayers", {"attributeIds": [{"attributeId": a["attributeId"]} for a in ids]}).get("layers", [])
+    closed = [l for l in info if l.get("isHidden") or l.get("isLocked")]
+    if closed:
+        ac.tapir("CreateLayers", {"overwriteExisting": True, "layerDataArray": [
+            {"attributeId": l["attributeId"], "name": l["name"], "isHidden": False, "isLocked": False} for l in closed]})
+        report.steps.append({"step": "слои открыты на время построения", "seconds": 0,
+                             "layers": [l["name"] for l in closed]})
+    return closed
+
+
+def restore_layers(ac, closed):
+    if closed:
+        ac.tapir("CreateLayers", {"overwriteExisting": True, "layerDataArray": [
+            {"attributeId": l["attributeId"], "name": l["name"], "isHidden": bool(l.get("isHidden")),
+             "isLocked": bool(l.get("isLocked"))} for l in closed]})
+
+
+def _check_details(response, report, what):
+    """SetDetailsOfElements answers per element; a refused one goes into the report."""
+    bad = [r for r in (response or {}).get("executionResults", []) if not r.get("success", True)]
+    if bad:
+        report.errors.append(f"{what}: не применено к {len(bad)} элементам ({bad[0].get('error', {}).get('message', '')})")
+
+
 def set_layer(ac, guids, index, report, what):
     guids = [g for g in guids if g]
     if not guids or not index:
@@ -554,8 +588,24 @@ def analyze_scan(ac, e57_path, **helper_options):
 
 
 def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_index=0, import_favorites=True):
-    """Builds the model and the measured-plan drafting from a scene. Returns a report dict."""
+    """Builds the model and the measured-plan drafting from a scene. Returns a report dict.
+
+    The bridge's layers are shown and unlocked during the build, whatever view is open, and
+    put back as they were afterwards."""
     profile = profile or load_profile()
+    if not ac.alive():
+        raise RuntimeError("Archicad не отвечает. Откройте проект (копию шаблона) и закройте открытые диалоги.")
+    opened = Report()
+    closed = open_layers(ac, set(profile["layers"].values()), opened)
+    try:
+        out = _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_favorites)
+    finally:
+        restore_layers(ac, closed)
+    out["steps"] = opened.steps + out["steps"]
+    return out
+
+
+def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_favorites):
     if scene.get("format") != SCENE_FORMAT:
         raise ValueError(f"Задание не в формате {SCENE_FORMAT}")
     scene = shift_scene(apply_room_overrides(json.loads(json.dumps(scene)), rooms), origin)
@@ -602,7 +652,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
                 c = polygon_centroid([_pt(p) for p in room["polygon"]])
                 items.append({"elementId": {"guid": zone_guid[room["id"]]},
                               "details": {"typeSpecificDetails": {"stampPosition": _xy(c)}}})
-        ac.tapir("SetDetailsOfElements", {"elementsWithDetails": items})
+        _check_details(ac.tapir("SetDetailsOfElements", {"elementsWithDetails": items}), report, "Штамп зоны в центр")
 
     # Walls painted on every side and on the ends with one plain surface (no grey concrete in 3D).
     surface = find_surface(ac, profile["walls"].get("surface"))

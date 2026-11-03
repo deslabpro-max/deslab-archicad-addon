@@ -127,7 +127,11 @@ class FakeArchicad:
         if command == "GetAttributesByType" and params["attributeType"] == "Surface":
             return {"attributes": [{"name": "Бетон - Гладкий", "attributeId": {"guid": "S0"}}, {"name": "Краска - Белая", "attributeId": {"guid": "S1"}}]}
         if command == "GetAttributesByType":
-            return {"attributes": [{"name": n, "index": i + 10} for i, n in enumerate(set(PROFILE["layers"].values()))]}
+            return {"attributes": [{"name": n, "index": i + 10, "attributeId": {"guid": f"L{i}"}}
+                                   for i, n in enumerate(sorted(set(PROFILE["layers"].values())))]}
+        if command == "GetLayers":  # the open view hides the first layer
+            return {"layers": [{"attributeId": a["attributeId"], "name": "слой", "isHidden": a["attributeId"]["guid"] == "L0", "isLocked": False}
+                               for a in params["attributeIds"]]}
         if command == "BuildModelFromScan":
             s = params["scene"]
             return {"walls": [{"id": w["id"], "elementId": {"guid": "W" + w["id"]}} for w in s["walls"]],
@@ -146,9 +150,12 @@ def test_build_calls():
     ac = FakeArchicad()
     report = obmer.build_measured_plan(ac, SCENE, PROFILE, rooms={"R1": {"name": "Кухня", "wet": "kitchen"}})
     names = [c for c, _ in ac.calls]
-    assert names[:3] == ["ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
+    # a layer hidden in the open view is shown for the build and hidden again at the end
+    assert names[:6] == ["GetAttributesByType", "GetLayers", "CreateLayers", "ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
+    assert names[-1] == "CreateLayers" and ac.calls[-1][1]["layerDataArray"][0]["isHidden"] is True
+    assert ac.calls[2][1]["layerDataArray"] == [{"attributeId": {"guid": "L0"}, "name": "слой", "isHidden": False, "isLocked": False}]
     assert len(names) < 30, names  # a whole sheet in a couple dozen fast calls, not hundreds of Claude turns
-    build = ac.calls[2][1]
+    build = ac.calls[5][1]
     assert build["scene"]["rooms"][0]["name"] == "Кухня"
     assert build["favorites"]["zone"] == "ОБМЕР шаблон Зона"
     labels = next(p for c, p in ac.calls if c == "CreateLabels")["labelsData"]
@@ -178,7 +185,7 @@ def test_refused_items_are_reported():
             return super().tapir(command, params, timeout)
     ac = Refusing()
     report = obmer.build_measured_plan(ac, SCENE, PROFILE)
-    assert ac.calls[0][0] == "ImportFavorites"
+    assert "ImportFavorites" in [c for c, _ in ac.calls]
     assert any("Выноска" in e and "no favorite" in e for e in report["errors"]), report["errors"]
 
 
