@@ -595,22 +595,37 @@ def _redo_endless_labels(ac, data, guids, report, max_mm=50.0):
     """deslab: now and then Archicad makes a label with a text block hundreds of metres wide,
     drawn as an endless shelf (runs 7b and the label test). Such a label is deleted and made
     again once; a normal block is 15-18 mm on paper."""
-    live = [(i, g) for i, g in enumerate(guids) if g]
-    if not live:
-        return guids
-    try:
-        details = ac.tapir("GetDetailsOfElements", {"elements": _elements([g for _, g in live])}).get("detailsOfElements", [])
-    except Exception:
-        return guids
-    bad = [i for (i, _), d in zip(live, details) if (_find_key(d, "boxWidth") or 0) > max_mm]
-    if not bad:
-        return guids
-    ac.tapir("DeleteElements", {"elements": _elements([guids[i] for i in bad])})
-    again = _created(ac.tapir("CreateLabels", {"labelsData": [data[i] for i in bad]}), "elements", report, "Выноска")
+    def broken(i, d):
+        if (_find_key(d, "boxWidth") or 0) > max_mm:
+            return True
+        mid = _find_key(d, "midCoordinate")
+        sent = data[i]["midCoordinate"]
+        # run 8: a re-made label kept its block but got a mid point 1.5 km away
+        return bool(mid) and abs(mid.get("x", 0) - sent["x"]) + abs(mid.get("y", 0) - sent["y"]) > 0.01
+
     guids = list(guids)
-    for i, g in zip(bad, again):
-        guids[i] = g
-    report.steps.append({"step": "выноски с бесконечной полкой пересозданы", "seconds": 0, "count": len(bad)})
+    redone = 0
+    for attempt in range(3):
+        live = [(i, g) for i, g in enumerate(guids) if g]
+        if not live:
+            break
+        try:
+            details = ac.tapir("GetDetailsOfElements", {"elements": _elements([g for _, g in live])}).get("detailsOfElements", [])
+        except Exception:
+            break
+        bad = [i for (i, _), d in zip(live, details) if broken(i, d)]
+        if not bad:
+            break
+        if attempt == 2:
+            report.errors.append(f"Выноска с бесконечной полкой осталась после двух попыток ({len(bad)}): удалить и поставить вручную")
+            break
+        ac.tapir("DeleteElements", {"elements": _elements([guids[i] for i in bad])})
+        again = _created(ac.tapir("CreateLabels", {"labelsData": [data[i] for i in bad]}), "elements", report, "Выноска")
+        for i, g in zip(bad, again):
+            guids[i] = g
+        redone += len(bad)
+    if redone:
+        report.steps.append({"step": "выноски с бесконечной полкой пересозданы", "seconds": 0, "count": redone})
     return guids
 
 
@@ -735,8 +750,10 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}
-        # deslab: the lines of a label start at one edge (Игорь: «hокна» and «hподокон» even)
-        item["style"] = {"justification": "Left"}
+        # deslab: the lines of a label are aligned at one edge (Игорь: «hокна» and «hподокон»
+        # even). Right, not Left: with Left Archicad now and then makes an endless shelf (label
+        # test and runs 7b/8 of 03.11.2026; Right never did).
+        item["style"] = {"justification": "Right"}
         if F.get("label"):
             item["favoriteName"] = F["label"]
         else:  # rules: no blue fill, frame or bold when the favorite is missing
