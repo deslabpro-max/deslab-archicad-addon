@@ -141,3 +141,8 @@ grasshopper-plugin/src/test.py
 .vscode
 .lck
 /.vs
+
+# deslab: scan2bim helper build output
+scan2bim/dist/
+scan2bim/build/
+*.spec

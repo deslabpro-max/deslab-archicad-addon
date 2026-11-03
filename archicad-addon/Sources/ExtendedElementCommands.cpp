@@ -1101,7 +1101,7 @@ GS::ObjectState ExecuteCreateWithElements (const GS::String& commandName, Func&&
     notification.notifID = APINotifyElement_BeginEvents;
     AddElementNotificationClientCommand::ElementEventHandlerProc (&notification);
 
-    ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
+    const GSErrCode undoErr = ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
         createFunc (results);
         return NoError;
     });
@@ -1110,6 +1110,12 @@ GS::ObjectState ExecuteCreateWithElements (const GS::String& commandName, Func&&
     notification.notifID = APINotifyElement_EndEvents;
     AddElementNotificationClientCommand::ElementEventHandlerProc (&notification);
 
+    // deslab: when Archicad refuses the change (a modal dialog is open or another command runs),
+    // the create function never runs; say so instead of answering with an empty element list.
+    if (undoErr != NoError && results.IsEmpty ()) {
+        return CreateErrorResponse (undoErr,
+            "Archicad refused to change the model. Close any open dialog in Archicad and run the command again.");
+    }
     return CreateElementListResponse (results);
 }
 
@@ -1118,11 +1124,16 @@ GS::ObjectState ExecuteModifyWithResults (const GS::String& commandName, Func&& 
 {
     GS::Array<GS::ObjectState> results;
 
-    ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
+    const GSErrCode undoErr = ACAPI_CallUndoableCommand (commandName, [&]() -> GSErrCode {
         modifyFunc (results);
         return NoError;
     });
 
+    // deslab: see ExecuteCreateWithElements.
+    if (undoErr != NoError && results.IsEmpty ()) {
+        return CreateErrorResponse (undoErr,
+            "Archicad refused to change the model. Close any open dialog in Archicad and run the command again.");
+    }
     return CreateExecutionResultResponse (results);
 }
 
@@ -4649,6 +4660,30 @@ static GSErrCode ApplyWindowOrDoorLibraryPartToDefaults (const GS::ObjectState& 
     err = ACAPI_LibraryPart_GetParams (libPart.index, &a, &b, &addParNum, &addPars);
     if (err != NoError) {
         return err;
+    }
+    // deslab: the raw parameter list of a part is what its master script has not run on yet; the
+    // Archicad 27 windows (the "Window 27" family) compute array parameters there, and an element
+    // placed with the raw list has parameters that can no longer be read or set. The parameter
+    // block of the part as Archicad prepares it for a new element is used instead.
+    {
+        API_ParamOwnerType owner = {};
+        owner.libInd = libPart.index;
+#ifdef ServerMainVers_2600
+        owner.type = element.header.type;
+#else
+        owner.typeID = element.header.typeID;
+#endif
+        owner.guid = APINULLGuid;
+        if (ACAPI_LibraryPart_OpenParameters (&owner) == NoError) {
+            API_GetParamsType prepared = {};
+            if (ACAPI_LibraryPart_GetActParameters (&prepared) == NoError && prepared.params != nullptr) {
+                ACAPI_DisposeAddParHdl (&addPars);
+                addPars = prepared.params;
+                prepared.params = nullptr;
+            }
+            ACAPI_LibraryPart_CloseParameters ();
+            ACAPI_DisposeAddParHdl (&prepared.params);
+        }
     }
     if (memo.params != nullptr) {
         ACAPI_DisposeAddParHdl (&memo.params);
