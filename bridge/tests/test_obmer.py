@@ -94,14 +94,26 @@ def test_build_calls():
     ac = FakeArchicad()
     report = obmer.build_measured_plan(ac, SCENE, PROFILE, rooms={"R1": {"name": "Кухня", "wet": "kitchen"}})
     names = [c for c, _ in ac.calls]
-    assert names[0] == "GetAttributesByType" and names[1] == "BuildModelFromScan"
+    assert names[:3] == ["ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
     assert len(names) < 25, names  # a whole sheet in a couple dozen fast calls, not hundreds of Claude turns
-    build = ac.calls[1][1]
+    build = ac.calls[2][1]
     assert build["scene"]["rooms"][0]["name"] == "Кухня"
     assert build["favorites"]["zone"] == "ОБМЕР шаблон Зона"
     labels = next(p for c, p in ac.calls if c == "CreateLabels")["labelsData"]
     assert labels[0]["favoriteName"] == "ОБМЕР шаблон Выноска" and labels[0]["parentElementId"] == {"guid": "OW"}
     assert "UpdateDrawings" in names and not report["errors"], report
+
+
+def test_refused_items_are_reported():
+    class Refusing(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "CreateLabels":
+                return {"elements": [{"error": {"code": 1, "message": "no favorite with this exact name"}} for _ in params["labelsData"]]}
+            return super().tapir(command, params, timeout)
+    ac = Refusing()
+    report = obmer.build_measured_plan(ac, SCENE, PROFILE)
+    assert ac.calls[0][0] == "ImportFavorites"
+    assert any("Выноска" in e and "no favorite" in e for e in report["errors"]), report["errors"]
 
 
 if __name__ == "__main__":

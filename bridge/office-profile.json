@@ -10,6 +10,7 @@
     "dimensions": "001 Обмерный план РАЗМЕРЫ",
     "wetZones": "001 Обмерный план ЗОНЫ"
   },
+  "favoritesFile": "C:\\Users\\user\\Desktop\\Архикад\\obmer_fav.prefs",
   "favorites": {
     "zone": "ОБМЕР шаблон Зона",
     "heightText": "ОБМЕР шаблон Текст Н",

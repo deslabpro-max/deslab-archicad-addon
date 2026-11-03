@@ -228,10 +228,16 @@ def _elements(guids):
     return [{"elementId": {"guid": g}} for g in guids]
 
 
-def _created(response, key):
+def _created(response, key, report=None, what=""):
+    """Guids of the created elements; a refused item is None and its error goes to the report."""
     out = []
-    for item in response.get(key, []):
-        out.append(item["elementId"]["guid"] if "elementId" in item else None)
+    for i, item in enumerate(response.get(key, [])):
+        if "elementId" in item:
+            out.append(item["elementId"]["guid"])
+        else:
+            out.append(None)
+            if report is not None:
+                report.errors.append(f"{what} #{i + 1}: {item.get('error', item)}")
     return out
 
 
@@ -287,6 +293,12 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
 
     if not ac.alive():
         raise RuntimeError("Archicad не отвечает. Откройте проект (копию шаблона) и закройте открытые диалоги.")
+    if profile.get("favoritesFile"):
+        # The office favorites («ОБМЕР шаблон …») are not in every template copy: import them, keep existing ones.
+        try:
+            ac.tapir("ImportFavorites", {"path": profile["favoritesFile"], "conflictPolicy": "Skip"})
+        except Exception as error:
+            report.errors.append(f"Избранное офиса не загружено из {profile['favoritesFile']}: {error}")
     idx = layer_indices(ac, set(L.values()))
     report.step("проверка проекта", missingLayers=[n for n, i in idx.items() if not i])
 
@@ -316,7 +328,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
         data = [{"coordinate": t["coordinate"], "text": t["text"], "floorIndex": floor_index,
                  **({"favoriteName": F["heightText"]} if F.get("heightText") else {}),
                  **({"layerIndex": idx[L["zones"]]} if idx.get(L["zones"]) else {})} for t in texts]
-        guids = _created(ac.tapir("CreateTexts", {"textsData": data}), "elements")
+        guids = _created(ac.tapir("CreateTexts", {"textsData": data}), "elements", report, "Текст Н")
         ac.tapir("UnlockElements", {"elements": _elements([g for g in guids if g])})
     report.step("тексты Н", count=len(texts))
 
@@ -334,7 +346,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
             item["parentElementId"] = {"guid": opening_guid[lab["opening"]]}
         data.append(item)
     if data:
-        guids = _created(ac.tapir("CreateLabels", {"labelsData": data}), "elements")
+        guids = _created(ac.tapir("CreateLabels", {"labelsData": data}), "elements", report, "Выноска")
         guids = [g for g in guids if g]
         ac.tapir("UnlockElements", {"elements": _elements(guids)})
         set_layer(ac, guids, idx.get(L["labels"]), report, "выноски")
@@ -346,7 +358,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     dim_guids = []
     if points:
         hs = _created(ac.tapir("CreateHotspots", {"hotspotsData": [
-            {"position": p, **({"layerIndex": idx[L["dimensions"]]} if idx.get(L["dimensions"]) else {})} for p in points]}), "elements")
+            {"position": p, **({"layerIndex": idx[L["dimensions"]]} if idx.get(L["dimensions"]) else {})} for p in points]}), "elements", report, "Точка размера")
         k = 0
         dims = []
         for ch in chains:
@@ -360,7 +372,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
             if F.get("dimension"):
                 d["favoriteName"] = F["dimension"]
             dims.append(d)
-        dim_guids = [g for g in _created(ac.tapir("CreateAssociativeDimensions", {"dimensionsData": dims}), "elements") if g]
+        dim_guids = [g for g in _created(ac.tapir("CreateAssociativeDimensions", {"dimensionsData": dims}), "elements", report, "Размер") if g]
         ac.tapir("UnlockElements", {"elements": _elements(dim_guids)})
         set_layer(ac, dim_guids, idx.get(L["dimensions"]), report, "размеры")
     report.step("размерные цепочки", chains=len(chains), dimensions=len(dim_guids))
@@ -379,7 +391,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
             if idx.get(L["wetZones"]):
                 item["layerIndex"] = idx[L["wetZones"]]
             data.append(item)
-        ac.tapir("CreateHatches", {"hatchesData": data})
+        _created(ac.tapir("CreateHatches", {"hatchesData": data}), "elements", report, "Мокрая зона")
     report.step("мокрые зоны", count=len(wet))
 
     # 6. Drawings on the layouts.
