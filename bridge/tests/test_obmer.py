@@ -103,14 +103,15 @@ def test_door_labels_stay_inside():
 
 
 def test_short_segment_text_is_placed():
-    # a door 0.25 m from the corner: the 250 text gets a fixed spot over its segment, inside the room
+    # a door 0.25 m from the corner: the chain is cut after the 250 segment, whose text is fixed
+    # by an offset into the room on the piece's last witness point (Archicad's own convention)
     import copy
     scene = copy.deepcopy(SCENE)
     scene["walls"][1]["openings"][0]["centerOffset"] = 0.65  # door 0.25 .. 1.05 on the east wall
-    east = [c for c in obmer.plan_dimension_chains(scene, PROFILE) if c["edges"] == [1]][0]
-    tp = east["textPositions"]
-    assert list(tp) == [1], tp
-    assert abs(tp[1]["y"] - 0.125) < 1e-6 and tp[1]["x"] < east["referencePoint"]["x"], (tp, east)
+    east = [c for c in obmer.plan_dimension_chains(scene, PROFILE) if c["edges"] == [1]]
+    assert [[p["y"] for p in c["points"]] for c in east] == [[0.0, 0.25], [0.25, 1.05, 3.0]], east
+    assert east[0]["textPositions"] == {1: {"x": -0.12, "y": 0.0}}, east[0]
+    assert "textPositions" not in east[1]
 
 
 def test_partitions_and_overrides():

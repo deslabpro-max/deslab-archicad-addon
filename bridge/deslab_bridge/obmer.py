@@ -472,18 +472,30 @@ def plan_dimension_chains(scene, profile):
             if _chain_conflict(c1, c2, band):
                 c1.setdefault("conflict", []).append(c2["edge"])
     # deslab: the text of a short segment (a pier of 0.25 m) does not fit between its witness
-    # lines; Archicad pushes it past the chain end, onto the wall hatch (runs 7-8). It is put
-    # over the middle of its segment, a little further into the room, at a fixed position.
+    # lines; Archicad pushes it past the chain end, onto the wall hatch (runs 7-8). Its text is
+    # fixed over the middle of the segment, a little into the room. Archicad (test of
+    # 03.11.2026) takes the text position of a segment from the segment's END witness point, as
+    # an offset from the segment's middle on the dimension line, and that is only reliable on
+    # the last segment of a dimension. So a chain is cut after every short segment: the pieces
+    # lie on the same line and read as one chain.
     short = cfg.get("shortSegment", 0.45)
-    carrier = 1 if cfg.get("shortTextWitness", "end") == "end" else 0
+    gap = cfg.get("shortTextGap", 0.12)
+    pieces = []
     for ch in chains:
         d, n = _pt(ch["direction"]), _pt(ch["normal"])
         ref = _pt(ch["referencePoint"])
-        ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
-        for k in range(len(ts) - 1):
+        pts = ch["points"]
+        ts = [_dot(_sub(_pt(p), ref), d) for p in pts]
+        cut = 0
+        for k in range(len(pts) - 1):
             if abs(ts[k + 1] - ts[k]) < short:
-                pos = _add(_add(ref, _mul(d, (ts[k] + ts[k + 1]) / 2)), _mul(n, cfg.get("shortTextGap", 0.12)))
-                ch.setdefault("textPositions", {})[k + carrier] = _xy(pos)
+                piece = dict(ch, points=pts[cut:k + 2])
+                piece["textPositions"] = {k + 1 - cut: _xy(_mul(n, gap))}
+                pieces.append(piece)
+                cut = k + 1
+        if len(pts) - cut >= 2:
+            pieces.append(dict(ch, points=pts[cut:]))
+    chains = pieces
     return chains
 
 

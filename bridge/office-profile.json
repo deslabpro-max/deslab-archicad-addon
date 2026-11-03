@@ -110,8 +110,8 @@
     "offsetStep": 0.35,
     "maxShifts": 2,
     "shortSegment": 0.45,
-    "shortTextGap": 0.12,
-    "shortTextWitness": "end"
+    "shortTextGap": 0.12
+
   },
   "wet": {
     "bathroom": {

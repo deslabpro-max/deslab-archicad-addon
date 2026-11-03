@@ -3930,7 +3930,7 @@
             },
             "textPosition": {
                 "$ref": "#/Coordinate2D",
-                "description": "deslab: optional fixed position of the dimension text this witness point carries (as if moved by hand). For a short segment whose text Archicad would push past the end of the chain."
+                "description": "deslab: optional fixed position of the text of the segment that ENDS at this witness point (as if moved by hand), given as an offset from the middle of that segment on the dimension line (tested in Archicad 27). Reliable on the last segment of a dimension. Not read for a static (coordinate) point."
             }
         },
         "additionalProperties": false
