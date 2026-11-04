@@ -878,7 +878,7 @@ GSErrCode ApplyDimensionTextLeaders (
             }
         }
         if (target < 0 || bestMiss > 0.01) {
-            continue;
+            return APIERR_BADPARS;  // no segment of the chain holds the leader start
         }
         API_NoteType& note = (*memo.dimElems)[target].note;
         note.fixPos = true;
@@ -6370,7 +6370,21 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
         return CreateErrorResponse (APIERR_BADPARS, error.Get ());
     }
 
-    return ExecuteCreateWithElements ("Create Associative Dimensions", [&](GS::Array<GS::ObjectState>& elements) {
+    // deslab: text leaders are set in a second step, after the creating command has ended.
+    // Inside it the new dimension's witness points are not settled yet (run 12: the notes moved
+    // to the mirrored point; run 13: no segment found), so the leaders wait until then.
+    struct PendingLeaders {
+        UIndex resultIndex;
+        API_Guid guid;
+        GS::Array<AssociativeDimensionPoint> points;
+    };
+    GS::Array<PendingLeaders> pendingLeaders;
+    GS::Array<GS::ObjectState> createdResults;
+
+    GS::ObjectState response = ExecuteCreateWithElements ("Create Associative Dimensions", [&](GS::Array<GS::ObjectState>& elements) {
+        const GS::OnExit keepResults ([&]() {
+            createdResults = elements;
+        });
         for (const auto& data : dimensionsData) {
             GS::Array<GS::ObjectState> witnessPointsData;
             {
@@ -6468,15 +6482,34 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
                 continue;
             }
 
-            GSErrCode leaderErr = ApplyDimensionTextLeaders (createdElement, witnessPoints);  // deslab
-            if (leaderErr != NoError) {
-                elements.Push (CreateErrorResponse (leaderErr, "The dimension was created, but its text leaders could not be set."));
-                continue;
+            if (hasLeader) {  // deslab
+                pendingLeaders.Push ({elements.GetSize (), element.header.guid, witnessPoints});
             }
-
             elements.Push (CreateElementIdObjectState (element.header.guid));
         }
     });
+
+    if (pendingLeaders.IsEmpty ()) {
+        return response;
+    }
+    bool anyFailed = false;
+    ACAPI_CallUndoableCommand ("Dimension Text Leaders", [&]() -> GSErrCode {
+        for (const PendingLeaders& pending : pendingLeaders) {
+            API_Element dim = {};
+            dim.header.guid = pending.guid;
+            GSErrCode err = ACAPI_Element_Get (&dim);
+            if (err == NoError) {
+                err = ApplyDimensionTextLeaders (dim, pending.points);
+            }
+            if (err != NoError && pending.resultIndex < createdResults.GetSize ()) {
+                createdResults[pending.resultIndex] = CreateErrorResponse (err,
+                    "The dimension was created, but its text leaders could not be set (is its layer hidden or locked?).");
+                anyFailed = true;
+            }
+        }
+        return NoError;
+    });
+    return anyFailed ? CreateElementListResponse (createdResults) : response;
 }
 
 CreateAssociativeDimensionsOnSectionCommand::CreateAssociativeDimensionsOnSectionCommand () :
