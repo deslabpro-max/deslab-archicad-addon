@@ -66,6 +66,10 @@ struct AssociativeDimensionPoint {
     API_Coord leaderMid = {0.0, 0.0};
     API_Coord leaderEnd = {0.0, 0.0};
     short leaderPen = 0;  // 0 = the text pen
+    // deslab: the text moved along its dimension line (no leader) to keep it clear of crossing
+    // lines (Игорь, 04.11.2026): textAt is the wanted text middle on the line, absolute
+    bool hasTextAt = false;
+    API_Coord textAt = {0.0, 0.0};
     bool leaderAnchorAtTextEnd = true;  // as 9 of 10 leaders in the office template
 };
 
@@ -730,6 +734,10 @@ GS::Optional<GS::UniString> ParseAssociativeDimensionPoint (const GS::ObjectStat
         point.hasTextPosition = true;
         point.textPosition = Get2DCoordinateFromObjectState (*textPosition);
     }
+    if (const GS::ObjectState* textAt = pointData.Get ("textAt")) {  // deslab
+        point.hasTextAt = true;
+        point.textAt = Get2DCoordinateFromObjectState (*textAt);
+    }
     if (const GS::ObjectState* textLeader = pointData.Get ("textLeader")) {  // deslab
         const GS::ObjectState* beg = textLeader->Get ("beg");
         const GS::ObjectState* mid = textLeader->Get ("mid");
@@ -837,7 +845,7 @@ GSErrCode ApplyDimensionTextLeaders (
 {
     bool any = false;
     for (const AssociativeDimensionPoint& point : points) {
-        any = any || point.hasTextLeader;
+        any = any || point.hasTextLeader || point.hasTextAt;
     }
     if (!any) {
         return NoError;
@@ -853,7 +861,12 @@ GSErrCode ApplyDimensionTextLeaders (
     }
 
     const Int32 nDimElem = static_cast<Int32> (BMGetHandleSize (reinterpret_cast<GSHandle> (memo.dimElems)) / sizeof (API_DimElem));
-    const API_Vector dir = element.dimension.direction;
+    API_Vector dir = element.dimension.direction;
+    const double dirLen = std::sqrt (dir.x * dir.x + dir.y * dir.y);
+    if (dirLen > 1e-9) {
+        dir.x /= dirLen;
+        dir.y /= dirLen;
+    }
     double angle = std::atan2 (dir.y, dir.x);
     angle = (std::fabs (std::sin (angle)) > std::fabs (std::cos (angle))) ? 1.5707963267949 : 0.0;
     // Archicad may store the witness points in another order than sent (run 12: reversed),
@@ -862,10 +875,10 @@ GSErrCode ApplyDimensionTextLeaders (
     auto along = [&] (const API_Coord& c) { return c.x * dir.x + c.y * dir.y; };
     for (UIndex k = 0; k < points.GetSize (); ++k) {
         const AssociativeDimensionPoint& point = points[k];
-        if (!point.hasTextLeader) {
+        if (!point.hasTextLeader && !point.hasTextAt) {
             continue;
         }
-        const double t = along (point.leaderBeg);
+        const double t = along (point.hasTextLeader ? point.leaderBeg : point.textAt);
         Int32 target = -1;
         double bestMiss = 1e9;
         for (Int32 i = 1; i < nDimElem; ++i) {
@@ -881,6 +894,26 @@ GSErrCode ApplyDimensionTextLeaders (
             return APIERR_BADPARS;  // no segment of the chain holds the leader start
         }
         API_NoteType& note = (*memo.dimElems)[target].note;
+        if (!point.hasTextLeader) {
+            // the text slides along the line by the distance from the segment middle; its
+            // offset from the line stays Archicad's own (the line through refC)
+            const double a = along ((*memo.dimElems)[target - 1].base.loc);
+            const double b = along ((*memo.dimElems)[target].base.loc);
+            const double shift = t - (a + b) / 2;
+            const API_Coord ref = element.dimension.refC;
+            const double across = (note.pos.x - ref.x) * -dir.y + (note.pos.y - ref.y) * dir.x;
+            const bool posValid = std::fabs (along (note.pos) - (a + b) / 2) < 2.0 && std::fabs (across) < 0.5;
+            if (posValid) {
+                note.pos.x += dir.x * shift;
+                note.pos.y += dir.y * shift;
+            } else {
+                note.pos = point.textAt;
+            }
+            note.fixPos = true;
+            note.useLeaderLine = false;
+            note.noteAngle = angle;
+            continue;
+        }
         note.fixPos = true;
         note.useLeaderLine = true;
         note.anchorAtTextEnd = point.leaderAnchorAtTextEnd;
@@ -6424,7 +6457,7 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
             // fixed texts turned by 180 deg (run 12); send it pointing right or up instead
             const bool hasLeader = [&]() {
                 for (const AssociativeDimensionPoint& p : witnessPoints) {
-                    if (p.hasTextLeader) {
+                    if (p.hasTextLeader || p.hasTextAt) {
                         return true;
                     }
                 }

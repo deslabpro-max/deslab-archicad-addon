@@ -3928,6 +3928,10 @@
                 "type": "number",
                 "minimum": 0.0
             },
+            "textAt": {
+                "$ref": "#/Coordinate2D",
+                "description": "deslab: the wanted middle of the text of the segment ENDING at this point, on the dimension line (absolute); the text slides along the line to it, set after creation."
+            },
             "textLeader": {
                 "type": "object",
                 "description": "deslab: put the text of the segment ending at this point on a leader line (beg, mid, end), as the office template does for texts that do not fit.",

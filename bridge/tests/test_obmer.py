@@ -123,6 +123,22 @@ def test_short_segment_text_is_placed():
     assert not east[0].get("leaderConflict")
 
 
+def test_dimension_texts_clear_of_lines():
+    # Игорь, 04.11.2026: no line may cross a dimension text; the text slides along its line.
+    # The door label leader runs through the middle of the 1200 and the 800, the south chain's
+    # line crosses the 600 at the corner.
+    chains = obmer.plan_dimension_chains(SCENE, PROFILE)
+    labels = obmer.plan_opening_labels(SCENE, PROFILE, obmer.label_obstacles(SCENE, PROFILE, [], chains))
+    obmer.place_dimension_texts(chains, labels, PROFILE)
+    south = [c for c in chains if c["edges"] == [0]][0]
+    east = [c for c in chains if c["edges"] == [1]][0]
+    assert not any(c.get("textConflict") for c in chains)
+    assert abs(south["textAt"][2]["x"] - 2.0) > 0.15          # off the label leader at x 2.0
+    assert east["textAt"][1]["y"] + 0.12 < 0.35               # below the south chain's line
+    assert abs(east["textAt"][2]["y"] - 1.0) > 0.15           # off the label leader at y 1.0
+    assert 2 not in [c for c in chains if c["edges"] == [2]][0].get("textAt", {})
+
+
 def test_chain_direction_on_the_axis():
     # a scanned wall leaning 0.1°: its chain still runs strictly along the axis, so Archicad
     # writes a vertical dimension from bottom to top as in the template (Игорь, run 15)

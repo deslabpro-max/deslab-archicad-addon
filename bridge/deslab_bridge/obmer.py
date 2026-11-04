@@ -337,7 +337,7 @@ def plan_opening_labels(scene, profile, obstacles=None):
             placed.append(box)
             labels.append({"opening": o["id"], "wall": wall["id"], "runs": runs, "cost": round(total / len(result), 1),
                            "begCoordinate": _xy(dot), "midCoordinate": _xy(mid),
-                           "endCoordinate": _xy(_add(mid, (shelf * 0.01, 0.0)))})
+                           "endCoordinate": _xy(_add(mid, (shelf * 0.01, 0.0))), "box": box})
     return labels
 
 
@@ -562,6 +562,105 @@ def plan_dimension_chains(scene, profile):
             ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(end), "pen": pen,
                                                        "anchorAtTextEnd": at_end}
             texts.append((ch, _rect_of_segment(end, _add(end, _mul(d, sg * width)), clear)))
+            ch.setdefault("leaderBoxes", []).append(_rect_of_segment(end, _add(end, _mul(d, sg * width)), text_half))
+    return chains
+
+
+def _seg_box(a, b, box):
+    """True when the segment a-b passes through the box (xmin, ymin, xmax, ymax)."""
+    t0, t1 = 0.0, 1.0
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    for p, q in ((-dx, a[0] - box[0]), (dx, box[2] - a[0]), (-dy, a[1] - box[1]), (dy, box[3] - a[1])):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return False
+        else:
+            r = q / p
+            if p < 0:
+                t0 = max(t0, r)
+            else:
+                t1 = min(t1, r)
+            if t0 > t1:
+                return False
+    return True
+
+
+def place_dimension_texts(chains, labels, profile):
+    """Slide dimension texts along their line so that no line crosses them (Игорь, 04.11.2026:
+    «2711» crossed by the line of «714», «661», «861», «1468» by a door label leader; the text
+    need not stand in the middle of its segment). Lines: the other chains' dimension and witness
+    lines, the opening label leaders; also the label texts and the leader texts. A moved text
+    gets "textAt" (its middle on the line) on the segment's end point; one that finds no clear
+    place stays in the middle and is listed in the chain as "textConflict"."""
+    cfg = profile["dimensions"]
+    lab = profile["labels"]
+    char = lab.get("charMm", 1.4) * lab.get("drawingScale", 45) / 1000.0
+    half = cfg.get("textHalf", 0.12)
+    step = cfg.get("textSlideStep", 0.02)
+    short = cfg.get("shortSegment", 0.3)
+    over = cfg.get("lineOvershoot", 0.05)
+    lines, boxes = [], []
+    for ch in chains:
+        d, ref = _pt(ch["direction"]), _pt(ch["referencePoint"])
+        a, b = _chain_line(ch)
+        own = [(_sub(a, _mul(d, over)), _add(b, _mul(d, over)))]
+        for p in ch["points"]:
+            p = _pt(p)
+            q = _add(ref, _mul(d, _dot(_sub(p, ref), d)))
+            own.append((p, _add(q, _mul(_unit(_sub(q, p)) if _len(_sub(q, p)) > 1e-9 else (0.0, 0.0), over))))
+        lines += [(ch, s_) for s_ in own]
+        boxes += [(ch, bx) for bx in ch.get("leaderBoxes", [])]
+    for lb in labels:
+        beg, mid, end = _pt(lb["begCoordinate"]), _pt(lb["midCoordinate"]), _pt(lb["endCoordinate"])
+        lines += [(None, (beg, mid)), (None, (mid, end))]
+        if lb.get("box"):
+            boxes.append((None, tuple(lb["box"])))
+
+    pad = cfg.get("textPad", 0.02)
+
+    def text_box(c, d, width):
+        # along the line: the text and a small gap; across: the text height on either side
+        e = _add(_mul(d, width / 2 + pad), _mul(_left(d), half))
+        f = _sub(_mul(d, width / 2 + pad), _mul(_left(d), half))
+        xs = [c[0] + e[0], c[0] - e[0], c[0] + f[0], c[0] - f[0]]
+        ys = [c[1] + e[1], c[1] - e[1], c[1] + f[1], c[1] - f[1]]
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def clear(ch, box):
+        return not any(c is not ch and _seg_box(s_[0], s_[1], box) for c, s_ in lines) and \
+            not any(c is not ch and _box_hits(box, bx) for c, bx in boxes)
+
+    for ch in chains:
+        d, ref = _pt(ch["direction"]), _pt(ch["referencePoint"])
+        ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
+        for k in range(len(ts) - 1):
+            seg = abs(ts[k + 1] - ts[k])
+            if seg < short:
+                continue
+            width = (len(str(int(round(seg * 1000)))) + 1) * char
+            mid_t = (ts[k] + ts[k + 1]) / 2
+            room = max(0.0, (seg - width) / 2)
+            shifts = [0.0]
+            i = 1
+            while i * step <= room + 1e-9:
+                shifts += [i * step, -i * step]
+                i += 1
+            placed = None
+            for sh in shifts:
+                c = _add(ref, _mul(d, mid_t + sh))
+                box = text_box(c, d, width)
+                if clear(ch, box):
+                    placed = (sh, c, box)
+                    break
+            if placed is None:
+                ch.setdefault("textConflict", []).append(int(round(seg * 1000)))
+                c = _add(ref, _mul(d, mid_t))
+                boxes.append((ch, text_box(c, d, width)))
+                continue
+            sh, c, box = placed
+            boxes.append((ch, box))
+            if abs(sh) > 1e-9:
+                ch.setdefault("textAt", {})[k + 1] = _xy(c)
     return chains
 
 
@@ -840,6 +939,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     # 3. Opening labels, clear of walls, dimension chains, «Н» texts, stamps and each other.
     chains = plan_dimension_chains(scene, profile)
     labels = plan_opening_labels(scene, profile, label_obstacles(scene, profile, texts, chains))
+    place_dimension_texts(chains, labels, profile)
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}
@@ -877,8 +977,10 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
                 report.errors.append(f"Размер {ch['room']}/{ch['edge']}: точки не созданы")
                 continue
             tl = ch.get("textLeaders", {})
+            ta = ch.get("textAt", {})
             d = {"referencePoint": ch["referencePoint"], "direction": ch["direction"], "floorIndex": floor_index,
-                 "witnessPoints": [{"elementId": {"guid": g}, **({"textLeader": tl[j]} if j in tl else {})}
+                 "witnessPoints": [{"elementId": {"guid": g}, **({"textLeader": tl[j]} if j in tl else {}),
+                                    **({"textAt": ta[j]} if j in ta and j not in tl else {})}
                                    for j, g in enumerate(ids)]}
             if F.get("dimension"):
                 d["favoriteName"] = F["dimension"]
@@ -889,6 +991,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     for ch in chains:
         if ch.get("conflict"):
             report.errors.append(f"Размер {ch['room']}/{ch['edge']}: наложение на цепочки {ch['conflict']}, поправить вручную")
+        if ch.get("textConflict"):
+            report.errors.append(f"Размер {ch['room']}/{ch['edge']}: текст {ch['textConflict']} пересекается линией и сдвинуть некуда, поправить вручную")
         if ch.get("leaderConflict"):
             report.errors.append(f"Размер {ch['room']}/{ch['edge']}: текст на выноске у точек {ch['leaderConflict']} не нашёл свободного места, поправить вручную")
     report.step("размерные цепочки", chains=len(chains), dimensions=len(dim_guids))
