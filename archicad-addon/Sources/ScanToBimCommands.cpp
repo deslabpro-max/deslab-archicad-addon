@@ -654,6 +654,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         GS::Array<GS::UniString> doorIds;
         GS::Array<GS::UniString> windowIds;
         GS::Array<bool> windowIsDoor;
+        GS::Array<GS::Array<GS::ObjectState>> windowGdl;  // deslab: GDL parameters from the scene, per window
         for (UIndex i = 0; i < sceneWalls.GetSize (); ++i) {
             if (wallGuids[i] == APINULLGuid) {
                 continue;
@@ -683,6 +684,15 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     data.Add ("libraryPartName", GS::UniString (width <= 0.9 ? "\xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27" : (width <= 1.9 ? "\xD0\x94\xD0\xB2\xD1\x83\xD1\x81\xD1\x82\xD0\xB2\xD0\xBE\xD1\x80\xD1\x87\xD0\xB0\xD1\x82\xD0\xBE\xD0\xB5 \xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27" : "\xD0\xA2\xD1\x80\xD0\xB5\xD1\x85\xD1\x81\xD1\x82\xD0\xB2\xD0\xBE\xD1\x80\xD1\x87\xD0\xB0\xD1\x82\xD0\xBE\xD0\xB5 \xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27"), CC_UTF8));
                 }
                 if (isWindow) {
+                    // deslab: a corner window (Archicad's own corner window pair, Игорь
+                    // 04.11.2026: one window round the corner, not two with a column between)
+                    bool cornerWindow = false;
+                    if (opening.Get ("cornerWindow", cornerWindow) && cornerWindow) {
+                        data.Add ("cornerWindow", true);
+                    }
+                    GS::Array<GS::ObjectState> gdl;
+                    opening.Get ("gdlParameters", gdl);
+                    windowGdl.Push (gdl);
                     // deslab: a one-sided wall has the scanned room on its left, and the sashes
                     // open to the left side with oSide set
                     data.Add ("oSide", true);
@@ -696,6 +706,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             }
         }
         GS::Array<GS::Pair<API_Guid, bool>> createdWindows;  // the window and whether it is a balcony door
+        GS::Array<GS::Array<GS::ObjectState>> createdGdl;    // deslab: and its GDL parameters from the scene
         auto collect = [&] (const GS::ObjectState& response, const GS::Array<GS::UniString>& ids, const auto& list, const char* what, bool windows) {
             const GS::Array<GS::ObjectState> results = ResultItems (response);
             for (UIndex i = 0; i < results.GetSize () && i < ids.GetSize (); ++i) {
@@ -707,6 +718,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     layerFor (guid, "openings");
                     if (windows) {
                         createdWindows.Push (GS::Pair<API_Guid, bool> (guid, windowIsDoor[i]));
+                        createdGdl.Push (windowGdl[i]);
                     }
                 } else {
                     errorList (GS::UniString (what) + " " + ids[i] + ": " + ErrorMessage (results[i]));
@@ -737,14 +749,19 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 }
             }
         };
-        if (!createdWindows.IsEmpty () && (defaultLook || !windowSurfaceName.IsEmpty ())) {
-            const auto surface = WindowSurface (windowSurfaceName);
-            if (!surface.HasValue ()) {
+        bool sceneGdl = false;
+        for (const auto& gdl : createdGdl) {
+            sceneGdl = sceneGdl || !gdl.IsEmpty ();
+        }
+        if (!createdWindows.IsEmpty () && (defaultLook || !windowSurfaceName.IsEmpty () || sceneGdl)) {
+            const auto surface = (defaultLook || !windowSurfaceName.IsEmpty ()) ? WindowSurface (windowSurfaceName) : GS::Optional<API_Attr_Head> ();
+            if ((defaultLook || !windowSurfaceName.IsEmpty ()) && !surface.HasValue ()) {
                 errorList (GS::UniString ("Window surface not found: ") + (windowSurfaceName.IsEmpty () ? GS::UniString ("white plastic") : windowSurfaceName));
             }
             GS::ObjectState gdlParameters;
             const auto& elements = gdlParameters.AddList<GS::ObjectState> ("elementsWithGDLParameters");
-            for (const auto& window : createdWindows) {
+            for (UIndex w = 0; w < createdWindows.GetSize (); ++w) {
+                const auto& window = createdWindows[w];
                 GS::ObjectState element;
                 element.Add ("elementId", CreateGuidObjectState (window.first));
                 const auto& values = element.AddList<GS::ObjectState> ("gdlParameters");
@@ -758,6 +775,11 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     values (GS::ObjectState ("name", GS::UniString ("gs_window_handle"), "value", true));
                     values (GS::ObjectState ("name", GS::UniString ("gs_sill_outside"), "value", !balconyDoor));
                     values (GS::ObjectState ("name", GS::UniString ("gs_board_inside"), "value", false)); // deslab: no inner board in a concrete flat (Игорь, 03.11.2026)
+                }
+                // deslab: the scene's own GDL parameters last (sash widths of a three-sash window
+                // even, Игорь 04.11.2026; the corner window's joint)
+                for (const GS::ObjectState& parameter : createdGdl[w]) {
+                    values (parameter);
                 }
                 elements (element);
             }
