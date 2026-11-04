@@ -123,6 +123,19 @@ def test_short_segment_text_is_placed():
     assert not east[0].get("leaderConflict")
 
 
+def test_blocked_dimension_text_goes_on_a_leader():
+    # runs JK and kv94 (04.11.2026): a label leader through a text that cannot slide clear of
+    # it; the text goes on a leader that starts off that line and never runs along it
+    chains = obmer.plan_dimension_chains(SCENE, PROFILE)
+    lab = [{"begCoordinate": {"x": 3.0, "y": 0.3}, "midCoordinate": {"x": 3.9, "y": 0.3},
+            "endCoordinate": {"x": 3.91, "y": 0.3}}]
+    obmer.place_dimension_texts(chains, lab, PROFILE)
+    east = [c for c in chains if c["edges"] == [1]][0]
+    assert not any(c.get("textConflict") for c in chains)
+    lead = east["textLeaders"][1]
+    assert abs(lead["beg"]["y"] - 0.3) > 0.02 and lead["beg"]["x"] == 3.65, lead
+    assert 1 not in east.get("textAt", {})
+
 def test_dimension_texts_clear_of_lines():
     # Игорь, 04.11.2026: no line may cross a dimension text; the text slides along its line.
     # The door label leader runs through the middle of the 1200 and the 800, the south chain's

@@ -576,6 +576,12 @@ def dimension_text_width(seg, profile):
     return (digits * cfg.get("digitMm", 1.82) + gap) * scale
 
 
+def _parallel(a, b, c, d):
+    u, v = _sub(b, a), _sub(d, c)
+    lu, lv = _len(u), _len(v)
+    return lu > 1e-9 and lv > 1e-9 and abs(u[0] * v[1] - u[1] * v[0]) < 1e-3 * lu * lv
+
+
 def _seg_box(a, b, box):
     """True when the segment a-b passes through the box (xmin, ymin, xmax, ymax)."""
     t0, t1 = 0.0, 1.0
@@ -644,12 +650,49 @@ def place_dimension_texts(chains, labels, profile):
         return not any(c is not ch and _seg_box(s_[0], s_[1], box) for c, s_ in lines) and \
             not any(c is not ch and _box_hits(box, bx) for c, bx in boxes)
 
+    rise = cfg.get("leaderRise", 0.22)
+    pen = cfg.get("leaderPen", 120)
+
+    def leader_spot(ch, d, ref, ts, k, width):
+        n = _pt(ch["normal"])
+        read = (1.0, 0.0) if abs(d[0]) >= abs(d[1]) else (0.0, 1.0)
+        run = min(max(width - char, cfg.get("leaderShelfMin", 0.12)), cfg.get("leaderShelfMax", 0.22))
+        out = 1 if ts[k + 1] > ts[k] else -1
+        mid_t, room = (ts[k] + ts[k + 1]) / 2, max(0.0, abs(ts[k + 1] - ts[k]) / 2 - 0.05)
+        # the leader starts in the segment middle, or off it when a line runs there
+        offs = [0.0] + [o for i in range(1, int(room / step) + 1) for o in (i * step, -i * step)]
+        for o in offs:
+            beg = _add(ref, _mul(d, mid_t + o))
+            for r in (rise, rise + 0.15, rise + 0.3):
+                for sg in (out, -out):
+                    for sh in (run, run + 0.15, run + 0.3):
+                        mid = _add(beg, _mul(n, r))
+                        end = _add(mid, _mul(d, sg * sh))
+                        tbox = _rect_of_segment(end, _add(end, _mul(d, sg * width)), half)
+                        legs = [(beg, mid), (mid, end)]
+                        if any(c is not ch and _seg_box(s_[0], s_[1], tbox) for c, s_ in lines):
+                            continue
+                        if any(c is not ch and _box_hits(tbox, bx) for c, bx in boxes):
+                            continue
+                        if any(c is not ch and _box_hits(_rect_of_segment(a_, b_, 0.01), bx)
+                               for a_, b_ in legs for c, bx in boxes):
+                            continue
+                        # a leader may cross a line, never run along it
+                        if any(c is not ch and _parallel(a_, b_, s_[0], s_[1])
+                               and _seg_box(s_[0], s_[1], _rect_of_segment(a_, b_, 0.02))
+                               for a_, b_ in legs for c, s_ in lines):
+                            continue
+                        info = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(end), "pen": pen,
+                                "anchorAtTextEnd": _dot(_mul(d, sg), read) < 0}
+                        return info, tbox
+        return None
+
     for ch in chains:
         d, ref = _pt(ch["direction"]), _pt(ch["referencePoint"])
         ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
         for k in range(len(ts) - 1):
             seg = abs(ts[k + 1] - ts[k])
-            if seg < short:
+            if seg < short or k + 1 in ch.get("textLeaders", {}):
                 continue
             width = dimension_text_width(seg, profile)
             mid_t = (ts[k] + ts[k + 1]) / 2
@@ -667,6 +710,16 @@ def place_dimension_texts(chains, labels, profile):
                     placed = (sh, c, box)
                     break
             if placed is None:
+                # deslab: no clear place on the line (runs JK and kv94: a label leader through
+                # «315», «540», «1 370» in short segments): the text goes on a leader, as the
+                # short ones do, to a spot where neither the leader nor the text is crossed
+                lead = leader_spot(ch, d, ref, ts, k, width)
+                if lead is not None:
+                    info, box = lead
+                    ch.setdefault("textLeaders", {})[k + 1] = info
+                    ch.setdefault("leaderBoxes", []).append(box)
+                    boxes.append((ch, box))
+                    continue
                 ch.setdefault("textConflict", []).append(int(round(seg * 1000)))
                 c = _add(ref, _mul(d, mid_t))
                 boxes.append((ch, text_box(c, d, width, 0.0)))
