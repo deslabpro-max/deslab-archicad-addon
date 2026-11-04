@@ -810,20 +810,67 @@ GS::Optional<GS::UniString> PopulateAssociativeDimensionMemo (
             }
             dimElem.note.noteAngle = angle;
         }
-        if (point.hasTextLeader) {  // deslab: the leader decides pos and angle itself (API docs)
-            dimElem.note.fixPos = true;
-            dimElem.note.useLeaderLine = true;
-            dimElem.note.begC = point.leaderBeg;
-            dimElem.note.midC = point.leaderMid;
-            dimElem.note.endC = point.leaderEnd;
-            dimElem.note.leaderShape = API_Segmented;
-            dimElem.note.anchorPoint = APILbl_Underlined;
-        }
+        // deslab: a text leader is NOT set here; at creation Archicad stores it relative and
+        // turned (run 11). ApplyDimensionTextLeaders sets it after creation, in absolute coords.
         dimElem.witnessVal = element.dimension.defWitnessVal;
         dimElem.witnessForm = element.dimension.defWitnessForm;
     }
 
     return {};
+}
+
+// deslab: short dimension texts on a leader, as in the office template. The leader is set on
+// the created dimension with ACAPI_Element_Change (as in the DevKit Element_Test example), all
+// points absolute: begC on the dimension line, midC square to the chain, endC along it, and the
+// text (pos) continues from endC, underlined. Text angle is 0 for horizontal chains and 90 deg
+// for vertical ones, so it reads from below or from the right.
+GSErrCode ApplyDimensionTextLeaders (
+    API_Element& element,
+    const GS::Array<AssociativeDimensionPoint>& points)
+{
+    bool any = false;
+    for (const AssociativeDimensionPoint& point : points) {
+        any = any || point.hasTextLeader;
+    }
+    if (!any) {
+        return NoError;
+    }
+
+    API_ElementMemo memo = {};
+    const GS::OnExit cleanup ([&]() {
+        ACAPI_DisposeElemMemoHdls (&memo);
+    });
+    GSErrCode err = ACAPI_Element_GetMemo (element.header.guid, &memo);
+    if (err != NoError || memo.dimElems == nullptr) {
+        return err != NoError ? err : APIERR_GENERAL;
+    }
+
+    const Int32 nDimElem = static_cast<Int32> (BMGetHandleSize (reinterpret_cast<GSHandle> (memo.dimElems)) / sizeof (API_DimElem));
+    const Int32 count = std::min<Int32> (nDimElem, static_cast<Int32> (points.GetSize ()));
+    double angle = std::atan2 (element.dimension.direction.y, element.dimension.direction.x);
+    angle = (std::fabs (std::sin (angle)) > std::fabs (std::cos (angle))) ? 1.5707963267949 : 0.0;
+    for (Int32 k = 0; k < count; ++k) {
+        const AssociativeDimensionPoint& point = points[k];
+        if (!point.hasTextLeader) {
+            continue;
+        }
+        API_NoteType& note = (*memo.dimElems)[k].note;
+        note.fixPos = true;
+        note.useLeaderLine = true;
+        note.anchorAtTextEnd = false;
+        note.begC = point.leaderBeg;
+        note.midC = point.leaderMid;
+        note.endC = point.leaderEnd;
+        note.pos = point.leaderEnd;
+        note.noteAngle = angle;
+        note.leaderShape = API_Segmented;
+        note.anchorPoint = APILbl_Underlined;
+        note.leaderPen = note.notePen;
+    }
+
+    API_Element mask;
+    ACAPI_ELEMENT_MASK_CLEAR (mask);
+    return ACAPI_Element_Change (&element, &mask, &memo, 0, true);
 }
 
 void TryApplyDimensionFloorIndex (
@@ -6373,6 +6420,12 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
             createdElement.header.guid = element.header.guid;
             if (ACAPI_Element_Get (&createdElement) != NoError) {
                 elements.Push (CreateErrorResponse (APIERR_GENERAL, "The dimension was not created (is a section or elevation window active? Activate a floor plan window and retry)."));
+                continue;
+            }
+
+            GSErrCode leaderErr = ApplyDimensionTextLeaders (createdElement, witnessPoints);  // deslab
+            if (leaderErr != NoError) {
+                elements.Push (CreateErrorResponse (leaderErr, "The dimension was created, but its text leaders could not be set."));
                 continue;
             }
 
