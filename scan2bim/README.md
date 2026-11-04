@@ -23,10 +23,11 @@ in a niche, rotated 7°).
    applied). 22 million points read in about 5 s; every 4th point is kept by default.
 2. Floor and ceiling: the lowest and highest dense horizontal surfaces (Z histogram).
 3. Orientation: the rotation that makes the wall points sharpest along X and Y. The scene is
-   written in that frame, so the main walls run along the axes; small deviations of single walls
-   (0.2–0.5° are normal) are kept.
+   written in that frame, so the walls run along the axes; a single wall's small deviation is
+   averaged out (step 4), never drawn.
 4. Wall faces: 2 cm cells scanned over at least 55 % of the room height; runs of such cells along
-   X and Y, refined to a least-squares line on the raw points. The room side of a face is the side
+   X and Y, placed at the average position of the raw points (least-squares at the middle). A face
+   is always straight along its axis: we never draw at an angle, every corner is 90° (Игорь, 04.11.2026). The room side of a face is the side
    with floor hits right next to it.
 5. Walls: faces that look at each other 5–900 mm apart are one wall of the measured thickness.
    A face seen from one side only becomes a wall of default thickness behind it (640 mm when it

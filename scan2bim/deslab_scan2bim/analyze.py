@@ -172,7 +172,7 @@ def find_faces(pts, floor, ceiling, opt: Options):
 
 
 def _refine_face(f: Face, pts, floor, ceiling):
-    """Least-squares line through the face points (walls are rarely exactly square)."""
+    """Position of the face: least-squares line through its points, kept square to the axes."""
     cc = pts[:, f.axis]
     tt = pts[:, 1 - f.axis]
     z = pts[:, 2]
@@ -189,9 +189,9 @@ def _refine_face(f: Face, pts, floor, ceiling):
         c, t = c[keep], t[keep]
         if len(c) < 50:
             break
-    f.c, f.slope = float(sol[0]), float(sol[1])
-    if abs(f.slope) > 0.02:  # more than ~1 degree off: keep it straight, it is noise
-        f.slope = 0.0
+    # deslab: we never draw at an angle, every corner is 90° (Игорь, 04.11.2026): the face is
+    # straight along its axis, at the AVERAGE position of its points (the fitted line at mid)
+    f.c, f.slope = float(sol[0]), 0.0
 
 
 # ---------------------------------------------------------------- walls
