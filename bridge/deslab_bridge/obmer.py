@@ -173,16 +173,22 @@ def check_room_faces(scene, tol=0.005):
         walls.append((w, a, b, _unit(_sub(b, a)), float(w.get("thickness", 0.2)) / 2))
     for room in scene.get("rooms", []):
         poly = [_pt(p) for p in room["polygon"]]
+        ccw = polygon_area(poly) > 0
         for i, p in enumerate(poly):
             q = poly[(i + 1) % len(poly)]
             length = _len(_sub(q, p))
             if length < 0.05:
                 continue
             e = _unit(_sub(q, p))
+            inward = _left(e) if ccw else _mul(_left(e), -1.0)
             mid = _mul(_add(p, q), 0.5)
             best = None
             for w, a, b, u, half in walls:
                 if abs(abs(_dot(e, u)) - 1) > 1e-4:
+                    continue
+                # the wall must stand OUTSIDE the room: its axis behind the edge, away from the
+                # room (the kv94 fault: the axis 0.1 into the room, the wall's far face on the edge)
+                if _dot(_sub(a, mid), inward) > 0:
                     continue
                 off = abs(_dot(_sub(mid, a), _left(u)))  # edge from the wall axis
                 gap = abs(off - half)                     # edge from the nearer face
@@ -388,10 +394,15 @@ def plan_opening_labels(scene, profile, obstacles=None):
             cost += 60  # off the outline of the flat
         return cost
 
+    corner_twins = {(o.get("corner") or {}).get("partner") for w in scene.get("walls", [])
+                    for o in w.get("openings", [])} - {None}
+
     def choose(wall, others, every=False):
         half_t = float(wall.get("thickness", 0.2)) / 2
         items = []
         for o, c, _, _, u, n in _opening_points(wall):
+            if o["id"] in corner_twins:
+                continue  # deslab: a corner window is one window with one label, on its first part
             runs, width, nlines, line = text_of(o)
             items.append((o, c, u, n, runs, width, (nlines, line)))
         if not items:
@@ -1074,7 +1085,7 @@ def _corner_end(wall, other):
     return 0 if dist(a) < dist(b) else 1
 
 
-def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="frame"):
+def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="frame", favorite=None, two_sash_from=1.0):
     """Builds each corner window as in the recipe tested on 27.10.2026 (тест-угол.pln): CreateWindows
     on the first wall with cornerWindow, Archicad adds the linked twin on the other wall; each
     width is then set so the far edge lands where the scene has it (Archicad keeps the corner
@@ -1099,6 +1110,14 @@ def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="fram
             report.errors.append(f"Угловое окно {o['id']}: Archicad не поставил пару на {pw['id']} (новых окон {len(twins)})")
             continue
         second = twins[0]
+        # Archicad's corner window is always the one-sash «Окно 27»: a wide part takes the two-sash
+        # favorite (rule 6а of 27.10: the link holds, width and joint are set again below)
+        if favorite:
+            wide = [g for g, op in ((first, o), (second, po)) if float(op["width"]) >= two_sash_from]
+            if wide:
+                _check_details(ac.tapir("ApplyFavoritesToElements", {"favoritesToApply": [
+                    {"elementId": {"guid": g}, "favorite": favorite} for g in wide]}), report,
+                    f"Угловое окно: избранное «{favorite}»")
         # the far edge of each part where the scene has it; the corner edge stays Archicad's
         mods = []
         for guid, wall, op, other in ((first, w, o, pw), (second, pw, po, w)):
@@ -1216,8 +1235,11 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
             {"elementId": {"guid": g}, "gdlParameters": [{"name": "gs_iPanesConfig", "value": 1}]} for g in wide]}),
             report, "Равные створки")
     if corner_pairs:
+        op_cfg = profile.get("openings", {})
         opening_guid.update(build_corner_windows(ac, corner_pairs, wall_guid, report,
-                                                 joint=profile.get("openings", {}).get("cornerJoint", "frame")))
+                                                 joint=op_cfg.get("cornerJoint", "frame"),
+                                                 favorite=op_cfg.get("cornerTwoSashFavorite"),
+                                                 two_sash_from=op_cfg.get("doubleSashMinWidth", 1.0)))
     zone_guid = {z["id"]: _guid(z) for z in model.get("zones", [])}
     zone_guids = list(zone_guid.values())
     report.step("модель", walls=len(wall_guid), openings=len(opening_guid), zones=len(zone_guids))

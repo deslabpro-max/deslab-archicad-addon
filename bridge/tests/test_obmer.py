@@ -144,6 +144,11 @@ def test_room_outline_on_wall_faces():
     bad["walls"][0]["start"]["y"] = bad["walls"][0]["end"]["y"] = -0.4  # moved out by its thickness/2
     errs = obmer.check_room_faces(bad)
     assert len(errs) == 1 and "W1" in errs[0] and "200 мм" in errs[0], errs
+    # the kv94 fault: the wall moved INTO the room by its thickness, its far face on the edge
+    bad = copy.deepcopy(SCENE)
+    bad["walls"][0]["start"]["y"] = bad["walls"][0]["end"]["y"] = 0.2
+    errs = obmer.check_room_faces(bad)
+    assert len(errs) == 1 and "без стены" in errs[0], errs
 
 
 def test_walls_from_outline():
@@ -175,6 +180,8 @@ def test_corner_window_split():
     assert [o["id"] for w in model["walls"] for o in w["openings"]] == ["W1.1", "W2.1"]
     assert obmer._corner_end(scene["walls"][0], scene["walls"][1]) == 1
     assert obmer._corner_end(scene["walls"][1], scene["walls"][0]) == 0
+    labels = [l["opening"] for l in obmer.plan_opening_labels(scene, PROFILE)]
+    assert "W1.2" in labels and "W2.2" not in labels, labels  # one window, one label
 
 def test_dimension_texts_clear_of_lines():
     # Игорь, 04.11.2026: no line may cross a dimension text; the text slides along its line.
