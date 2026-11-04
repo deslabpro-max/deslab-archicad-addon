@@ -112,7 +112,9 @@
     "shortSegment": 0.3,
     "leaderRise": 0.22,
     "leaderShelf": 0.1,
-    "leaderPen": 120
+    "leaderPen": 120,
+    "digitMm": 1.82,
+    "thousandsGapMm": 1.18
 
   },
   "wet": {

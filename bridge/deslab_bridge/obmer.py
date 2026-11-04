@@ -504,7 +504,7 @@ def plan_dimension_chains(scene, profile):
     char = lab.get("charMm", 1.4) * lab.get("drawingScale", 45) / 1000.0
 
     def text_width(seg):
-        return (len(str(int(round(seg * 1000)))) + 1) * char
+        return dimension_text_width(seg, profile)
 
     texts = []  # (chain, box) of the ordinary dimension texts, over their segment middles
     for ch in chains:
@@ -566,6 +566,16 @@ def plan_dimension_chains(scene, profile):
     return chains
 
 
+def dimension_text_width(seg, profile):
+    """Width in metres of the dimension text of a segment as Archicad draws it (measured in run
+    19 at 1:45: «269» 0.246 m, «1 498» 0.381 m): digits plus the thousands gap."""
+    cfg, lab = profile["dimensions"], profile["labels"]
+    scale = lab.get("drawingScale", 45) / 1000.0
+    digits = len(str(int(round(seg * 1000))))
+    gap = cfg.get("thousandsGapMm", 1.18) if digits > 3 else 0.0
+    return (digits * cfg.get("digitMm", 1.82) + gap) * scale
+
+
 def _seg_box(a, b, box):
     """True when the segment a-b passes through the box (xmin, ymin, xmax, ymax)."""
     t0, t1 = 0.0, 1.0
@@ -622,10 +632,10 @@ def place_dimension_texts(chains, labels, profile):
 
     pad = cfg.get("textPad", 0.04)  # 3-4 cm clear of any line (run 18: 1 cm looked cramped)
 
-    def text_box(c, d, width):
+    def text_box(c, d, width, gap=pad):
         # along the line: the text and a small gap; across: the text height on either side
-        e = _add(_mul(d, width / 2 + pad), _mul(_left(d), half))
-        f = _sub(_mul(d, width / 2 + pad), _mul(_left(d), half))
+        e = _add(_mul(d, width / 2 + gap), _mul(_left(d), half))
+        f = _sub(_mul(d, width / 2 + gap), _mul(_left(d), half))
         xs = [c[0] + e[0], c[0] - e[0], c[0] + f[0], c[0] - f[0]]
         ys = [c[1] + e[1], c[1] - e[1], c[1] + f[1], c[1] - f[1]]
         return (min(xs), min(ys), max(xs), max(ys))
@@ -641,7 +651,7 @@ def place_dimension_texts(chains, labels, profile):
             seg = abs(ts[k + 1] - ts[k])
             if seg < short:
                 continue
-            width = (len(str(int(round(seg * 1000)))) + 1) * char
+            width = dimension_text_width(seg, profile)
             mid_t = (ts[k] + ts[k + 1]) / 2
             room = max(0.0, (seg - width) / 2)
             shifts = [0.0]
@@ -659,10 +669,11 @@ def place_dimension_texts(chains, labels, profile):
             if placed is None:
                 ch.setdefault("textConflict", []).append(int(round(seg * 1000)))
                 c = _add(ref, _mul(d, mid_t))
-                boxes.append((ch, text_box(c, d, width)))
+                boxes.append((ch, text_box(c, d, width, 0.0)))
                 continue
             sh, c, box = placed
-            boxes.append((ch, box))
+            # the gap is kept once between two texts: the next text's box carries it
+            boxes.append((ch, text_box(c, d, width, 0.0)))
             if abs(sh) > 1e-9:
                 ch.setdefault("textAt", {})[k + 1] = _xy(c)
     return chains
