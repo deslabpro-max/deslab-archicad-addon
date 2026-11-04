@@ -1205,7 +1205,15 @@ def _square(poly, tol=0.01):
         p, q = np.array(poly[i]), np.array(poly[(i + 1) % n])
         out.append(tuple(p))
         dx, dy = abs(q[0] - p[0]), abs(q[1] - p[1])
-        if dx <= tol or dy <= tol or max(dx, dy) > 0.5:
+        if dx <= tol or dy <= tol:
+            continue
+        if max(dx, dy) > 0.5:
+            # deslab: a long edge nearly square (Игорь 04.11.2026: never at an angle; run JK: a
+            # 6.35° edge of R1 at a wall end gave a slanted dimension chain) gets the small step
+            # first, then runs square
+            if min(dx, dy) > max(dx, dy) * np.tan(np.radians(15)):
+                continue
+            out.append((float(q[0]), float(p[1])) if dy > dx else (float(p[0]), float(q[1])))
             continue
         prev = p - np.array(poly[i - 1])
         horizontal = abs(prev[0]) >= abs(prev[1])
