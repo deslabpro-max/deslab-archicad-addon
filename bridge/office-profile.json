@@ -141,6 +141,7 @@
     "doubleSashMinWidth": 1.0,
     "interiorDoorHeight": 2.1,
     "innerBoard": false,
+    "cornerJoint": "frame",
     "comment": "Игорь 03.11.2026: подоконник в бетонной квартире не ставим; если ставим, только белый пластик"
   }
 }

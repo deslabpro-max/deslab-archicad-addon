@@ -162,6 +162,20 @@ def test_walls_from_outline():
     sx = w5["start"]["x"]
     assert abs((sx - c) - (11.752 - 2.107 / 2)) < 1e-6, (sx, c)
 
+def test_corner_window_split():
+    # Игорь 04.11.2026: a corner window is one Archicad corner window, built after the model
+    import copy
+    scene = copy.deepcopy(SCENE)
+    scene["walls"][0]["openings"].append({"id": "W1.2", "kind": "window", "centerOffset": 3.6, "width": 0.8,
+                                          "sill": 0.69, "height": 1.95, "corner": {"partner": "W2.2"}})
+    scene["walls"][1]["openings"].append({"id": "W2.2", "kind": "window", "centerOffset": 0.4, "width": 0.8,
+                                          "sill": 0.69, "height": 1.95})
+    model, pairs = obmer.split_corner_windows(scene)
+    assert [(a["id"], o["id"], b["id"], q["id"]) for a, o, b, q in pairs] == [("W1", "W1.2", "W2", "W2.2")]
+    assert [o["id"] for w in model["walls"] for o in w["openings"]] == ["W1.1", "W2.1"]
+    assert obmer._corner_end(scene["walls"][0], scene["walls"][1]) == 1
+    assert obmer._corner_end(scene["walls"][1], scene["walls"][0]) == 0
+
 def test_dimension_texts_clear_of_lines():
     # Игорь, 04.11.2026: no line may cross a dimension text; the text slides along its line.
     # The door label leader runs through the middle of the 1200 and the 800, the south chain's

@@ -655,6 +655,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         GS::Array<GS::UniString> windowIds;
         GS::Array<bool> windowIsDoor;
         GS::Array<GS::Array<GS::ObjectState>> windowGdl;  // deslab: GDL parameters from the scene, per window
+        GS::Array<bool> windowThreeSash;                  // deslab: built as «Трехстворчатое Окно 27»
         for (UIndex i = 0; i < sceneWalls.GetSize (); ++i) {
             if (wallGuids[i] == APINULLGuid) {
                 continue;
@@ -693,6 +694,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     GS::Array<GS::ObjectState> gdl;
                     opening.Get ("gdlParameters", gdl);
                     windowGdl.Push (gdl);
+                    windowThreeSash.Push (favorite.IsEmpty () && GetNumber (opening, "width", 0.9) > 1.9);
                     // deslab: a one-sided wall has the scanned room on its left, and the sashes
                     // open to the left side with oSide set
                     data.Add ("oSide", true);
@@ -707,6 +709,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         }
         GS::Array<GS::Pair<API_Guid, bool>> createdWindows;  // the window and whether it is a balcony door
         GS::Array<GS::Array<GS::ObjectState>> createdGdl;    // deslab: and its GDL parameters from the scene
+        GS::Array<bool> createdThreeSash;
         auto collect = [&] (const GS::ObjectState& response, const GS::Array<GS::UniString>& ids, const auto& list, const char* what, bool windows) {
             const GS::Array<GS::ObjectState> results = ResultItems (response);
             for (UIndex i = 0; i < results.GetSize () && i < ids.GetSize (); ++i) {
@@ -719,6 +722,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     if (windows) {
                         createdWindows.Push (GS::Pair<API_Guid, bool> (guid, windowIsDoor[i]));
                         createdGdl.Push (windowGdl[i]);
+                        createdThreeSash.Push (windowThreeSash[i]);
                     }
                 } else {
                     errorList (GS::UniString (what) + " " + ids[i] + ": " + ErrorMessage (results[i]));
@@ -775,6 +779,11 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     values (GS::ObjectState ("name", GS::UniString ("gs_window_handle"), "value", true));
                     values (GS::ObjectState ("name", GS::UniString ("gs_sill_outside"), "value", !balconyDoor));
                     values (GS::ObjectState ("name", GS::UniString ("gs_board_inside"), "value", false)); // deslab: no inner board in a concrete flat (Игорь, 03.11.2026)
+                    if (createdThreeSash[w]) {
+                        // deslab: three even sashes, not a small, a middle and a huge one (Игорь,
+                        // 04.11.2026): «По Горизонтали» = 1 «Единые Размеры Остекления»
+                        values (GS::ObjectState ("name", GS::UniString ("gs_iPanesConfig"), "value", 1));
+                    }
                 }
                 // deslab: the scene's own GDL parameters last (sash widths of a three-sash window
                 // even, Игорь 04.11.2026; the corner window's joint)

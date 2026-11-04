@@ -1042,6 +1042,100 @@ def _redo_endless_labels(ac, data, guids, report, max_mm=50.0):
     return guids
 
 
+def split_corner_windows(scene):
+    """deslab: a corner window (Игорь 04.11.2026: one window round the corner, Archicad's own
+    corner window, not two windows with the wall corner between) is two openings in the scene,
+    one on each wall, the first with "corner": {"partner": "<id of the other>"}. They are taken
+    out of the scene for BuildModelFromScan and built afterwards by build_corner_windows.
+    Returns the scene without them and the list of (wall, opening, partner wall, partner)."""
+    by_id = {o["id"]: (w, o) for w in scene.get("walls", []) for o in w.get("openings", [])}
+    pairs, skip = [], set()
+    for w in scene.get("walls", []):
+        for o in w.get("openings", []):
+            partner = (o.get("corner") or {}).get("partner")
+            if partner and partner in by_id:
+                pw, po = by_id[partner]
+                pairs.append((w, o, pw, po))
+                skip |= {o["id"], partner}
+    if not pairs:
+        return scene, []
+    out = json.loads(json.dumps(scene))
+    for w in out.get("walls", []):
+        w["openings"] = [o for o in w.get("openings", []) if o["id"] not in skip]
+    return out, pairs
+
+
+def _corner_end(wall, other):
+    """0 when the wall's start is at the corner with the other wall, 1 when its end is."""
+    a, b = _pt(wall["start"]), _pt(wall["end"])
+    oa, ob = _pt(other["start"]), _pt(other["end"])
+    u = _unit(_sub(ob, oa))
+    dist = lambda p: abs(_dot(_sub(p, oa), _left(u)))  # noqa: E731
+    return 0 if dist(a) < dist(b) else 1
+
+
+def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="frame"):
+    """Builds each corner window as in the recipe tested on 27.10.2026 (тест-угол.pln): CreateWindows
+    on the first wall with cornerWindow, Archicad adds the linked twin on the other wall; each
+    width is then set so the far edge lands where the scene has it (Archicad keeps the corner
+    edge); the frames meet frame to frame or at a corner post (joint)."""
+    built = {}
+    for w, o, pw, po in pairs:
+        if w["id"] not in wall_guid or pw["id"] not in wall_guid:
+            report.errors.append(f"Угловое окно {o['id']}/{po['id']}: стены не построены")
+            continue
+        before = {_guid(e) for e in ac.tapir("GetElementsByType", {"elementType": "Window"}).get("elements", [])}
+        res = ac.tapir("CreateWindows", {"windowsData": [{
+            "ownerWallId": {"guid": wall_guid[w["id"]]}, "centerOffset": float(o["centerOffset"]),
+            "width": float(o["width"]), "height": float(o["height"]), "sillHeight": float(o.get("sill", 0)),
+            "cornerWindow": True}]})
+        guids = _created(res, "elements", report, f"Угловое окно {o['id']}")
+        if not guids or not guids[0]:
+            continue
+        first = guids[0]
+        after = {_guid(e) for e in ac.tapir("GetElementsByType", {"elementType": "Window"}).get("elements", [])}
+        twins = list(after - before - {first})
+        if len(twins) != 1:
+            report.errors.append(f"Угловое окно {o['id']}: Archicad не поставил пару на {pw['id']} (новых окон {len(twins)})")
+            continue
+        second = twins[0]
+        # the far edge of each part where the scene has it; the corner edge stays Archicad's
+        mods = []
+        for guid, wall, op, other in ((first, w, o, pw), (second, pw, po, w)):
+            length = _len(_sub(_pt(wall["end"]), _pt(wall["start"])))
+            at_end = _corner_end(wall, other) == 1
+            c, half = float(op["centerOffset"]), float(op["width"]) / 2
+            far = c - half if at_end else c + half
+            det = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": {"guid": guid}}]})
+            d = (det.get("detailsOfElements") or [{}])[0].get("details", {})
+            cur_c, cur_w = float(d.get("centerOffset", c)), float(d.get("width", op["width"]))
+            corner = cur_c + cur_w / 2 if at_end else cur_c - cur_w / 2
+            width = abs(corner - far)
+            mods.append({"elementId": {"guid": guid}, "width": round(width, 4),
+                         "centerOffset": round((corner + far) / 2, 4), "revealDepthOffset": setback})
+            if not (0 <= far <= length):
+                report.errors.append(f"Угловое окно {op['id']}: дальний край вне стены {wall['id']}")
+        ac.tapir("ModifyWindows", {"windowsWithDetails": mods})
+        # the frames meet: 1 «Коробка» (frame to frame, Игорь 04.11.2026: «не с колонной»),
+        # 2 «Угловой Импост» (a corner post); per window "corner": {"joint": ...} or the profile
+        kind = {"frame": 1, "mullion": 2}.get((o.get("corner") or {}).get("joint", joint), 1)
+        ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": [
+            {"elementId": {"guid": g}, "gdlParameters": [
+                {"name": "iCornerConnTypeLeft", "value": kind}, {"name": "iCornerConnTypeRight", "value": kind},
+                {"name": "gs_corner_column", "value": kind == 2}, {"name": "gs_window_handle", "value": True},
+                {"name": "gs_sill_outside", "value": True}, {"name": "gs_board_inside", "value": False}]}
+            for g in (first, second)]})
+        # check: the twin is still linked, and the far edges where they should be
+        check = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": {"guid": g}} for g in (first, second)]})
+        for m, item in zip(mods, check.get("detailsOfElements", [])):
+            d = item.get("details", {})
+            if abs(float(d.get("width", 0)) - m["width"]) > 0.005:
+                report.errors.append(f"Угловое окно: ширина {d.get('width')} вместо {m['width']}")
+        built[o["id"]], built[po["id"]] = first, second
+        report.step("угловое окно", pair=f"{o['id']}+{po['id']}", widths=[m["width"] for m in mods])
+    return built
+
+
 def set_layer(ac, guids, index, report, what):
     guids = [g for g in guids if g]
     if not guids or not index:
@@ -1107,10 +1201,15 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
               "favorites": {k: F[k] for k in ("wall", "door", "window", "zone") if F.get(k)},
               "layers": {"walls": L["bearingWalls"], "zones": L["zones"]},
               "materials": {"measuredWalls": profile["walls"]["material"], "assumedWalls": profile["walls"]["material"]}}
+    model_scene, corner_pairs = split_corner_windows(scene)
+    params["scene"] = model_scene
     model = ac.tapir("BuildModelFromScan", params, timeout=600)
     report.errors += model.get("errors", [])
     wall_guid = {w["id"]: _guid(w) for w in model.get("walls", [])}
     opening_guid = {o["id"]: _guid(o) for o in model.get("windows", []) + model.get("doors", [])}
+    if corner_pairs:
+        opening_guid.update(build_corner_windows(ac, corner_pairs, wall_guid, report,
+                                                 joint=profile.get("openings", {}).get("cornerJoint", "frame")))
     zone_guid = {z["id"]: _guid(z) for z in model.get("zones", [])}
     zone_guids = list(zone_guid.values())
     report.step("модель", walls=len(wall_guid), openings=len(opening_guid), zones=len(zone_guids))
