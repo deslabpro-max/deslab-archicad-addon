@@ -6416,7 +6416,7 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
                 }
                 return false;
             }();
-            if (hasLeader && (directionCoord.x < -1e-9 || (std::fabs (directionCoord.x) <= 1e-9 && directionCoord.y < 0.0))) {
+            if (hasLeader && ((std::fabs (directionCoord.x) >= std::fabs (directionCoord.y)) ? directionCoord.x < 0.0 : directionCoord.y < 0.0)) {
                 directionCoord.x = -directionCoord.x;
                 directionCoord.y = -directionCoord.y;
                 GS::Array<AssociativeDimensionPoint> reversed;
