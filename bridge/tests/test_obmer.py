@@ -148,7 +148,7 @@ def test_room_outline_on_wall_faces():
     bad = copy.deepcopy(SCENE)
     bad["walls"][0]["start"]["y"] = bad["walls"][0]["end"]["y"] = 0.2
     errs = obmer.check_room_faces(bad)
-    assert len(errs) == 1 and "без стены" in errs[0], errs
+    assert len(errs) == 1 and "W1 стоит внутри помещения" in errs[0], errs
 
 
 def test_walls_from_outline():

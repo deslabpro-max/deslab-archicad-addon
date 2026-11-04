@@ -182,13 +182,15 @@ def check_room_faces(scene, tol=0.005):
             e = _unit(_sub(q, p))
             inward = _left(e) if ccw else _mul(_left(e), -1.0)
             mid = _mul(_add(p, q), 0.5)
-            best = None
+            best, inside = None, None
             for w, a, b, u, half in walls:
                 if abs(abs(_dot(e, u)) - 1) > 1e-4:
                     continue
                 # the wall must stand OUTSIDE the room: its axis behind the edge, away from the
                 # room (the kv94 fault: the axis 0.1 into the room, the wall's far face on the edge)
                 if _dot(_sub(a, mid), inward) > 0:
+                    if abs(abs(_dot(_sub(mid, a), _left(u))) - half) <= tol:
+                        inside = w["id"]
                     continue
                 off = abs(_dot(_sub(mid, a), _left(u)))  # edge from the wall axis
                 gap = abs(off - half)                     # edge from the nearer face
@@ -199,7 +201,10 @@ def check_room_faces(scene, tol=0.005):
                     continue
                 if best is None or gap < best[0]:
                     best = (gap, w["id"], off, half)
-            if best is None:
+            if best is None and inside:
+                errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}): "
+                              f"стена {inside} стоит внутри помещения, а должна снаружи (ось не в ту сторону)")
+            elif best is None:
                 errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}) "
                               f"без стены вдоль него")
             elif best[0] > tol:
