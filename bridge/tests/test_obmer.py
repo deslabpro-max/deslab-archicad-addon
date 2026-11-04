@@ -104,8 +104,8 @@ def test_door_labels_stay_inside():
 
 def test_short_segment_text_is_placed():
     # a door 0.25 m from the corner: the 250 text goes on a leader, as in the office template:
-    # from the segment middle on the dimension line square into the room, then a shelf back
-    # over the chain; it sits on the segment's end witness point
+    # from the segment middle on the dimension line square into the room, then a shelf; it sits
+    # on the segment's end witness point
     import copy
     scene = copy.deepcopy(SCENE)
     scene["walls"][1]["openings"][0]["centerOffset"] = 0.65  # door 0.25 .. 1.05 on the east wall
@@ -116,9 +116,10 @@ def test_short_segment_text_is_placed():
     x = east[0]["referencePoint"]["x"]
     assert lead[1]["beg"] == {"x": x, "y": 0.125}
     assert lead[1]["mid"]["x"] < x and lead[1]["mid"]["y"] == 0.125
-    assert lead[1]["end"]["y"] > 0.125  # the shelf runs back over the chain
-    # the south chain's text stands at y 0.25..0.45 next to the corner: the leader text goes past it
-    assert lead[1]["end"]["y"] > 0.45, lead
+    # Игорь's rule (run 15): the shelf runs out past the chain end, here past the first point
+    # down over the wall, about as long as the text; reading bottom-up, the leader holds its end
+    assert lead[1]["end"]["y"] < 0.0, lead
+    assert lead[1]["anchorAtTextEnd"] is True
     assert not east[0].get("leaderConflict")
 
 

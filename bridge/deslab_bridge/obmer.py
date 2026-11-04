@@ -480,17 +480,18 @@ def plan_dimension_chains(scene, profile):
     rise = cfg.get("leaderRise", 0.22)
     shelf = cfg.get("leaderShelf", 0.1)
     pen = cfg.get("leaderPen", 120)  # pen of the leaders in the office template
-    # the leader text must keep clear of walls and of the other dimension texts (run 14: «273»
-    # on the «788» of the crossing chain); first the template-like shape, then a higher elbow,
-    # the other shelf direction, and last a longer shelf past the obstacle
+    # Where the leader goes (Игорь's own fix of run 15, 04.11.2026): the shelf runs OUT past the
+    # end of the chain, to the free side (over the wall hatch or into a doorway is fine), about
+    # as long as the text, and the text starts at the shelf end; only when that side is taken
+    # does the shelf run back over the chain, the text continuing past its end. The text keeps
+    # clear of the other dimension texts and of the leader texts placed before it.
     lab = profile["labels"]
-    walls = [_rect_of_segment(_pt(w["start"]), _pt(w["end"]), float(w.get("thickness", 0.2)) / 2)
-             for w in scene.get("walls", [])]
     text_half = cfg.get("leaderTextHalf", 0.07)
     clear = cfg.get("leaderClear", 0.1)
+    char = lab.get("charMm", 1.4) * lab.get("drawingScale", 45) / 1000.0
 
     def text_width(seg):
-        return (len(str(int(round(seg * 1000)))) + 1) * lab.get("charMm", 1.4) * lab.get("drawingScale", 45) / 1000.0
+        return (len(str(int(round(seg * 1000)))) + 1) * char
 
     texts = []  # (chain, box) of the ordinary dimension texts, over their segment middles
     for ch in chains:
@@ -506,36 +507,48 @@ def plan_dimension_chains(scene, profile):
 
     def text_hits(ch, a, b):
         box = _rect_of_segment(a, b, text_half)
-        return any(_box_hits(box, w) for w in walls) or any(_box_hits(box, t) for c, t in texts if c is not ch)
+        return any(_box_hits(box, t) for c, t in texts if c is not ch)
 
     for ch in chains:
         d, n = _pt(ch["direction"]), _pt(ch["normal"])
         ref = _pt(ch["referencePoint"])
         ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
         last = len(ts) - 2
+        # texts read from left to right and from bottom to top
+        read = (1.0, 0.0) if abs(d[0]) >= abs(d[1]) else (0.0, 1.0)
         for k in range(len(ts) - 1):
             seg = abs(ts[k + 1] - ts[k])
             if seg >= short:
                 continue
             width = text_width(seg)
+            run = min(max(width - char, cfg.get("leaderShelfMin", 0.12)), cfg.get("leaderShelfMax", 0.22))
             beg = _add(ref, _mul(d, (ts[k] + ts[k + 1]) / 2))
-            # back over the chain: at the last segment against the direction, else with it
-            sign = -1 if (k == last and k > 0) else 1
-            options = [(r, sg, sh) for sg in (sign, -sign) for r in (rise, rise + 0.15, rise + 0.3) for sh in (shelf,)]
-            options += [(rise, sg, sh) for sg in (sign, -sign) for sh in (0.25, 0.4, 0.55)]
+            if k == last and k > 0:
+                out = 1 if ts[k + 1] > ts[k] else -1
+            elif k == 0 and last > 0:
+                out = -1 if ts[k + 1] > ts[k] else 1
+            else:
+                out = 1
+            options = [(rise, sg, run) for sg in (out, -out)]
+            options += [(r, sg, run) for r in (rise + 0.15, rise + 0.3) for sg in (out, -out)]
+            options += [(rise, sg, sh) for sg in (out, -out) for sh in (run + 0.15, run + 0.3)]
             chosen = None
             for r, sg, sh in options:
                 mid = _add(beg, _mul(n, r))
                 end = _add(mid, _mul(d, sg * sh))
                 if not text_hits(ch, end, _add(end, _mul(d, sg * width))):
-                    chosen = (mid, end)
+                    chosen = (mid, end, sg)
                     break
             if chosen is None:
                 mid = _add(beg, _mul(n, rise))
-                chosen = (mid, _add(mid, _mul(d, sign * shelf)))
+                chosen = (mid, _add(mid, _mul(d, out * run)), out)
                 ch.setdefault("leaderConflict", []).append(k + 1)
-            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(chosen[0]), "end": _xy(chosen[1]), "pen": pen}
-            texts.append((ch, _rect_of_segment(chosen[1], _add(chosen[1], _mul(_unit(_sub(chosen[1], chosen[0])), width)), clear)))
+            mid, end, sg = chosen
+            # the leader holds the end of the text when the shelf runs against the reading way
+            at_end = _dot(_mul(d, sg), read) < 0
+            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(end), "pen": pen,
+                                                       "anchorAtTextEnd": at_end}
+            texts.append((ch, _rect_of_segment(end, _add(end, _mul(d, sg * width)), clear)))
     return chains
 
 
