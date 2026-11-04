@@ -610,13 +610,17 @@ def place_dimension_texts(chains, labels, profile):
             own.append((p, _add(q, _mul(_unit(_sub(q, p)) if _len(_sub(q, p)) > 1e-9 else (0.0, 0.0), over))))
         lines += [(ch, s_) for s_ in own]
         boxes += [(ch, bx) for bx in ch.get("leaderBoxes", [])]
+    margin = cfg.get("labelMargin", 0.05)  # the real label text runs a little longer than estimated
     for lb in labels:
         beg, mid, end = _pt(lb["begCoordinate"]), _pt(lb["midCoordinate"]), _pt(lb["endCoordinate"])
         lines += [(None, (beg, mid)), (None, (mid, end))]
         if lb.get("box"):
-            boxes.append((None, tuple(lb["box"])))
+            x0, y0, x1, y1 = lb["box"]
+            # the shelf runs under the whole text (run 18: «1498» on the shelf of «hокна 1785»)
+            lines.append((None, ((x0 - margin, mid[1]), (x1 + margin, mid[1]))))
+            boxes.append((None, (x0 - margin, y0, x1 + margin, y1)))
 
-    pad = cfg.get("textPad", 0.02)
+    pad = cfg.get("textPad", 0.04)  # 3-4 cm clear of any line (run 18: 1 cm looked cramped)
 
     def text_box(c, d, width):
         # along the line: the text and a small gap; across: the text height on either side
