@@ -480,19 +480,62 @@ def plan_dimension_chains(scene, profile):
     rise = cfg.get("leaderRise", 0.22)
     shelf = cfg.get("leaderShelf", 0.1)
     pen = cfg.get("leaderPen", 120)  # pen of the leaders in the office template
+    # the leader text must keep clear of walls and of the other dimension texts (run 14: «273»
+    # on the «788» of the crossing chain); first the template-like shape, then a higher elbow,
+    # the other shelf direction, and last a longer shelf past the obstacle
+    lab = profile["labels"]
+    walls = [_rect_of_segment(_pt(w["start"]), _pt(w["end"]), float(w.get("thickness", 0.2)) / 2)
+             for w in scene.get("walls", [])]
+    text_half = cfg.get("leaderTextHalf", 0.07)
+    clear = cfg.get("leaderClear", 0.1)
+
+    def text_width(seg):
+        return (len(str(int(round(seg * 1000)))) + 1) * lab.get("charMm", 1.4) * lab.get("drawingScale", 45) / 1000.0
+
+    texts = []  # (chain, box) of the ordinary dimension texts, over their segment middles
+    for ch in chains:
+        d, ref = _pt(ch["direction"]), _pt(ch["referencePoint"])
+        ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
+        for k in range(len(ts) - 1):
+            seg = abs(ts[k + 1] - ts[k])
+            if seg < short:
+                continue
+            c = _add(ref, _mul(d, (ts[k] + ts[k + 1]) / 2))
+            w = text_width(seg) / 2
+            texts.append((ch, _rect_of_segment(_sub(c, _mul(d, w)), _add(c, _mul(d, w)), clear)))
+
+    def text_hits(ch, a, b):
+        box = _rect_of_segment(a, b, text_half)
+        return any(_box_hits(box, w) for w in walls) or any(_box_hits(box, t) for c, t in texts if c is not ch)
+
     for ch in chains:
         d, n = _pt(ch["direction"]), _pt(ch["normal"])
         ref = _pt(ch["referencePoint"])
         ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
         last = len(ts) - 2
         for k in range(len(ts) - 1):
-            if abs(ts[k + 1] - ts[k]) >= short:
+            seg = abs(ts[k + 1] - ts[k])
+            if seg >= short:
                 continue
+            width = text_width(seg)
             beg = _add(ref, _mul(d, (ts[k] + ts[k + 1]) / 2))
-            mid = _add(beg, _mul(n, rise))
             # back over the chain: at the last segment against the direction, else with it
-            along = _mul(d, -1 if (k == last and k > 0) else 1)
-            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(_add(mid, _mul(along, shelf))), "pen": pen}
+            sign = -1 if (k == last and k > 0) else 1
+            options = [(r, sg, sh) for sg in (sign, -sign) for r in (rise, rise + 0.15, rise + 0.3) for sh in (shelf,)]
+            options += [(rise, sg, sh) for sg in (sign, -sign) for sh in (0.25, 0.4, 0.55)]
+            chosen = None
+            for r, sg, sh in options:
+                mid = _add(beg, _mul(n, r))
+                end = _add(mid, _mul(d, sg * sh))
+                if not text_hits(ch, end, _add(end, _mul(d, sg * width))):
+                    chosen = (mid, end)
+                    break
+            if chosen is None:
+                mid = _add(beg, _mul(n, rise))
+                chosen = (mid, _add(mid, _mul(d, sign * shelf)))
+                ch.setdefault("leaderConflict", []).append(k + 1)
+            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(chosen[0]), "end": _xy(chosen[1]), "pen": pen}
+            texts.append((ch, _rect_of_segment(chosen[1], _add(chosen[1], _mul(_unit(_sub(chosen[1], chosen[0])), width)), clear)))
     return chains
 
 
@@ -820,6 +863,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     for ch in chains:
         if ch.get("conflict"):
             report.errors.append(f"Размер {ch['room']}/{ch['edge']}: наложение на цепочки {ch['conflict']}, поправить вручную")
+        if ch.get("leaderConflict"):
+            report.errors.append(f"Размер {ch['room']}/{ch['edge']}: текст на выноске у точек {ch['leaderConflict']} не нашёл свободного места, поправить вручную")
     report.step("размерные цепочки", chains=len(chains), dimensions=len(dim_guids))
 
     # 5. Wet zones.

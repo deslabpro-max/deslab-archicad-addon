@@ -117,6 +117,9 @@ def test_short_segment_text_is_placed():
     assert lead[1]["beg"] == {"x": x, "y": 0.125}
     assert lead[1]["mid"]["x"] < x and lead[1]["mid"]["y"] == 0.125
     assert lead[1]["end"]["y"] > 0.125  # the shelf runs back over the chain
+    # the south chain's text stands at y 0.25..0.45 next to the corner: the leader text goes past it
+    assert lead[1]["end"]["y"] > 0.45, lead
+    assert not east[0].get("leaderConflict")
 
 
 def test_partitions_and_overrides():
