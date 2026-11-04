@@ -1207,6 +1207,14 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     report.errors += model.get("errors", [])
     wall_guid = {w["id"]: _guid(w) for w in model.get("walls", [])}
     opening_guid = {o["id"]: _guid(o) for o in model.get("windows", []) + model.get("doors", [])}
+    # deslab: three even panes in a three-sash window (Игорь 04.11.2026); the add-on does it too
+    # from 240c9c5, this keeps older add-ons right
+    wide = [opening_guid[o["id"]] for w in model_scene.get("walls", []) for o in w.get("openings", [])
+            if o.get("kind") == "window" and float(o.get("width", 0)) > 1.9 and o["id"] in opening_guid]
+    if wide and not F.get("window"):
+        _check_details(ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": [
+            {"elementId": {"guid": g}, "gdlParameters": [{"name": "gs_iPanesConfig", "value": 1}]} for g in wide]}),
+            report, "Равные створки")
     if corner_pairs:
         opening_guid.update(build_corner_windows(ac, corner_pairs, wall_guid, report,
                                                  joint=profile.get("openings", {}).get("cornerJoint", "frame")))
