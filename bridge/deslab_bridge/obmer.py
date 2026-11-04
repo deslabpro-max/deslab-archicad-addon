@@ -54,6 +54,16 @@ def _left(u):
     return (-u[1], u[0])
 
 
+def _snap_axis(u, max_deg):
+    """u turned onto the nearest axis when it is within max_deg of it."""
+    lim = math.sin(math.radians(max_deg))
+    if abs(u[1]) <= lim:
+        return (1.0 if u[0] > 0 else -1.0, 0.0)
+    if abs(u[0]) <= lim:
+        return (0.0, 1.0 if u[1] > 0 else -1.0)
+    return u
+
+
 def _xy(p):
     return {"x": round(p[0], 4), "y": round(p[1], 4)}
 
@@ -448,8 +458,11 @@ def plan_dimension_chains(scene, profile):
                     kept.append(p)
             if len(kept) < 2:
                 continue
+            # a chain off the axis by a hair (scanned walls lean 0.06-0.2°) reads top to bottom in
+            # Archicad; a strictly vertical one reads bottom to top as in the template (run 15)
+            du = _snap_axis(u, cfg.get("axisSnapDeg", 1.0))
             chains.append({"room": room["id"], "edge": ms[0]["i"], "edges": [e["i"] for e in ms],
-                           "direction": _xy(u), "normal": _xy(n), "referencePoint": _xy(ref),
+                           "direction": _xy(du), "normal": _xy(n), "referencePoint": _xy(ref),
                            "offset": round(depth - min(depths) + cfg["offsetFromFace"], 4),
                            "points": [_xy(p) for p in kept]})
     # move the shorter of two conflicting chains further in, a few times at most

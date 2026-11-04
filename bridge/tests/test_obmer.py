@@ -123,6 +123,14 @@ def test_short_segment_text_is_placed():
     assert not east[0].get("leaderConflict")
 
 
+def test_chain_direction_on_the_axis():
+    # a scanned wall leaning 0.1°: its chain still runs strictly along the axis, so Archicad
+    # writes a vertical dimension from bottom to top as in the template (Игорь, run 15)
+    assert obmer._snap_axis((-0.0011, 0.9999994), 1.0) == (0.0, 1.0)
+    assert obmer._snap_axis((0.9999, 0.0053), 1.0) == (1.0, 0.0)
+    assert obmer._snap_axis((0.7071, 0.7071), 1.0) == (0.7071, 0.7071)
+
+
 def test_partitions_and_overrides():
     scene = obmer.apply_room_overrides(dict(SCENE, rooms=[dict(SCENE["rooms"][0])]), {"R1": {"name": "Санузел", "wet": "bathroom"}})
     assert scene["rooms"][0]["name"] == "Санузел"
