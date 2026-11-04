@@ -136,6 +136,32 @@ def test_blocked_dimension_text_goes_on_a_leader():
     assert abs(lead["beg"]["y"] - 0.3) > 0.02 and lead["beg"]["x"] == 3.65, lead
     assert 1 not in east.get("textAt", {})
 
+def test_room_outline_on_wall_faces():
+    # Игорь 04.11.2026 (kv94): a wall a thickness off its place must never get built
+    assert obmer.check_room_faces(SCENE) == []
+    import copy
+    bad = copy.deepcopy(SCENE)
+    bad["walls"][0]["start"]["y"] = bad["walls"][0]["end"]["y"] = -0.4  # moved out by its thickness/2
+    errs = obmer.check_room_faces(bad)
+    assert len(errs) == 1 and "W1" in errs[0] and "200 мм" in errs[0], errs
+
+
+def test_walls_from_outline():
+    # an L-shaped flat drawn from a PDF: walls from the inner outline, axes meeting at corners
+    poly = [(0, 0), (2.493, 0), (2.493, 2.27), (11.752, 2.27), (11.752, 9.854), (0, 9.854)]
+    th = [0.44, 0.2, 0.44, 0.439, 0.441, 0.44]
+    edges = [{"id": f"W{i + 1}", "thickness": t, "openings": []} for i, t in enumerate(th)]
+    edges[4]["openings"] = [{"id": "W5.1", "kind": "window", "from": 0.0, "width": 2.107, "sill": 0.55, "height": 2.5}]
+    walls = obmer.walls_from_outline([{"x": x, "y": y} for x, y in poly], edges, 3.39)
+    scene = {"walls": walls, "rooms": [{"id": "R1", "polygon": [{"x": x, "y": y} for x, y in poly]}]}
+    assert obmer.check_room_faces(scene) == [], obmer.check_room_faces(scene)
+    w3 = walls[2]  # the bottom wall at y 2.27: its axis 0.22 below the face
+    assert abs(w3["start"]["y"] - 2.05) < 1e-9 and abs(w3["end"]["y"] - 2.05) < 1e-9, w3
+    w5 = walls[4]  # the top wall, run right to left; the window starts at the corner 11.752
+    c = w5["openings"][0]["centerOffset"]
+    sx = w5["start"]["x"]
+    assert abs((sx - c) - (11.752 - 2.107 / 2)) < 1e-6, (sx, c)
+
 def test_dimension_texts_clear_of_lines():
     # Игорь, 04.11.2026: no line may cross a dimension text; the text slides along its line.
     # The door label leader runs through the middle of the 1200 and the 800, the south chain's

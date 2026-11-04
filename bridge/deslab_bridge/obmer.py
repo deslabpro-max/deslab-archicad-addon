@@ -160,6 +160,94 @@ def _opening_points(wall):
         yield o, c, _sub(c, _mul(u, half)), _add(c, _mul(u, half)), u, _left(u)
 
 
+def check_room_faces(scene, tol=0.005):
+    """deslab: every edge of a room outline must lie on a wall face (Игорь, 04.11.2026: in kv94
+    a bottom wall stood a wall thickness off its place, so the plan's outline dimensions were
+    wrong). Returns the errors: an edge with no wall face on it within tol, with the nearest one."""
+    errors = []
+    walls = []
+    for w in scene.get("walls", []):
+        a, b = _pt(w["start"]), _pt(w["end"])
+        if _len(_sub(b, a)) < 1e-6:
+            continue
+        walls.append((w, a, b, _unit(_sub(b, a)), float(w.get("thickness", 0.2)) / 2))
+    for room in scene.get("rooms", []):
+        poly = [_pt(p) for p in room["polygon"]]
+        for i, p in enumerate(poly):
+            q = poly[(i + 1) % len(poly)]
+            length = _len(_sub(q, p))
+            if length < 0.05:
+                continue
+            e = _unit(_sub(q, p))
+            mid = _mul(_add(p, q), 0.5)
+            best = None
+            for w, a, b, u, half in walls:
+                if abs(abs(_dot(e, u)) - 1) > 1e-4:
+                    continue
+                off = abs(_dot(_sub(mid, a), _left(u)))  # edge from the wall axis
+                gap = abs(off - half)                     # edge from the nearer face
+                t = sorted([_dot(_sub(p, a), u), _dot(_sub(q, a), u)])
+                lo, hi = min(0.0, _dot(_sub(b, a), u)), max(0.0, _dot(_sub(b, a), u))
+                cover = max(0.0, min(hi + half, t[1]) - max(lo - half, t[0]))
+                if cover < 0.5 * length:
+                    continue
+                if best is None or gap < best[0]:
+                    best = (gap, w["id"], off, half)
+            if best is None:
+                errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}) "
+                              f"без стены вдоль него")
+            elif best[0] > tol:
+                errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}) "
+                              f"не на грани стены {best[1]}: ось в {best[2] * 1000:.0f} мм, половина толщины "
+                              f"{best[3] * 1000:.0f} мм, промах {best[0] * 1000:.0f} мм")
+    return errors
+
+
+def walls_from_outline(polygon, edges, height, tol=1e-6):
+    """deslab: walls of a flat drawn from a measured plan (a PDF), placed from the INNER outline,
+    so a wall can never stand a thickness off (Игорь, 04.11.2026, kv94). polygon: the room
+    outline (the inner faces), edges[i]: the wall on the edge polygon[i] → polygon[i+1]:
+    {"id", "thickness", "kind", "openings": [{"id", "kind", "from", "width", "sill", "height",
+    ...}]}, "from" measured on the inner face from polygon[i]. The wall axis is the face moved
+    out by half the thickness; neighbouring axes meet at the corners. Returns the walls."""
+    poly = [_pt(p) for p in polygon]
+    n = len(poly)
+    ccw = polygon_area(poly) > 0
+    axes = []
+    for i in range(n):
+        p, q = poly[i], poly[(i + 1) % n]
+        u = _unit(_sub(q, p))
+        out = _mul(_left(u), -1.0) if ccw else _left(u)
+        half = float(edges[i]["thickness"]) / 2
+        axes.append((_add(p, _mul(out, half)), u))
+
+    def meet(a1, u1, a2, u2, fallback):
+        den = u1[0] * u2[1] - u1[1] * u2[0]
+        if abs(den) < tol:
+            return fallback
+        w = _sub(a2, a1)
+        t = (w[0] * u2[1] - w[1] * u2[0]) / den
+        return _add(a1, _mul(u1, t))
+
+    walls = []
+    for i in range(n):
+        a, u = axes[i]
+        pa, pu = axes[i - 1]
+        na, nu = axes[(i + 1) % n]
+        start = meet(pa, pu, a, u, a)
+        end = meet(a, u, na, nu, _add(a, _mul(u, _len(_sub(poly[(i + 1) % n], poly[i])))))
+        e = edges[i]
+        openings = []
+        for o in e.get("openings", []):
+            o = dict(o)
+            c_face = _add(poly[i], _mul(u, float(o.pop("from")) + float(o["width"]) / 2))
+            o["centerOffset"] = round(_dot(_sub(c_face, start), u), 4)
+            openings.append(o)
+        walls.append({"id": e["id"], "start": _xy(start), "end": _xy(end), "thickness": e["thickness"],
+                      "height": height, "kind": e.get("kind", "exterior"), "openings": openings})
+    return walls
+
+
 def plan_height_texts(scene, profile):
     texts = []
     fmt = profile["zone"]["heightTextFormat"]
@@ -993,6 +1081,10 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
 def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_favorites):
     if scene.get("format") != SCENE_FORMAT:
         raise ValueError(f"Задание не в формате {SCENE_FORMAT}")
+    faults = check_room_faces(scene)
+    if faults and not scene.get("allowLooseRoomEdges"):
+        raise ValueError("Контур помещения не лежит на гранях стен, план не строю (размеры по контуру "
+                         "были бы неверны):\n" + "\n".join(faults))
     scene = shift_scene(apply_room_overrides(json.loads(json.dumps(scene)), rooms), origin)
     for room in scene.get("rooms", []):
         room.setdefault("name", f"{profile['zone']['defaultName']} {room.get('number', '')}".strip())
