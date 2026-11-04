@@ -846,15 +846,34 @@ GSErrCode ApplyDimensionTextLeaders (
     }
 
     const Int32 nDimElem = static_cast<Int32> (BMGetHandleSize (reinterpret_cast<GSHandle> (memo.dimElems)) / sizeof (API_DimElem));
-    const Int32 count = std::min<Int32> (nDimElem, static_cast<Int32> (points.GetSize ()));
-    double angle = std::atan2 (element.dimension.direction.y, element.dimension.direction.x);
+    const API_Vector dir = element.dimension.direction;
+    double angle = std::atan2 (dir.y, dir.x);
     angle = (std::fabs (std::sin (angle)) > std::fabs (std::cos (angle))) ? 1.5707963267949 : 0.0;
-    for (Int32 k = 0; k < count; ++k) {
+    // Archicad may store the witness points in another order than sent (run 12: reversed),
+    // so the leader goes to the segment whose span along the chain holds leaderBeg (the
+    // segment middle), on that segment's later point in Archicad's order, as in the template.
+    auto along = [&] (const API_Coord& c) { return c.x * dir.x + c.y * dir.y; };
+    for (UIndex k = 0; k < points.GetSize (); ++k) {
         const AssociativeDimensionPoint& point = points[k];
         if (!point.hasTextLeader) {
             continue;
         }
-        API_NoteType& note = (*memo.dimElems)[k].note;
+        const double t = along (point.leaderBeg);
+        Int32 target = -1;
+        double bestMiss = 1e9;
+        for (Int32 i = 1; i < nDimElem; ++i) {
+            const double a = along ((*memo.dimElems)[i - 1].base.loc);
+            const double b = along ((*memo.dimElems)[i].base.loc);
+            const double miss = std::max (0.0, std::max (std::min (a, b) - t, t - std::max (a, b)));
+            if (miss < bestMiss) {
+                bestMiss = miss;
+                target = i;
+            }
+        }
+        if (target < 0 || bestMiss > 0.01) {
+            continue;
+        }
+        API_NoteType& note = (*memo.dimElems)[target].note;
         note.fixPos = true;
         note.useLeaderLine = true;
         note.anchorAtTextEnd = false;
