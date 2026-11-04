@@ -246,7 +246,6 @@ def plan_opening_labels(scene, profile, obstacles=None):
     obstacles = obstacles or {"walls": [], "dims": [], "marks": []}
     dim_dirs = obstacles.get("dimDirs") or [None] * len(obstacles["dims"])
     rooms = [[_pt(p) for p in r["polygon"]] for r in scene.get("rooms", [])]
-    placed = []
     labels = []
     corners = [p for r in rooms for p in r]
     flat = (min(p[0] for p in corners), min(p[1] for p in corners), max(p[0] for p in corners), max(p[1] for p in corners)) if corners else None
@@ -280,8 +279,14 @@ def plan_opening_labels(scene, profile, obstacles=None):
         # an entrance hall without a zone: the side facing the middle of the flat
         return n if flat_mid and _dot(_sub(flat_mid, c), n) >= 0 else _mul(n, -1)
 
-    def one_cost(dot, mid, lead_dir, box, u, half_t, taken):
+    def one_cost(dot, mid, lead_dir, box, u, half_t, taken, leads=()):
         cost = 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
+        # deslab: no line through a label text, and no leader across another label's text or
+        # line (kv94 corner window, 04.11.2026: the leaders of W1.4 and W2.3 crossed)
+        shelf = ((box[0], mid[1]), (box[2], mid[1]))
+        cost += 100 * sum(_seg_box(a, b, box) for a, b in leads)
+        cost += 100 * sum(_seg_box(dot, mid, t) or _seg_box(shelf[0], shelf[1], t) for t in taken)
+        cost += 15 * sum(_seg_cross(dot, mid, a, b) or _seg_cross(shelf[0], shelf[1], a, b) for a, b in leads)
         cost += 100 * sum(_box_hits(box, d) for d in obstacles["dims"])
         cost += 100 * sum(_box_hits(box, m) for m in obstacles["marks"] + taken)
         for d, dd in zip(obstacles["dims"], dim_dirs):
@@ -295,18 +300,21 @@ def plan_opening_labels(scene, profile, obstacles=None):
             cost += 60  # off the outline of the flat
         return cost
 
-    for wall in scene.get("walls", []):
+    def choose(wall, others, every=False):
         half_t = float(wall.get("thickness", 0.2)) / 2
         items = []
         for o, c, _, _, u, n in _opening_points(wall):
             runs, width, nlines, line = text_of(o)
             items.append((o, c, u, n, runs, width, (nlines, line)))
         if not items:
-            continue
+            return None
+        o_boxes = [b for r in others for b in r["boxes"]]
+        o_leads = [ln for r in others for ln in r["leads"]]
         u, n = items[0][2], items[0][3]
         n_in = inner_side(items[0][1], n, half_t)
         vertical_wall = abs(u[1]) > abs(u[0])
         best = None
+        options = []
         for side_rank, side in enumerate((n_in, _mul(n_in, -1))):
             # deslab: how Archicad draws the label (test of 03.11.2026): the text block is hung at
             # the shelf end (left edge for a shelf to the right, right edge for one to the left),
@@ -319,23 +327,72 @@ def plan_opening_labels(scene, profile, obstacles=None):
                 for length in cfg["leaderLengths"]:
                     for shelf in shelves:
                         total = side_rank * 200 + length * weight + (3 if shelf != shelves[0] else 0)
-                        taken = list(placed)
+                        taken = list(o_boxes)
+                        leads = list(o_leads)
                         result = []
                         for o, c, _, _, runs, width, (nlines, line) in items:
                             dot = _add(c, _mul(side, half_t))
                             mid = _add(dot, _mul(lead_dir, length))
-                            x0 = mid[0] + 0.01 if shelf > 0 else mid[0] - 0.01 - width
                             y0, y1 = (mid[1], mid[1] + line) if nlines == 1 else (mid[1] - line, mid[1] + line)
-                            box = (x0, y0, x0 + width, y1)
-                            total += one_cost(dot, mid, lead_dir, box, u, half_t, taken)
+                            # the row keeps one shelf way; a label at the end of the row whose
+                            # text would run onto a dimension chain or another label turns its
+                            # shelf back (kv94 corner window, 04.11.2026)
+                            ways = [shelf] if vertical_wall else [shelf, -shelf]
+                            pick = None
+                            for rank, way in enumerate(ways):
+                                x0 = mid[0] + 0.01 if way > 0 else mid[0] - 0.01 - width
+                                box = (x0, y0, x0 + width, y1)
+                                cst = one_cost(dot, mid, lead_dir, box, u, half_t, taken, leads) + 30 * rank
+                                if pick is None or cst < pick[0]:
+                                    pick = (cst, way, box)
+                            cst, way, box = pick
+                            total += cst
                             taken.append(box)
-                            result.append((o, runs, dot, mid, shelf, width, box))
+                            leads += [(dot, mid), ((box[0], mid[1]), (box[2], mid[1]))]
+                            result.append((o, runs, dot, mid, way, width, box))
+                        options.append((total, result))
                         if best is None or total < best[0]:
                             best = (total, result)
-        total, result = best
+
+        def pack(total, result):
+            return {"wall": wall, "total": total, "result": result,
+                    "boxes": [r[6] for r in result],
+                    "leads": [ln for o, runs, dot, mid, shelf, width, box in result
+                              for ln in ((dot, mid), ((box[0], mid[1]), (box[2], mid[1])))]}
+        return [pack(*o) for o in options] if every else pack(*best)
+
+    def near(a, b, gap=1.5):
+        return any(x0 - gap < X1 and X0 - gap < x1 and y0 - gap < Y1 and Y0 - gap < y1
+                   for x0, y0, x1, y1 in a["boxes"] for X0, Y0, X1, Y1 in b["boxes"])
+
+    # each wall in turn, then again with the others' final places known, so two walls at a
+    # corner settle on places that leave each other clear
+    walls = scene.get("walls", [])
+    chosen = {}
+    for _ in range(cfg.get("labelRounds", 3)):
+        for i, wall in enumerate(walls):
+            ch = choose(wall, [c for j, c in chosen.items() if j != i])
+            if ch is not None:
+                chosen[i] = ch
+    # two walls whose labels meet (a corner): their places are chosen together, since one wall
+    # alone may be stuck where only a move of both clears them
+    keys = sorted(chosen)
+    for a_i, i in enumerate(keys):
+        for j in keys[a_i + 1:]:
+            if not near(chosen[i], chosen[j]):
+                continue
+            rest = [c for k, c in chosen.items() if k not in (i, j)]
+            best = (chosen[i]["total"] + chosen[j]["total"], chosen[i], chosen[j])
+            for opt in choose(walls[i], rest, every=True):
+                other = choose(walls[j], rest + [opt])
+                if opt["total"] + other["total"] < best[0] - 1e-6:
+                    best = (opt["total"] + other["total"], opt, other)
+            chosen[i], chosen[j] = best[1], best[2]
+    for i in sorted(chosen):
+        c = chosen[i]
+        total, result = c["total"], c["result"]
         for o, runs, dot, mid, shelf, width, box in result:
-            placed.append(box)
-            labels.append({"opening": o["id"], "wall": wall["id"], "runs": runs, "cost": round(total / len(result), 1),
+            labels.append({"opening": o["id"], "wall": c["wall"]["id"], "runs": runs, "cost": round(total / len(result), 1),
                            "begCoordinate": _xy(dot), "midCoordinate": _xy(mid),
                            "endCoordinate": _xy(_add(mid, (shelf * 0.01, 0.0))), "box": box})
     return labels
@@ -580,6 +637,14 @@ def _parallel(a, b, c, d):
     u, v = _sub(b, a), _sub(d, c)
     lu, lv = _len(u), _len(v)
     return lu > 1e-9 and lv > 1e-9 and abs(u[0] * v[1] - u[1] * v[0]) < 1e-3 * lu * lv
+
+
+def _seg_cross(a, b, c, d):
+    """True when the segments a-b and c-d cross (touching ends do not count)."""
+    def side(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    d1, d2, d3, d4 = side(c, d, a), side(c, d, b), side(a, b, c), side(a, b, d)
+    return d1 * d2 < -1e-12 and d3 * d4 < -1e-12
 
 
 def _seg_box(a, b, box):
