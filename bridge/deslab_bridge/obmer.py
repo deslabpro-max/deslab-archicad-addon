@@ -479,6 +479,7 @@ def plan_dimension_chains(scene, profile):
     short = cfg.get("shortSegment", 0.3)
     rise = cfg.get("leaderRise", 0.22)
     shelf = cfg.get("leaderShelf", 0.1)
+    pen = cfg.get("leaderPen", 120)  # pen of the leaders in the office template
     for ch in chains:
         d, n = _pt(ch["direction"]), _pt(ch["normal"])
         ref = _pt(ch["referencePoint"])
@@ -491,7 +492,7 @@ def plan_dimension_chains(scene, profile):
             mid = _add(beg, _mul(n, rise))
             # back over the chain: at the last segment against the direction, else with it
             along = _mul(d, -1 if (k == last and k > 0) else 1)
-            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(_add(mid, _mul(along, shelf)))}
+            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(_add(mid, _mul(along, shelf))), "pen": pen}
     return chains
 
 

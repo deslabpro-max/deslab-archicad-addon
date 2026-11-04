@@ -111,7 +111,8 @@
     "maxShifts": 2,
     "shortSegment": 0.3,
     "leaderRise": 0.22,
-    "leaderShelf": 0.1
+    "leaderShelf": 0.1,
+    "leaderPen": 120
 
   },
   "wet": {

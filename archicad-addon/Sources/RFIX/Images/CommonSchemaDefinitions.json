@@ -3934,7 +3934,9 @@
                 "properties": {
                     "beg": { "$ref": "#/Coordinate2D" },
                     "mid": { "$ref": "#/Coordinate2D" },
-                    "end": { "$ref": "#/Coordinate2D" }
+                    "end": { "$ref": "#/Coordinate2D" },
+                    "pen": { "type": "integer", "description": "Leader pen; the text pen when left out." },
+                    "anchorAtTextEnd": { "type": "boolean", "description": "Leader attached at the text end (default true, as in the office template)." }
                 },
                 "additionalProperties": false,
                 "required": ["beg", "mid", "end"]

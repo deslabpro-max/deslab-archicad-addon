@@ -65,6 +65,8 @@ struct AssociativeDimensionPoint {
     API_Coord leaderBeg = {0.0, 0.0};
     API_Coord leaderMid = {0.0, 0.0};
     API_Coord leaderEnd = {0.0, 0.0};
+    short leaderPen = 0;  // 0 = the text pen
+    bool leaderAnchorAtTextEnd = true;  // as 9 of 10 leaders in the office template
 };
 
 enum class SectionAssociativeDimensionPreset {
@@ -737,6 +739,11 @@ GS::Optional<GS::UniString> ParseAssociativeDimensionPoint (const GS::ObjectStat
             point.leaderBeg = Get2DCoordinateFromObjectState (*beg);
             point.leaderMid = Get2DCoordinateFromObjectState (*mid);
             point.leaderEnd = Get2DCoordinateFromObjectState (*end);
+            Int32 pen = 0;
+            if (textLeader->Get ("pen", pen)) {
+                point.leaderPen = static_cast<short> (pen);
+            }
+            textLeader->Get ("anchorAtTextEnd", point.leaderAnchorAtTextEnd);
         }
     }
 
@@ -876,7 +883,7 @@ GSErrCode ApplyDimensionTextLeaders (
         API_NoteType& note = (*memo.dimElems)[target].note;
         note.fixPos = true;
         note.useLeaderLine = true;
-        note.anchorAtTextEnd = false;
+        note.anchorAtTextEnd = point.leaderAnchorAtTextEnd;
         note.begC = point.leaderBeg;
         note.midC = point.leaderMid;
         note.endC = point.leaderEnd;
@@ -884,7 +891,7 @@ GSErrCode ApplyDimensionTextLeaders (
         note.noteAngle = angle;
         note.leaderShape = API_Segmented;
         note.anchorPoint = APILbl_Underlined;
-        note.leaderPen = note.notePen;
+        note.leaderPen = point.leaderPen > 0 ? point.leaderPen : note.notePen;
     }
 
     API_Element mask;
@@ -6378,7 +6385,7 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
                 elements.Push (CreateErrorResponse (APIERR_BADPARS, "Missing required 'direction' or 'referencePoint' field."));
                 continue;
             }
-            const API_Coord directionCoord = Get2DCoordinateFromObjectState (*data.Get ("direction"));
+            API_Coord directionCoord = Get2DCoordinateFromObjectState (*data.Get ("direction"));
             if (directionCoord.x == 0.0 && directionCoord.y == 0.0) {
                 elements.Push (CreateErrorResponse (APIERR_BADPARS, "Dimension direction must be non-zero."));
                 continue;
@@ -6398,6 +6405,25 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
             }
             if (invalidWitnessPoint) {
                 continue;
+            }
+            // deslab: a chain pointing left or down is stored reversed by Archicad, with its
+            // fixed texts turned by 180 deg (run 12); send it pointing right or up instead
+            const bool hasLeader = [&]() {
+                for (const AssociativeDimensionPoint& p : witnessPoints) {
+                    if (p.hasTextLeader) {
+                        return true;
+                    }
+                }
+                return false;
+            }();
+            if (hasLeader && (directionCoord.x < -1e-9 || (std::fabs (directionCoord.x) <= 1e-9 && directionCoord.y < 0.0))) {
+                directionCoord.x = -directionCoord.x;
+                directionCoord.y = -directionCoord.y;
+                GS::Array<AssociativeDimensionPoint> reversed;
+                for (UIndex i = witnessPoints.GetSize (); i > 0; --i) {
+                    reversed.Push (witnessPoints[i - 1]);
+                }
+                witnessPoints = reversed;
             }
 
             API_Element element = {};
