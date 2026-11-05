@@ -805,7 +805,9 @@ def place_dimension_texts(chains, labels, profile):
             lines.append((None, ((x0 - margin, mid[1]), (x1 + margin, mid[1]))))
             boxes.append((None, (x0 - margin, y0, x1 + margin, y1)))
 
-    pad = cfg.get("textPad", 0.04)  # 3-4 cm clear of any line (run 18: 1 cm looked cramped)
+    # clear of any line (run 18: 1 cm looked cramped; kv94e, 05.11.2026: with 4 cm the label
+    # shelves still came 1.7-2.7 cm to «2 107», «1 550», «2 251» as drawn)
+    pad = cfg.get("textPad", 0.07)
 
     def text_box(c, d, width, gap=pad):
         # along the line: the text and a small gap; across: the text height on either side
@@ -1343,8 +1345,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         # so Left; it holds when sent together with the runs (test of 04.11 on kv94, no endless
         # shelf; an endless one is redone by _redo_endless_labels anyway)
         item["style"] = {"justification": "Left"}
-        if profile["labels"].get("lineSpacing") is not None:
-            item["style"]["spacing"] = profile["labels"]["lineSpacing"]
+        if profile["labels"].get("textSpacing") is not None:  # Archicad's line spacing of the label text
+            item["style"]["spacing"] = profile["labels"]["textSpacing"]
         if F.get("label"):
             item["favoriteName"] = F["label"]
         else:  # rules: no blue fill, frame or bold when the favorite is missing
