@@ -802,7 +802,7 @@ def _seg_box(a, b, box):
     return True
 
 
-def place_dimension_texts(chains, labels, profile):
+def place_dimension_texts(chains, labels, profile, scene=None):
     """Slide dimension texts along their line so that no line crosses them (Игорь, 04.11.2026:
     «2711» crossed by the line of «714», «661», «861», «1468» by a door label leader; the text
     need not stand in the middle of its segment). Lines: the other chains' dimension and witness
@@ -827,6 +827,10 @@ def place_dimension_texts(chains, labels, profile):
             own.append((p, _add(q, _mul(_unit(_sub(q, p)) if _len(_sub(q, p)) > 1e-9 else (0.0, 0.0), over))))
         lines += [(ch, s_) for s_ in own]
         boxes += [(ch, bx) for bx in ch.get("leaderBoxes", [])]
+    # deslab: the room outline (the wall faces) is a line too (run JK: «537» ran over a wall end)
+    for room in (scene or {}).get("rooms", []):
+        poly = [_pt(p) for p in room["polygon"]]
+        lines += [(None, (poly[i], poly[(i + 1) % len(poly)])) for i in range(len(poly))]
     margin = cfg.get("labelMargin", 0.05)  # the real label text runs a little longer than estimated
     for lb in labels:
         beg, mid, end = _pt(lb["begCoordinate"]), _pt(lb["midCoordinate"]), _pt(lb["endCoordinate"])
@@ -1369,7 +1373,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     # 3. Opening labels, clear of walls, dimension chains, «Н» texts, stamps and each other.
     chains = plan_dimension_chains(scene, profile)
     labels = plan_opening_labels(scene, profile, label_obstacles(scene, profile, texts, chains))
-    place_dimension_texts(chains, labels, profile)
+    place_dimension_texts(chains, labels, profile, scene)
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}
