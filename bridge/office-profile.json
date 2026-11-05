@@ -142,6 +142,7 @@
     "interiorDoorHeight": 2.1,
     "innerBoard": false,
     "cornerJoint": "frame",
+    "cornerWindowPen": 161,
     "cornerTwoSashFavorite": "Двустворчатое Окно",
     "comment": "Игорь 03.11.2026: подоконник в бетонной квартире не ставим; если ставим, только белый пластик"
   }

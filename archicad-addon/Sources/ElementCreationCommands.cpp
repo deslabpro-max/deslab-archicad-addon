@@ -3969,11 +3969,15 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
         BMKillHandle (reinterpret_cast<GSHandle*> (&memo.textLineStarts));
     }
 
-    memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAll (numOfParagraphs * sizeof (API_ParagraphType)));
+    // deslab: cleared, so indents and line spacing do not start as garbage
+    memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAllClear (numOfParagraphs * sizeof (API_ParagraphType)));
     SetParagraph (memo.paragraphs, 0, 0, text.GetLength (), 1, numOfRuns, textData.nLine);
     // A paragraph carries its own justification (API_ParagraphType::just, see the DevKit's
     // Element_Test example); keep it in step with the element-level setting.
     (*memo.paragraphs)[0].just = textData.just;
+    // deslab: and its own line spacing; without it a label's style.spacing never reached the
+    // text (Игорь 04.11.2026: «hокна» hung high over the shelf, it must sit close to it)
+    (*memo.paragraphs)[0].spacing = textData.spacing;
 
     if (hasRuns) {
         // Each run carries its own pen/face/font/size/effects; a field a run does not give

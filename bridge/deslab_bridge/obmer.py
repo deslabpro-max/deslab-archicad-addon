@@ -1090,7 +1090,18 @@ def _corner_end(wall, other):
     return 0 if dist(a) < dist(b) else 1
 
 
-def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="frame", favorite=None, two_sash_from=1.0):
+# deslab: the line pens of Archicad's corner window. The template's override rule «Окна чб» takes
+# only the element type Window, not Corner Window, so the pair came out in its own colours; it
+# gets the rule's pen 161 on all its line pens instead (test of 04.11.2026 on kv94)
+CORNER_WINDOW_PENS = ("gs_penJoint", "gs_penPlug", "gs_custom_cc_separator_pen", "or_opLinePen", "gs_pen_2D",
+                      "gs_frame_pen_cont", "gs_trim_pen_cont", "gs_wcont_line_pen", "gs_sill_pen_3D",
+                      "gs_sill_pen_sectcont", "gs_sill_pen_ins_sectcont", "gs_board_pen_3D", "gs_board_pen_sectcont",
+                      "gs_sunShade_cutLinesPen", "gs_sunShade_unCutLinesPen", "gs_frame_pen", "gs_sash_pen",
+                      "gs_glass_pen", "gs_masonry_arch_pen", "gs_transom_display_pen", "gs_head_symbol_pen")
+
+
+def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="frame", favorite=None, two_sash_from=1.0,
+                         pen=161):
     """Builds each corner window as in the recipe tested on 27.10.2026 (тест-угол.pln): CreateWindows
     on the first wall with cornerWindow, Archicad adds the linked twin on the other wall; each
     width is then set so the far edge lands where the scene has it (Archicad keeps the corner
@@ -1140,6 +1151,9 @@ def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="fram
             if not (0 <= far <= length):
                 report.errors.append(f"Угловое окно {op['id']}: дальний край вне стены {wall['id']}")
         ac.tapir("ModifyWindows", {"windowsWithDetails": mods})
+        # opening into the room like the other windows: oSide on the FIRST part only, Archicad
+        # turns the linked twin itself (test of 04.11.2026 on kv94)
+        ac.tapir("ModifyWindows", {"windowsWithDetails": [{"elementId": {"guid": first}, "oSide": True}]})
         # the frames meet: 1 «Коробка» (frame to frame, Игорь 04.11.2026: «не с колонной»),
         # 2 «Угловой Импост» (a corner post); per window "corner": {"joint": ...} or the profile
         kind = {"frame": 1, "mullion": 2}.get((o.get("corner") or {}).get("joint", joint), 1)
@@ -1147,7 +1161,8 @@ def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="fram
             {"elementId": {"guid": g}, "gdlParameters": [
                 {"name": "iCornerConnTypeLeft", "value": kind}, {"name": "iCornerConnTypeRight", "value": kind},
                 {"name": "gs_corner_column", "value": kind == 2}, {"name": "gs_window_handle", "value": True},
-                {"name": "gs_sill_outside", "value": True}, {"name": "gs_board_inside", "value": False}]}
+                {"name": "gs_sill_outside", "value": True}, {"name": "gs_board_inside", "value": False}]
+                + [{"name": n, "value": pen} for n in CORNER_WINDOW_PENS]}
             for g in (first, second)]})
         # check: the twin is still linked, and the far edges where they should be
         check = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": {"guid": g}} for g in (first, second)]})
@@ -1244,7 +1259,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         opening_guid.update(build_corner_windows(ac, corner_pairs, wall_guid, report,
                                                  joint=op_cfg.get("cornerJoint", "frame"),
                                                  favorite=op_cfg.get("cornerTwoSashFavorite"),
-                                                 two_sash_from=op_cfg.get("doubleSashMinWidth", 1.0)))
+                                                 two_sash_from=op_cfg.get("doubleSashMinWidth", 1.0),
+                                                 pen=op_cfg.get("cornerWindowPen", 161)))
     zone_guid = {z["id"]: _guid(z) for z in model.get("zones", [])}
     zone_guids = list(zone_guid.values())
     report.step("модель", walls=len(wall_guid), openings=len(opening_guid), zones=len(zone_guids))
@@ -1302,10 +1318,12 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}
-        # deslab: the lines of a label are aligned at one edge (Игорь: «hокна» and «hподокон»
-        # even). Right, not Left: with Left Archicad now and then makes an endless shelf (label
-        # test and runs 7b/8 of 03.11.2026; Right never did).
-        item["style"] = {"justification": "Right"}
+        # deslab: the lines of a label are aligned by their first letter «h» (Игорь 04.11.2026),
+        # so Left; it holds when sent together with the runs (test of 04.11 on kv94, no endless
+        # shelf; an endless one is redone by _redo_endless_labels anyway)
+        item["style"] = {"justification": "Left"}
+        if profile["labels"].get("lineSpacing") is not None:
+            item["style"]["spacing"] = profile["labels"]["lineSpacing"]
         if F.get("label"):
             item["favoriteName"] = F["label"]
         else:  # rules: no blue fill, frame or bold when the favorite is missing
