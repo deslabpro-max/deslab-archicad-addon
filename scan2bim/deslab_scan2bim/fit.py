@@ -80,6 +80,43 @@ def _fill_notches(poly, walls, size=0.2):
     return _square_outline(poly), filled
 
 
+def _trim_overlaps(walls, tol=0.005):
+    """A wall that runs on inside a parallel wall at least as thick (its body within the other's)
+    stops at the other's end (JK: W9 under W2 for 0.7 m, W8 into W9 for 20 mm). Returns notes."""
+    notes = []
+    for a in walls:
+        for b in walls:
+            if a is b:
+                continue
+            sa, ea, sb, eb = _xy(a["start"]), _xy(a["end"]), _xy(b["start"]), _xy(b["end"])
+            if abs(sa[1] - ea[1]) < 1e-6 and abs(sb[1] - eb[1]) < 1e-6:
+                k = 0
+            elif abs(sa[0] - ea[0]) < 1e-6 and abs(sb[0] - eb[0]) < 1e-6:
+                k = 1
+            else:
+                continue
+            j = 1 - k
+            ha, hb = float(a.get("thickness", 0.2)) / 2, float(b.get("thickness", 0.2)) / 2
+            if sa[j] - ha < sb[j] - hb - tol or sa[j] + ha > sb[j] + hb + tol:
+                continue  # a's body is not within b's
+            alo, ahi = sorted((sa[k], ea[k]))
+            blo, bhi = sorted((sb[k], eb[k]))
+            if min(ahi, bhi) - max(alo, blo) <= 0.001:
+                continue
+            same = abs(ha - hb) < tol and abs(sa[j] - sb[j]) < tol
+            if same and ahi - alo > bhi - blo:
+                continue  # two walls on one line: the shorter one gives way
+            name = "x" if k == 0 else "y"
+            for key, p in (("start", sa), ("end", ea)):
+                if blo < p[k] < bhi:
+                    other = ea if key == "start" else sa
+                    if other[k] <= blo or other[k] >= bhi:
+                        cut = blo if other[k] <= blo else bhi
+                        notes.append(f"{a['id']}: {key} {p[k]:.3f} → {cut:.3f} (заходила в {b['id']})")
+                        a[key][name] = round(cut, 4)
+    return notes
+
+
 def fit_walls_to_rooms(scene, reach=0.25):
     """Squares each room outline and moves wall ends onto the room's steps: where the outline
     steps between two parallel faces, the walls carrying those faces end exactly at the step
@@ -118,6 +155,7 @@ def fit_walls_to_rooms(scene, reach=0.25):
                                 continue
                             notes.append(f"{w['id']}: {key} {p[k]:.3f} → {pos:.3f} (ступень контура {room.get('id', '')})")
                             w[key]["x" if k == 0 else "y"] = round(pos, 4)
+    notes += _trim_overlaps(walls)
     for room in scene.get("rooms", []):
         poly, filled = _fill_notches([_xy(p) for p in room["polygon"]], walls)
         if filled:

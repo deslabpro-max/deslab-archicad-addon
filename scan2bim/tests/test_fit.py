@@ -35,6 +35,9 @@ def test_jk_bottom_wall():
     assert all(abs(a[0] - b[0]) < 1e-9 or abs(a[1] - b[1]) < 1e-9 for a, b in zip(poly, poly[1:] + poly[:1])), poly
     assert (4.3293, 1.1866) in poly and (4.1882, 1.3014) not in poly, poly
     assert any("выступ 141 x 115" in n for n in notes), notes
+    # no wall runs on inside another
+    assert w["W9"]["end"]["x"] == 6.1482, w["W9"]
+    assert w["W8"]["end"]["x"] == 2.1282, w["W8"]
 
 
 if __name__ == "__main__":

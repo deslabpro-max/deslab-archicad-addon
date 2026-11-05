@@ -71,7 +71,8 @@ in a niche, rotated 7°).
 12. Room outlines and walls agree (`fit.py`, Игорь 04.11.2026, run JK): an outline edge off its axis
     by less than 12 mm is made square; where the outline steps between two wall faces, the walls
     end exactly on the step (a wall that runs on outside the room to a T joint stays); a small
-    corner lump (up to 0.2 m) that no wall face carries is filled and noted in `assumptions`.
+    corner lump (up to 0.2 m) that no wall face carries is filled and noted in `assumptions`; a wall
+    that runs on inside a parallel wall at least as thick stops at that wall's end.
 
 ## Scene format `deslab.scan2bim/1`
 

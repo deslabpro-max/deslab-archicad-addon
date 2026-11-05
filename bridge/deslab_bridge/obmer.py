@@ -334,6 +334,8 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         a, b = _chain_line(ch)
         dim_dirs.append(_pt(ch["direction"]))
         dims.append(_rect_of_segment(a, b, cfg["dimensionBand"]))
+        # deslab: the texts of short dimensions on their leaders (run JK: «220» under a door label)
+        marks.extend(tuple(bx) for bx in ch.get("leaderBoxes", []))
     for t in texts or []:
         c = (t["coordinate"]["x"], t["coordinate"]["y"])
         marks.append((c[0] - 0.45, c[1] - 0.2, c[0] + 0.45, c[1] + 0.2))
@@ -606,13 +608,26 @@ def plan_dimension_chains(scene, profile):
                 k = group[k]
             return k
         steps = set()
+        # depth of each face along its normal; a group keeps its faces within merge_step of each
+        # other in all (run JK, 05.11.2026: four steps of 0.1-0.2 m added up to 0.53 m, and the
+        # chain hung 0.9 m off the main face)
+        depth = {e["i"]: _dot(e["a"], e["n"]) for e in edges}
+        span = {e["i"]: (depth[e["i"]], depth[e["i"]]) for e in edges}
         for e in edges:
             if count < 5:
                 break
             s, f = edges[(e["i"] + 1) % count], edges[(e["i"] + 2) % count]
             if (s["len"] <= merge_step and _dot(e["u"], f["u"]) > 0.99 and abs(_dot(s["u"], e["u"])) < 0.1
                     and abs(_dot(_sub(f["a"], e["b"]), e["n"])) <= merge_step):
-                group[root(f["i"])] = root(e["i"])
+                ra, rb = root(e["i"]), root(f["i"])
+                if ra == rb:
+                    continue
+                lo = min(span[ra][0], span[rb][0])
+                hi = max(span[ra][1], span[rb][1])
+                if hi - lo > merge_step + 1e-6:
+                    continue
+                group[rb] = ra
+                span[ra] = (lo, hi)
                 steps.add(s["i"])
         members = {}
         for e in edges:
