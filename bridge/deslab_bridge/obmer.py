@@ -123,10 +123,13 @@ def shift_scene(scene, origin):
     for wall in scene.get("walls", []):
         move(wall["start"])
         move(wall["end"])
-    for item in scene.get("rooms", []) + scene.get("slabs", []):
+    for item in scene.get("rooms", []) + scene.get("slabs", []) + scene.get("mep", []) + scene.get("tracing", []):
         for key in ("polygon", "wetPolygon"):
             for p in item.get(key) or []:
                 move(p)
+        for key in ("start", "end", "at"):  # deslab: engineering items and tracing strips
+            if key in item:
+                move(item[key])
     return scene
 
 
@@ -658,7 +661,22 @@ def plan_dimension_chains(scene, profile):
                            "direction": _xy(du), "normal": _xy(n), "referencePoint": _xy(ref),
                            "offset": round(depth - min(depths) + cfg["offsetFromFace"], 4),
                            "points": [_xy(p) for p in kept]})
-    # move the shorter of two conflicting chains further in, a few times at most
+    # deslab: engineering items and tracing (Игорь 05.11.2026): a room chain does not run through a
+    # shaft box, and the radiators, shafts and tracing strips get their own chains
+    from .mep import mep_blockers, plan_extra_chains
+    blockers = mep_blockers(scene)
+    for ch in chains:
+        for _ in range(4):
+            a, b = _chain_line(ch)
+            if not any(_seg_box(a, b, bx) for bx in blockers):
+                break
+            ch["referencePoint"] = _xy(_add(_pt(ch["referencePoint"]), _mul(_pt(ch["normal"]), step)))
+            ch["offset"] = round(ch["offset"] + step, 4)
+    chains += plan_extra_chains(scene, profile, chains)
+
+    # move the shorter of two conflicting chains further in, a few times at most (a chain of the
+    # radiators always gives way to a room chain; the short chains of shafts and tracing strips stay
+    # at their item, the dimension texts keep clear of their lines)
     def length(ch):
         a, b = _chain_line(ch)
         return _len(_sub(b, a))
@@ -666,8 +684,16 @@ def plan_dimension_chains(scene, profile):
         moved = False
         for i, c1 in enumerate(chains):
             for c2 in chains[i + 1:]:
+                if "item" in (c1.get("extra"), c2.get("extra")):
+                    continue  # a shaft's or a tracing strip's own short chain stays at its item
                 if _chain_conflict(c1, c2, band):
-                    short = c1 if length(c1) <= length(c2) else c2
+                    if c1.get("extra") != c2.get("extra"):
+                        short = c1 if c1.get("extra") else c2
+                    else:
+                        short = c1 if length(c1) <= length(c2) else c2
+                    if short.get("extra") and short.get("shifts", 0) >= cfg.get("maxShifts", 2):
+                        continue
+                    short["shifts"] = short.get("shifts", 0) + 1
                     short["referencePoint"] = _xy(_add(_pt(short["referencePoint"]), _mul(_pt(short["normal"]), step)))
                     short["offset"] = round(short["offset"] + step, 4)
                     moved = True
@@ -675,7 +701,7 @@ def plan_dimension_chains(scene, profile):
             break
     for i, c1 in enumerate(chains):
         for c2 in chains[i + 1:]:
-            if _chain_conflict(c1, c2, band):
+            if "item" not in (c1.get("extra"), c2.get("extra")) and _chain_conflict(c1, c2, band):
                 c1.setdefault("conflict", []).append(c2["edge"])
     # deslab: a dimension text that does not fit between its witness lines goes on a leader, as
     # in the office template (Игорь, 03.11.2026; read from «Антон Крючков.pln»): the leader
@@ -1320,6 +1346,44 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     zone_guids = list(zone_guid.values())
     report.step("модель", walls=len(wall_guid), openings=len(opening_guid), zones=len(zone_guids))
 
+    # deslab: the door swing of the scene (kv94 entrance door, Игорь 05.11.2026: «открывание
+    # двери очень важно»): reflected = the hinges at the other jamb, oSide = opening to the other side
+    swings = [{"elementId": {"guid": opening_guid[o["id"]]}, **{k: bool(o[k]) for k in ("reflected", "oSide") if k in o}}
+              for w in model_scene.get("walls", []) for o in w.get("openings", [])
+              if o.get("kind") == "door" and o["id"] in opening_guid and ("reflected" in o or "oSide" in o)]
+    if swings:
+        _check_details(ac.tapir("ModifyDoors", {"doorsWithDetails": swings}), report, "Открывание двери")
+    report.step("открывание дверей", doors=len(swings))
+
+    # deslab: shafts (walls of 100 mm blocks), the tracing (low walls of the first row of blocks),
+    # risers, radiators and the panel (Игорь 05.11.2026)
+    from .mep import mep_objects, shaft_walls, tracing_walls
+    mep_layer = idx.get(L.get("mep", L["partitions"]))
+    extra_walls = shaft_walls(scene) + tracing_walls(scene)
+    if extra_walls:
+        tracing_text = profile.get("mep", {}).get("tracingId", "Трассировка {id}")
+        data = [{"begCoordinate": w["start"], "endCoordinate": w["end"], "floorIndex": floor_index, "zCoordinate": 0.0,
+                 "height": w["height"], "thickness": w["thickness"], "referenceLineLocation": "Center",
+                 "structureType": "Basic",
+                 "id": tracing_text.format(id=w["id"]) if w["kind"] == "tracing" else w["id"]} for w in extra_walls]
+        guids = _created(ac.tapir("CreateWalls", {"wallsData": data}), "elements", report, "Стена шахты/трассировки")
+        for w, g in zip(extra_walls, guids):
+            if g:
+                wall_guid[w["id"]] = g
+        set_layer(ac, [g for w, g in zip(extra_walls, guids) if g and w["kind"] != "tracing"], mep_layer, report, "шахты")
+        set_layer(ac, [g for w, g in zip(extra_walls, guids) if g and w["kind"] == "tracing"],
+                  idx.get(L.get("tracing", L["partitions"])), report, "трассировка")
+        scene["walls"] = scene.get("walls", []) + extra_walls
+    objects = mep_objects(scene, profile)
+    if objects:
+        guids = _created(ac.tapir("CreateObjects", {"objectsData": [
+            {**d, "floorIndex": floor_index, "id": m["id"]} for m, d, _ in objects]}), "elements", report, "Коммуникации")
+        gdl = [{"elementId": {"guid": g}, "gdlParameters": params} for (m, d, params), g in zip(objects, guids) if g and params]
+        if gdl:
+            _check_details(ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": gdl}), report, "Размер стояка")
+        set_layer(ac, [g for g in guids if g], mep_layer, report, "коммуникации")
+    report.step("шахты, трассировка, стояки, радиаторы", walls=len(extra_walls), objects=len(objects))
+
     partitions = [wall_guid[w["id"]] for w in scene.get("walls", []) if is_partition(w, profile) and w["id"] in wall_guid]
     set_layer(ac, partitions, idx.get(L["partitions"]), report, "перегородки")
     if zone_guids:
@@ -1368,7 +1432,10 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
 
     # 3. Opening labels, clear of walls, dimension chains, «Н» texts, stamps and each other.
     chains = plan_dimension_chains(scene, profile)
-    labels = plan_opening_labels(scene, profile, label_obstacles(scene, profile, texts, chains))
+    obstacles = label_obstacles(scene, profile, texts, chains)
+    labels = plan_opening_labels(scene, profile, obstacles)
+    from .mep import plan_mep_labels
+    labels += plan_mep_labels(scene, profile, obstacles, taken=[lab["box"] for lab in labels])
     place_dimension_texts(chains, labels, profile)
     data = []
     for lab in labels:

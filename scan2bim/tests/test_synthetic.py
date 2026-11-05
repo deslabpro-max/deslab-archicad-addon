@@ -32,8 +32,14 @@ def plane_z(z, x0, x1, y0, y1):
     return np.stack([xs.ravel(), ys.ravel(), np.full(xs.size, z)], 1)
 
 
-def cloud():
-    p = []
+def box(x0, x1, y0, y1, h):
+    """A box standing on the floor: its four sides and its top."""
+    return [plane_x(x0, y0, y1, 0, h), plane_x(x1, y0, y1, 0, h), plane_y(y0, x0, x1, 0, h), plane_y(y1, x0, x1, 0, h),
+            plane_z(h, x0, x1, y0, y1)]
+
+
+def cloud(extra=()):
+    p = list(extra)
     # room A x 0..4, room B x 4.12..7.12, both y 0..5; partition 120 mm with a door y 2..2.9, head 2.1
     for x0, x1 in [(0, 4), (4.12, 7.12)]:
         p += [plane_z(0, x0, x1, 0, 5), plane_z(H, x0, x1, 0, 5), plane_y(0, x0, x1, 0, H), plane_y(5, x0, x1, 0, H)]

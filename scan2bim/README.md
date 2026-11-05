@@ -14,7 +14,7 @@ The Windows build (`deslab-scan2bim.exe`, PyInstaller, no Python needed) comes o
 `.github/workflows/build_ac27_win.yml` as `deslab-scan2bim-win.zip` in the release. Unzip it next
 to the add-on file so that the add-on finds `deslab-scan2bim\deslab-scan2bim.exe`.
 
-Tests: `python scan2bim/tests/test_fit.py` (JK bottom wall), `python scan2bim/tests/test_synthetic.py` (two rooms, a partition with a door, a window
+Tests: `python scan2bim/tests/test_fit.py` (JK bottom wall), `python scan2bim/tests/test_clutter.py` (a stack and a board are no wall, tracing found), `python scan2bim/tests/test_synthetic.py` (two rooms, a partition with a door, a window
 in a niche, rotated 7°).
 
 ## How it works
@@ -74,6 +74,16 @@ in a niche, rotated 7°).
     corner lump (up to 0.2 m) that no wall face carries is filled and noted in `assumptions`; a wall
     that runs on inside a parallel wall at least as thick stops at that wall's end.
 
+13. Clutter is no wall (Игорь 05.11.2026, run JK: a stack of tiles 0.65 m high with a board leaning
+    on it made a wall into the entrance door): a wall-face cell must be scanned over 40 % of the
+    band from 1.5 m to 0.3 m under the ceiling as well, and a wall whose faces have points low
+    down but nothing above 1.2 m over most of their length is dropped (noted in `assumptions`).
+14. Tracing (the first row of blocks of new walls): 2 cm cells with points 0.04–0.6 m over the floor
+    and nothing at 0.65–2.0 m, away from the walls; runs 6–26 cm across that line up over at least
+    0.5 m, standing on the floor (a radiator hangs above it), 0.12–0.6 m high. Width and position
+    from the points. An end runs on to a wall face up to 0.25 m off and onto the axis of a square
+    strip it meets (L and T joints). Written as `tracing` (the bridge builds low walls).
+
 ## Scene format `deslab.scan2bim/1`
 
 Metres, model frame (see `transform`). Floor of the largest room at z = 0.
@@ -91,6 +101,8 @@ Metres, model frame (see `transform`). Floor of the largest room at z = 0.
     "openings": [{"id": "W1.1", "kind": "door | window | balconyDoor", "centerOffset": 1.2,
                   "width": 0.8, "sill": 0.0, "height": 2.1}]
   }],
+  "tracing": [{"id": "T1", "start": {"x": 4.67, "y": 5.2}, "end": {"x": 4.67, "y": 9.34},
+               "thickness": 0.08, "height": 0.25}],
   "rooms": [{"id": "R1", "number": 1, "name": "Помещение 1",
              "polygon": [{"x": 0, "y": 0}], "floor": 0.0, "ceiling": 3.31,
              "height": 3.31, "area": 36.18}],

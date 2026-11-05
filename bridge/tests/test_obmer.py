@@ -243,7 +243,8 @@ class FakeArchicad:
                     "windows": [{"id": "W1.1", "elementId": {"guid": "OW"}}], "doors": [{"id": "W2.1", "elementId": {"guid": "OD"}}],
                     "zones": [{"id": "R1", "elementId": {"guid": "Z1"}}], "errors": []}
         key = {"CreateTexts": "textsData", "CreateLabels": "labelsData", "CreateHotspots": "hotspotsData",
-               "CreateAssociativeDimensions": "dimensionsData", "CreateHatches": "hatchesData"}.get(command)
+               "CreateAssociativeDimensions": "dimensionsData", "CreateHatches": "hatchesData",
+               "CreateWalls": "wallsData", "CreateObjects": "objectsData"}.get(command)
         if key:
             return {"elements": self._new(len(params[key]))}
         if command == "GetElementsByType":
@@ -270,6 +271,40 @@ def test_build_calls():
     boards = next(p for c, p in ac.calls if c == "SetGDLParametersOfElements")["elementsWithGDLParameters"]
     assert boards[0]["gdlParameters"] == [{"name": "gs_board_inside", "value": False}]
     assert "UpdateDrawings" in names and not report["errors"], report
+
+
+def test_engineering_and_tracing():
+    """kv94 / JK (Игорь 05.11.2026): door swing from the scene, a shaft box of 100 mm walls, risers,
+    a radiator with its sizes, and a tracing strip as a low wall with its own dimensions."""
+    import copy
+    scene = copy.deepcopy(SCENE)
+    scene["walls"][1]["openings"][0]["reflected"] = True
+    scene["mep"] = [
+        {"kind": "shaft", "id": "SH1", "label": "Вытяжка", "thickness": 0.1,
+         "polygon": [{"x": 0, "y": 2.0}, {"x": 0.6, "y": 2.0}, {"x": 0.6, "y": 3.0}, {"x": 0, "y": 3.0}]},
+        {"kind": "sewerRiser", "id": "K1", "at": {"x": 0.2, "y": 2.5}, "diameter": 0.16, "label": "Стояк канализации"},
+        {"kind": "radiator", "id": "RD1", "start": {"x": 1.5, "y": 0}, "end": {"x": 2.5, "y": 0}, "depth": 0.07},
+    ]
+    scene["tracing"] = [{"id": "T1", "start": {"x": 2.5, "y": 1.2}, "end": {"x": 2.5, "y": 3.0}, "thickness": 0.08, "height": 0.25}]
+    assert not obmer.check_room_faces(scene)
+    ac = FakeArchicad()
+    report = obmer.build_measured_plan(ac, scene, PROFILE)
+    calls = dict(ac.calls)
+    assert calls["ModifyDoors"]["doorsWithDetails"] == [{"elementId": {"guid": "OD"}, "reflected": True}]
+    walls = calls["CreateWalls"]["wallsData"]
+    # a shaft in the corner: walls on its two free sides only, inside its outline; the tracing low
+    assert [w["id"] for w in walls] == ["SH1.1", "SH1.2", "Трассировка T1"], walls
+    assert walls[0]["begCoordinate"] == {"x": 0.0, "y": 2.05} and walls[1]["endCoordinate"] == {"x": 0.55, "y": 3.0}
+    assert walls[2]["height"] == 0.25 and walls[2]["thickness"] == 0.08
+    objects = {o["id"]: o for o in calls["CreateObjects"]["objectsData"]}
+    rad = objects["RD1"]
+    assert rad["angle"] == 0 and abs(rad["coordinates"]["y"] - 0.015) < 1e-9 and abs(rad["dimensions"]["x"] - 1.0) < 1e-9
+    assert objects["K1"]["dimensions"]["x"] == 0.16
+    dims = calls["CreateAssociativeDimensions"]["dimensionsData"]
+    assert len(dims) >= 7, len(dims)  # 4 room chains + radiators + shaft depth + tracing length and place
+    texts = ["".join(r["text"] for r in l["runs"]) for l in calls["CreateLabels"]["labelsData"]]
+    assert "Вытяжка" in texts and "Стояк канализации" in texts and "Трассировка h=250" in texts, texts
+    assert not report["errors"], report["errors"]
 
 
 def test_origin_moves_model_and_drafting():

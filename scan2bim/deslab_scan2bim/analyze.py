@@ -30,6 +30,9 @@ class Options:
     min_room_area: float = 1.0
     outside_level: float = 0.08         # a space this much off the main floor level is outside the flat
     coverage: float = 0.55              # share of the wall height a cell must be scanned to count as wall
+    high_band: float = 1.5              # deslab: ...and of the band from this height to under the ceiling
+    high_coverage: float = 0.4          # (clutter, a stack of tiles, a leaning board are no wall)
+    clutter_height: float = 1.2         # a wall whose faces end below this height is clutter
 
 
 @dataclass
@@ -115,6 +118,16 @@ def find_faces(pts, floor, ceiling, opt: Options):
     cells = np.unique(key) // nb
     cover = np.bincount(cells, minlength=W * H).reshape(H, W) / nb
     wall = cover >= opt.coverage
+    # deslab: a wall face is seen high up too (Игорь 05.11.2026, JK: a stack of tiles 0.65 m high
+    # with a board leaning on it at 0.7-1.9 m made a face at the entrance door): the cell must be
+    # scanned over part of the band from 1.5 m to under the ceiling as well
+    hlo, hhi = floor + opt.high_band, ceiling - 0.3
+    if hhi - hlo >= 0.4:
+        m = (z > hlo) & (z < hhi)
+        nh = int((hhi - hlo) / 0.1) + 1
+        key = (iy[m] * W + ix[m]) * nh + ((z[m] - hlo) / 0.1).astype(np.int64)
+        high = np.bincount(np.unique(key) // nh, minlength=W * H).reshape(H, W) / nh
+        wall &= high >= opt.high_coverage
 
     faces = []
     min_len = int(opt.min_face_length / RES)
@@ -481,6 +494,149 @@ def drop_plates(walls, pts, floor):
             continue
         keep.append(w)
     return keep
+
+
+def drop_low(walls, pts, floor, ceiling, opt: Options):
+    """deslab: a wall is a full-height thing (Игорь 05.11.2026: small things must never get into the
+    wall outline). A wall whose scanned faces have points low down but nothing above
+    clutter_height over most of their length is a pile, a stack or a board, not a wall.
+    Returns the walls kept and notes on the dropped ones."""
+    x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+    zz = z - floor
+    keep, notes = [], []
+    for w in walls:
+        lo_b, hi_b = w.a + 0.05, w.b - 0.05
+        if hi_b - lo_b < 0.1:
+            keep.append(w)
+            continue
+        edges = np.arange(lo_b, hi_b + 1e-9, 0.05)
+        if len(edges) < 2:
+            keep.append(w)
+            continue
+        seen_low, seen_high, top = 0.0, 0.0, 0.0
+        for f in w.faces:
+            tt = y if f.axis == 0 else x
+            cc = x if f.axis == 0 else y
+            sel = (tt > lo_b) & (tt < hi_b) & (np.abs(cc - f.at(tt)) < 0.03)
+            if not sel.any():
+                continue
+            zs, ts = zz[sel], tt[sel]
+            low = np.histogram(ts[(zs > 0.05) & (zs < 0.7)], bins=edges)[0] > 0
+            high = np.histogram(ts[(zs > opt.clutter_height) & (zs < ceiling - floor - 0.3)], bins=edges)[0] > 0
+            seen_low = max(seen_low, low.mean())
+            seen_high = max(seen_high, high.mean())
+            body = zs[zs > 0.05]
+            if len(body):
+                top = max(top, float(np.percentile(body, 98)))
+        if seen_low >= 0.5 and seen_high < 0.3:
+            notes.append(f"a low object {w.b - w.a:.2f} m long, up to {top:.2f} m high, is clutter, not a wall")
+            continue
+        keep.append(w)
+    return keep, notes
+
+
+def find_tracing(pts, floor, walls, res=RES):
+    """deslab: the first row of blocks of new walls (tracing, Игорь 05.11.2026, JK: 80 mm blocks
+    0.25 m high). Cells with points 0.04-0.6 m over the floor and nothing at 0.65-2.0 m, away from
+    the walls; in each row (column) the runs of such cells 6-26 cm wide; their middles that line
+    up over at least 0.5 m along Y (X) are a strip. Returns [(axis, c, a, b, width, top)], axis 0:
+    a strip along Y at x = c from y = a to b."""
+    x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
+    zz = z - floor
+    x0, y0 = x.min() - 4 * res, y.min() - 4 * res
+    W = int((x.max() - x0) / res) + 6
+    H = int((y.max() - y0) / res) + 6
+    ix = ((x - x0) / res).astype(np.int64)
+    iy = ((y - y0) / res).astype(np.int64)
+    lo = (zz > 0.04) & (zz < 0.6)
+    low = np.bincount(iy[lo] * W + ix[lo], minlength=W * H).reshape(H, W) > 0
+    hi = (zz > 0.65) & (zz < 2.0)
+    high = grid.dilate(np.bincount(iy[hi] * W + ix[hi], minlength=W * H).reshape(H, W) > 0, 1)
+    mask = low & ~high
+    for w in walls:  # the foot of a wall is no tracing
+        half = w.thickness / 2 + 0.05
+        (bx, by), (ex, ey) = w.beg, w.end
+        c0 = int((min(bx, ex) - half - x0) / res)
+        c1 = int((max(bx, ex) + half - x0) / res) + 1
+        r0 = int((min(by, ey) - half - y0) / res)
+        r1 = int((max(by, ey) + half - y0) / res) + 1
+        mask[max(r0, 0):max(r1, 0), max(c0, 0):max(c1, 0)] = False
+    strips = []
+    for axis in (0, 1):
+        img = mask if axis == 0 else mask.T  # rows run across the strip
+        rows, cols = img.shape
+        mids = np.zeros_like(img)
+        width = {}
+        for r in range(rows):
+            for a, b in _runs(img[r], 1, 1):
+                if 3 <= b - a <= 13:
+                    m = (a + b) // 2
+                    mids[r, m] = True
+                    width[(r, m)] = b - a
+        prof = mids.sum(axis=0)
+        used = np.zeros(cols, bool)
+        for c in np.argsort(-prof):
+            if prof[c] < 25 or used[max(c - 3, 0):c + 4].any():
+                continue
+            band = mids[:, max(c - 2, 0):c + 3]
+            for a, b in _runs(band.any(axis=1), 6, 25):
+                rr, cc = np.nonzero(band[a:b])
+                centre = float(np.mean(cc + max(c - 2, 0) + 0.5))
+                ws = [width.get((r + a, k + max(c - 2, 0)), 0) for r, k in zip(rr, cc)]
+                wd = float(np.median(ws)) * res
+                cpos = (x0 if axis == 0 else y0) + centre * res
+                t0 = (y0 if axis == 0 else x0) + a * res
+                t1 = (y0 if axis == 0 else x0) + b * res
+                tt, ccs = (y, x) if axis == 0 else (x, y)
+                sel = (np.abs(ccs - cpos) < wd / 2 + 0.02) & (tt > t0 + 0.05) & (tt < t1 - 0.05) & lo
+                if sel.sum() < 20:
+                    continue
+                top = float(np.percentile(zz[sel], 95))
+                # it stands on the floor (a radiator hangs 0.1 m or more above it)
+                foot = tt[sel & (zz < 0.1)]
+                bins = np.arange(t0 + 0.05, t1 - 0.05, 0.1)
+                if len(bins) < 2 or (np.histogram(foot, bins=bins)[0] > 0).mean() < 0.5:
+                    continue
+                # the block faces from the points (cells give the width to a cell or two)
+                e0, e1 = np.percentile(ccs[sel], [1, 99])
+                cpos, wd = float((e0 + e1) / 2), float(e1 - e0)
+                if 0.06 <= wd <= 0.26 and 0.12 <= top <= 0.6:
+                    strips.append([axis, cpos, t0, t1, wd, top])
+            used[max(c - 3, 0):c + 4] = True
+    # ends: on to a wall face up to 0.25 m off, and onto the axis of a square strip they meet
+    for s_ in strips:
+        axis, c, a, b, wd, top = s_
+        for k, e in ((2, a), (3, b)):
+            best = None
+            for w in walls:
+                if w.axis == axis:
+                    continue  # a wall square to the strip: w.axis 1 is along X for a strip along Y
+                (bx, by), (ex, ey) = w.beg, w.end
+                span = sorted((bx, ex) if axis == 0 else (by, ey))
+                if not span[0] - 0.01 <= c <= span[1] + 0.01:
+                    continue
+                line = (by + ey) / 2 if axis == 0 else (bx + ex) / 2
+                for face in (line - w.thickness / 2, line + w.thickness / 2):
+                    d = abs(face - e)
+                    inside = (face - e) * (1 if k == 3 else -1) > 0
+                    if d <= 0.25 and inside and (best is None or d < best[0]):
+                        best = (d, face)
+            if best:
+                s_[k] = best[1]
+    for s_ in strips:
+        axis, c, a, b, wd, top = s_
+        for k in (2, 3):
+            e = s_[k]
+            for o in strips:
+                if o is s_ or o[0] == axis:
+                    continue
+                if abs(o[1] - e) <= o[4] / 2 + 0.15 and o[2] - 0.15 <= c <= o[3] + 0.15:
+                    s_[k] = o[1]
+                    if c < o[2]:
+                        o[2] = c
+                    elif c > o[3]:
+                        o[3] = c
+    return [tuple(s_) for s_ in strips if s_[3] - s_[2] >= 0.3]
 
 
 def _free(f, a, b):
@@ -1317,6 +1473,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
     lines = split_lines(lines)
     walls = build_walls(lines, opt)
     walls = drop_plates(walls, rot, floor)
+    walls, clutter = drop_low(walls, rot, floor, ceiling, opt)
     attach_openings(walls, lines)
     for w in walls:
         w.beg, w.end = _line(w)
@@ -1332,6 +1489,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
         # ends that sat on a moved wall's centre line follow it
         join_walls(walls, joined=_joined_ends(walls))
     rooms, outline, left_out = find_rooms(rot, floor, ceiling, walls, lines, opt)
+    tracing = find_tracing(rot, floor, walls)
 
     # model origin: main floor at z = 0, lower-left corner of the walls at (0, 0)
     allpts = np.array([p for w in walls for p in (w.beg, w.end)])
@@ -1411,6 +1569,15 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
         scene["assumptions"].append(
             f"a space of {r['area']:.1f} m2 with its floor {int(round((r['floor'] - main_floor) * 1000))} mm off the "
             "main floor is outside the flat (common corridor) and left out")
+    scene["assumptions"] += clutter
+    # deslab: tracing, the first row of blocks of new walls, built as low walls by the bridge
+    scene["tracing"] = []
+    for k, (axis, c, a, b, wd, top) in enumerate(sorted(tracing, key=lambda s: (s[0], s[1], s[2])), 1):
+        p, q = ((c, a), (c, b)) if axis == 0 else ((a, c), (b, c))
+        scene["tracing"].append({"id": f"T{k}", "start": xy(p), "end": xy(q), "thickness": round(wd, 3),
+                                 "height": round(top, 3)})
+        scene["assumptions"].append(f"T{k}: tracing (first row of blocks) {b - a:.2f} m, {wd * 1000:.0f} mm wide, "
+                                    f"{top * 1000:.0f} mm high")
     _even_door_heights(scene)
     if outline is not None:
         # deslab: one floor slab under the rooms and the walls, its top at the main floor
