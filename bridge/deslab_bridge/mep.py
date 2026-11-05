@@ -94,6 +94,12 @@ def shaft_walls(scene, height=None):
             walls.append({"id": f"{s['id']}.{k}", "start": _xy(start), "end": _xy(end), "thickness": t,
                           "height": float(s.get("height", height)), "kind": "partition", "shaft": s["id"],
                           "openings": []})
+        # inner walls between the boxes of one shaft (kv94: risers box and vent box), by their axes
+        for a, b in s.get("partitions", []):
+            k += 1
+            walls.append({"id": f"{s['id']}.{k}", "start": _xy(_pt(a)), "end": _xy(_pt(b)), "thickness": t,
+                          "height": float(s.get("height", height)), "kind": "partition", "shaft": s["id"],
+                          "openings": []})
     return walls
 
 
@@ -142,8 +148,11 @@ def mep_objects(scene, profile):
             z = float(m.get("elevation", 0.1 if kind == "radiator" else 1.6))
             lib = cfg.get("radiatorPart" if kind == "radiator" else "panelPart",
                           "Панельный Радиатор 27" if kind == "radiator" else "Электрощиты 21")
+            # the sizes as GDL A/B/ZZYZX too: «Электрощиты 21» ignores the element size (run kv94h,
+            # 05.11.2026: a 0.5 x 0.5 m panel instead of 0.321 x 0.158)
             out.append((m, {"libraryPartName": lib, "coordinates": {"x": origin[0], "y": origin[1], "z": z},
-                            "dimensions": {"x": length, "y": depth, "z": h}, "angle": angle}, []))
+                            "dimensions": {"x": length, "y": depth, "z": h}, "angle": angle},
+                        [{"name": "A", "value": length}, {"name": "B", "value": depth}, {"name": "ZZYZX", "value": h}]))
     return out
 
 
@@ -245,7 +254,12 @@ def plan_extra_chains(scene, profile, chains):
     for (rid, _), (room, (i, p, q, u, n), pts) in sorted(on_edge.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
         own = [c for c in chains if c["room"] == rid and i in c.get("edges", [c["edge"]])]
         off = (max(c["offset"] for c in own) if own else base) + max(step, 2 * band + 0.02)
-        ch = _chain([p, q] + pts, u, n, _add(p, _mul(n, off)), rid, f"оборуд.{i}", off, extra="edge")
+        # from the nearer corner to the farthest item only (run kv94h: a chain corner to corner ran
+        # through a window label at the far end)
+        ts = [_dot(_sub(x, p), u) for x in pts]
+        L = _dot(_sub(q, p), u)
+        end = p if min(ts) <= L - max(ts) else q
+        ch = _chain([end] + pts, u, n, _add(p, _mul(n, off)), rid, f"оборуд.{i}", off, extra="edge")
         if ch:
             out.append(ch)
     # shafts: each side that faces the room, and the distance to the nearest room face square to
@@ -373,11 +387,24 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
         dot = _mul(_add(_pt(t["start"]), _pt(t["end"])), 0.5)
         items.append((t["id"], tr_text.format(height_mm=int(round(float(t.get("height", 0.25)) * 1000))), dot))
     placed = list(taken)
+    # door swings (a square of the leaf width on both sides): no label text or leader over them
+    # (run kv94h: «Щиток электрический» lay across the entrance door arc)
+    from .obmer import _opening_points
+    swings = []
+    for w in scene.get("walls", []):
+        for o, c, e1, e2, u, n in _opening_points(w):
+            if o.get("kind") == "door":
+                wd = float(o.get("width", 0.9))
+                reach = float(w.get("thickness", 0.2)) / 2 + wd
+                for sg in (1, -1):
+                    pts = [e1, e2, _add(e1, _mul(n, sg * reach)), _add(e2, _mul(n, sg * reach))]
+                    swings.append((min(p[0] for p in pts), min(p[1] for p in pts),
+                                   max(p[0] for p in pts), max(p[1] for p in pts)))
     labels = []
     for ident, text, dot in items:
         width = (len(text) * cfg.get("charMm", 1.4) + cfg.get("padMm", 1.5)) * k
         best = None
-        for length in (0.5, 0.8, 1.1, 1.4, 1.8):
+        for length in (0.5, 0.8, 1.1, 1.4, 1.8, 2.2, 2.6):
             for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1), (0, -1), (1, 0), (-1, 0)):
                 d = _unit((dx, dy))
                 mid = _add(dot, _mul(d, length))
@@ -389,6 +416,8 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     cost += 100 * sum(_box_hits(box, w) for w in obstacles["dims"] + obstacles["marks"] + placed)
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.15)), mid, w) for w in obstacles["walls"])
                     cost += 20 * sum(_seg_hits_box(dot, mid, w) for w in placed)
+                    cost += 100 * sum(_box_hits(box, w) for w in swings)
+                    cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in swings)
                     if not all(_in_rooms(rooms, c) for c in ((box[0], box[1]), (box[2], box[3]))):
                         cost += 150  # the labels stay inside the flat
                     if best is None or cost < best[0]:

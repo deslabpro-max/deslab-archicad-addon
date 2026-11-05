@@ -528,7 +528,9 @@ def drop_low(walls, pts, floor, ceiling, opt: Options):
             body = zs[zs > 0.05]
             if len(body):
                 top = max(top, float(np.percentile(body, 98)))
-        if seen_low >= 0.5 and seen_high < 0.3:
+        # (and its points end low: a glazed facade has its lintels and piers high up, run JK v3
+        # dropped the facade with three balcony doors, «up to 3.15 m high»)
+        if seen_low >= 0.5 and seen_high < 0.3 and top < opt.clutter_height + 0.3:
             notes.append(f"a low object {w.b - w.a:.2f} m long, up to {top:.2f} m high, is clutter, not a wall")
             continue
         keep.append(w)
@@ -539,7 +541,7 @@ def find_tracing(pts, floor, walls, res=RES):
     """deslab: the first row of blocks of new walls (tracing, Игорь 05.11.2026, JK: 80 mm blocks
     0.25 m high). Cells with points 0.04-0.6 m over the floor and nothing at 0.65-2.0 m, away from
     the walls; in each row (column) the runs of such cells 6-26 cm wide; their middles that line
-    up over at least 0.5 m along Y (X) are a strip. Returns [(axis, c, a, b, width, top)], axis 0:
+    up over at least 0.5 m along Y (X), with gaps up to 0.24 m, are a strip. Returns [(axis, c, a, b, width, top)], axis 0:
     a strip along Y at x = c from y = a to b."""
     x, y, z = pts[:, 0], pts[:, 1], pts[:, 2]
     zz = z - floor
@@ -579,7 +581,7 @@ def find_tracing(pts, floor, walls, res=RES):
             if prof[c] < 25 or used[max(c - 3, 0):c + 4].any():
                 continue
             band = mids[:, max(c - 2, 0):c + 3]
-            for a, b in _runs(band.any(axis=1), 6, 25):
+            for a, b in _runs(band.any(axis=1), 12, 25):
                 rr, cc = np.nonzero(band[a:b])
                 centre = float(np.mean(cc + max(c - 2, 0) + 0.5))
                 ws = [width.get((r + a, k + max(c - 2, 0)), 0) for r, k in zip(rr, cc)]
@@ -591,7 +593,10 @@ def find_tracing(pts, floor, walls, res=RES):
                 sel = (np.abs(ccs - cpos) < wd / 2 + 0.02) & (tt > t0 + 0.05) & (tt < t1 - 0.05) & lo
                 if sel.sum() < 20:
                     continue
-                top = float(np.percentile(zz[sel], 95))
+                # the top of the blocks: the highest dense layer (a few stray points above it)
+                hist, hedges = np.histogram(zz[sel], bins=np.arange(0.04, 0.62, 0.01))
+                dense = np.flatnonzero(hist >= 0.2 * hist.max())
+                top = float(hedges[dense[-1] + 1]) if len(dense) else 0.0
                 # it stands on the floor (a radiator hangs 0.1 m or more above it)
                 foot = tt[sel & (zz < 0.1)]
                 bins = np.arange(t0 + 0.05, t1 - 0.05, 0.1)
@@ -600,7 +605,7 @@ def find_tracing(pts, floor, walls, res=RES):
                 # the block faces from the points (cells give the width to a cell or two)
                 e0, e1 = np.percentile(ccs[sel], [1, 99])
                 cpos, wd = float((e0 + e1) / 2), float(e1 - e0)
-                if 0.06 <= wd <= 0.26 and 0.12 <= top <= 0.6:
+                if 0.06 <= wd <= 0.2 and 0.12 <= top <= 0.6:
                     strips.append([axis, cpos, t0, t1, wd, top])
             used[max(c - 3, 0):c + 4] = True
     # ends: on to a wall face up to 0.25 m off, and onto the axis of a square strip they meet
@@ -630,7 +635,7 @@ def find_tracing(pts, floor, walls, res=RES):
             for o in strips:
                 if o is s_ or o[0] == axis:
                     continue
-                if abs(o[1] - e) <= o[4] / 2 + 0.15 and o[2] - 0.15 <= c <= o[3] + 0.15:
+                if abs(o[1] - e) <= o[4] / 2 + 0.4 and o[2] - 0.4 <= c <= o[3] + 0.4:
                     s_[k] = o[1]
                     if c < o[2]:
                         o[2] = c

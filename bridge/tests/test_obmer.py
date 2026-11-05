@@ -293,13 +293,16 @@ def test_engineering_and_tracing():
     assert calls["ModifyDoors"]["doorsWithDetails"] == [{"elementId": {"guid": "OD"}, "reflected": True}]
     walls = calls["CreateWalls"]["wallsData"]
     # a shaft in the corner: walls on its two free sides only, inside its outline; the tracing low
-    assert [w["id"] for w in walls] == ["SH1.1", "SH1.2", "Трассировка T1"], walls
+    assert len(walls) == 3 and all("id" not in w for w in walls), walls  # no id: add-on 2ae7b30 loses such walls
     assert walls[0]["begCoordinate"] == {"x": 0.0, "y": 2.05} and walls[1]["endCoordinate"] == {"x": 0.55, "y": 3.0}
     assert walls[2]["height"] == 0.25 and walls[2]["thickness"] == 0.08
     objects = {o["id"]: o for o in calls["CreateObjects"]["objectsData"]}
     rad = objects["RD1"]
     assert rad["angle"] == 0 and abs(rad["coordinates"]["y"] - 0.015) < 1e-9 and abs(rad["dimensions"]["x"] - 1.0) < 1e-9
     assert objects["K1"]["dimensions"]["x"] == 0.16
+    sizes = [g["gdlParameters"] for g in next(p for c, p in ac.calls if c == "SetGDLParametersOfElements"
+                                                and any(x["gdlParameters"][0]["name"] == "radius_1" for x in p["elementsWithGDLParameters"]))["elementsWithGDLParameters"]]
+    assert {"name": "A", "value": 1.0} in sizes[1], sizes  # the radiator's size as GDL A too
     dims = calls["CreateAssociativeDimensions"]["dimensionsData"]
     assert len(dims) >= 7, len(dims)  # 4 room chains + radiators + shaft depth + tracing length and place
     texts = ["".join(r["text"] for r in l["runs"]) for l in calls["CreateLabels"]["labelsData"]]

@@ -1361,11 +1361,11 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     mep_layer = idx.get(L.get("mep", L["partitions"]))
     extra_walls = shaft_walls(scene) + tracing_walls(scene)
     if extra_walls:
-        tracing_text = profile.get("mep", {}).get("tracingId", "Трассировка {id}")
         data = [{"begCoordinate": w["start"], "endCoordinate": w["end"], "floorIndex": floor_index, "zCoordinate": 0.0,
                  "height": w["height"], "thickness": w["thickness"], "referenceLineLocation": "Center",
-                 "structureType": "Basic",
-                 "id": tracing_text.format(id=w["id"]) if w["kind"] == "tracing" else w["id"]} for w in extra_walls]
+                 "structureType": "Basic"} for w in extra_walls]
+        # (no "id": the add-on 2ae7b30 creates the wall, then reports it as failed when it cannot
+        # set the id, and the bridge lost it: run kv94h, 05.11.2026, shafts on a hidden layer)
         guids = _created(ac.tapir("CreateWalls", {"wallsData": data}), "elements", report, "Стена шахты/трассировки")
         for w, g in zip(extra_walls, guids):
             if g:
