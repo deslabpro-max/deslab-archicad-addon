@@ -14,7 +14,7 @@ The Windows build (`deslab-scan2bim.exe`, PyInstaller, no Python needed) comes o
 `.github/workflows/build_ac27_win.yml` as `deslab-scan2bim-win.zip` in the release. Unzip it next
 to the add-on file so that the add-on finds `deslab-scan2bim\deslab-scan2bim.exe`.
 
-Tests: `python scan2bim/tests/test_synthetic.py` (two rooms, a partition with a door, a window
+Tests: `python scan2bim/tests/test_fit.py` (JK bottom wall), `python scan2bim/tests/test_synthetic.py` (two rooms, a partition with a door, a window
 in a niche, rotated 7°).
 
 ## How it works
@@ -68,6 +68,10 @@ in a niche, rotated 7°).
     past a wall), top at the main floor.
 11. Interior doors get one height (median of the measured 1.95–2.45 m heads); a door in a wall with
     a window is a balcony door (`balconyDoor`) and keeps its own head.
+12. Room outlines and walls agree (`fit.py`, Игорь 04.11.2026, run JK): an outline edge off its axis
+    by less than 12 mm is made square; where the outline steps between two wall faces, the walls
+    end exactly on the step (a wall that runs on outside the room to a T joint stays); a small
+    corner lump (up to 0.2 m) that no wall face carries is filled and noted in `assumptions`.
 
 ## Scene format `deslab.scan2bim/1`
 

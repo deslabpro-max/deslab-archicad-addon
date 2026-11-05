@@ -201,6 +201,8 @@ def check_room_faces(scene, tol=0.005):
                     continue
                 if best is None or gap < best[0]:
                     best = (gap, w["id"], off, half)
+            if (best is None or best[0] > tol) and _on_wall_end(walls, p, q, mid, e, tol):
+                continue  # a step of the outline on a wall's end face
             if best is None and inside:
                 errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}): "
                               f"стена {inside} стоит внутри помещения, а должна снаружи (ось не в ту сторону)")
@@ -212,6 +214,21 @@ def check_room_faces(scene, tol=0.005):
                               f"не на грани стены {best[1]}: ось в {best[2] * 1000:.0f} мм, половина толщины "
                               f"{best[3] * 1000:.0f} мм, промах {best[0] * 1000:.0f} мм")
     return errors
+
+
+def _on_wall_end(walls, p, q, mid, e, tol):
+    """True when the edge p-q lies on the end face of a wall square to it (a step of the room
+    outline where a thicker wall ends)."""
+    for w, a, b, u, half in walls:
+        if abs(_dot(e, u)) > 1e-4:
+            continue
+        for end in (a, b):
+            if abs(_dot(_sub(mid, end), u)) > tol:
+                continue
+            across = [_dot(_sub(x, end), _left(u)) for x in (p, q)]
+            if min(across) >= -half - tol and max(across) <= half + tol:
+                return True
+    return False
 
 
 def walls_from_outline(polygon, edges, height, tol=1e-6):

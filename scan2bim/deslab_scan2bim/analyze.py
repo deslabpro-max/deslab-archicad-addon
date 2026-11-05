@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import grid
+from .fit import fit_walls_to_rooms
 
 RES = 0.02  # raster cell, m
 
@@ -1431,4 +1432,7 @@ def analyze(points: np.ndarray, opt: Options, source: str = "") -> dict:
         })
         if not r["simple"]:
             scene["warnings"].append(f"R{k}: outline crosses itself, slab and zone may fail")
+    # deslab: the room outlines and the wall ends agree exactly (the bridge refuses a plan whose
+    # outline is off the wall faces, Игорь 04.11.2026)
+    scene["assumptions"] += fit_walls_to_rooms(scene)
     return scene
