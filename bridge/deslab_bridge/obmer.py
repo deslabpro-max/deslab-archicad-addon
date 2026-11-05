@@ -1101,7 +1101,7 @@ CORNER_WINDOW_PENS = ("gs_penJoint", "gs_penPlug", "gs_custom_cc_separator_pen",
 
 
 def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="frame", favorite=None, two_sash_from=1.0,
-                         pen=161, three_sash_favorite=None, three_sash_from=1.9):
+                         pen=161, three_sash_favorite=None, three_sash_from=1.9, three_sash_source=None):
     """Builds each corner window as in the recipe tested on 27.10.2026 (тест-угол.pln): CreateWindows
     on the first wall with cornerWindow, Archicad adds the linked twin on the other wall; each
     width is then set so the far edge lands where the scene has it (Archicad keeps the corner
@@ -1133,6 +1133,19 @@ def build_corner_windows(ac, pairs, wall_guid, report, setback=0.12, joint="fram
         widest = max(float(o["width"]), float(po["width"]))
         fav = three_sash_favorite if three_sash_favorite and widest > three_sash_from else \
             (favorite if widest >= two_sash_from else None)
+        if fav and fav == three_sash_favorite:
+            # the office template copy may not have it (run of 05.11.2026): made from a three-sash
+            # window of this model
+            have = ac.tapir("GetFavoritesByType", {"elementType": "Window"}).get("favorites", [])
+            if fav not in have:
+                if three_sash_source:
+                    _check_details(ac.tapir("CreateFavoritesFromElements", {"favoritesFromElements": [
+                        {"elementId": {"guid": three_sash_source}, "favorite": fav}]}), report,
+                        f"Избранное «{fav}»")
+                else:
+                    report.errors.append(f"Угловое окно {o['id']}: нет избранного «{fav}» и трёхстворчатого окна, "
+                                         f"чтобы его сделать; поставлено двустворчатое")
+                    fav = favorite
         if fav:
             _check_details(ac.tapir("ApplyFavoritesToElements", {"favoritesToApply": [
                 {"elementId": {"guid": first}, "favorite": fav}]}), report, f"Угловое окно: избранное «{fav}»")
@@ -1267,7 +1280,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
                                                  favorite=op_cfg.get("cornerTwoSashFavorite"),
                                                  two_sash_from=op_cfg.get("doubleSashMinWidth", 1.0),
                                                  pen=op_cfg.get("cornerWindowPen", 161),
-                                                 three_sash_favorite=op_cfg.get("cornerThreeSashFavorite")))
+                                                 three_sash_favorite=op_cfg.get("cornerThreeSashFavorite"),
+                                                 three_sash_source=wide[0] if wide and not F.get("window") else None))
     zone_guid = {z["id"]: _guid(z) for z in model.get("zones", [])}
     zone_guids = list(zone_guid.values())
     report.step("модель", walls=len(wall_guid), openings=len(opening_guid), zones=len(zone_guids))
