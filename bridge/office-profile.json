@@ -144,6 +144,7 @@
     "cornerJoint": "frame",
     "cornerWindowPen": 161,
     "cornerTwoSashFavorite": "Двустворчатое Окно",
+    "cornerThreeSashFavorite": "deslab Трехстворчатое Окно",
     "comment": "Игорь 03.11.2026: подоконник в бетонной квартире не ставим; если ставим, только белый пластик"
   }
 }
