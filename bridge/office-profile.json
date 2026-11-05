@@ -87,6 +87,7 @@
     ],
     "textHeight": 0.125,
     "lineSpacing": 1.6,
+    "textSpacing": -0.8,
     "charWidth": 0.62,
     "drawingScale": 45,
     "charMm": 1.4,
