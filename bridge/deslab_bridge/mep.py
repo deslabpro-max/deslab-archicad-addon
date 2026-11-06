@@ -142,6 +142,8 @@ def mep_objects(scene, profile):
                             "dimensions": {"x": d, "y": d, "z": float(m.get("height", height))}},
                         [{"name": "radius_1", "value": d / 2}, {"name": "length", "value": float(m.get("height", height))}]))
         elif kind in WALL_ITEMS:
+            if kind == "panel" and not cfg.get("panelPart"):
+                continue  # drawn as its outline (mep_outlines)
             origin, angle, _, _, length = _wall_item_frame(rooms, m)
             depth = float(m.get("depth", 0.07 if kind == "radiator" else 0.158))
             h = float(m.get("height", 0.6 if kind == "radiator" else 0.4))
@@ -153,6 +155,32 @@ def mep_objects(scene, profile):
             out.append((m, {"libraryPartName": lib, "coordinates": {"x": origin[0], "y": origin[1], "z": z},
                             "dimensions": {"x": length, "y": depth, "z": h}, "angle": angle},
                         [{"name": "A", "value": length}, {"name": "B", "value": depth}, {"name": "ZZYZX", "value": h}]))
+    # the line pen of the drawing (Игорь: the windows' pen; run kv94i: radiators purple, risers green)
+    pen = cfg.get("pen")
+    if pen:
+        for m, d, params in out:
+            d["pen"] = pen
+            params.append({"name": "gs_cont_pen", "value": pen})
+    return out
+
+
+def mep_outlines(scene, profile):
+    """A panel without a library part that takes its size («Электрощиты 21» draws 0.5 x 0.5 m
+    whatever A and B are, run kv94i): its outline on the plan, a closed polyline."""
+    if profile.get("mep", {}).get("panelPart"):
+        return []
+    rooms = _rooms(scene)
+    out = []
+    for m in scene.get("mep", []):
+        if m.get("kind") != "panel":
+            continue
+        origin, _, ux, n, length = _wall_item_frame(rooms, m)
+        depth = float(m.get("depth", 0.158))
+        a = origin
+        b = _add(a, _mul(ux, length))
+        c = _add(b, _mul(n, depth))
+        d = _add(a, _mul(n, depth))
+        out.append([_xy(p) for p in (a, b, c, d, a)])
     return out
 
 
@@ -400,11 +428,15 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     pts = [e1, e2, _add(e1, _mul(n, sg * reach)), _add(e2, _mul(n, sg * reach))]
                     swings.append((min(p[0] for p in pts), min(p[1] for p in pts),
                                    max(p[0] for p in pts), max(p[1] for p in pts)))
+    # the risers: no leader through another riser, no text on one (run kv94i)
+    riser_boxes = [(m["id"], _rect_of_segment(_pt(m["at"]), _pt(m["at"]), float(m.get("diameter", 0.1)) / 2 + 0.02))
+                   for m in scene.get("mep", []) if m.get("kind") in RISERS]
     labels = []
     for ident, text, dot in items:
+        others = [b for i, b in riser_boxes if i != ident]
         width = (len(text) * cfg.get("charMm", 1.4) + cfg.get("padMm", 1.5)) * k
         best = None
-        for length in (0.5, 0.8, 1.1, 1.4, 1.8, 2.2, 2.6):
+        for length in (0.5, 0.8, 1.1, 1.4, 1.8, 2.2, 2.6, 3.0, 3.5):
             for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1), (0, -1), (1, 0), (-1, 0)):
                 d = _unit((dx, dy))
                 mid = _add(dot, _mul(d, length))
@@ -416,7 +448,8 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     cost += 100 * sum(_box_hits(box, w) for w in obstacles["dims"] + obstacles["marks"] + placed)
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.15)), mid, w) for w in obstacles["walls"])
                     cost += 20 * sum(_seg_hits_box(dot, mid, w) for w in placed)
-                    cost += 100 * sum(_box_hits(box, w) for w in swings)
+                    cost += 100 * sum(_box_hits(box, w) for w in swings + others)
+                    cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in others)
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in swings)
                     if not all(_in_rooms(rooms, c) for c in ((box[0], box[1]), (box[2], box[3]))):
                         cost += 150  # the labels stay inside the flat

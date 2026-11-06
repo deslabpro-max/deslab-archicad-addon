@@ -130,6 +130,9 @@ def shift_scene(scene, origin):
         for key in ("start", "end", "at"):  # deslab: engineering items and tracing strips
             if key in item:
                 move(item[key])
+        for seg in item.get("partitions") or []:  # inner walls of a shaft (run kv94i: left at x=0)
+            for p in seg:
+                move(p)
     return scene
 
 
@@ -1035,7 +1038,7 @@ def open_layers(ac, names, report):
     open at the moment (run 7 opened in «22. Развертки кухни»: the zone stamps were not moved).
     The bridge's layers are shown and unlocked for the build. Returns the flags to put back."""
     attrs = ac.tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", [])
-    ids = [a for a in attrs if a.get("name") in names and a.get("attributeId")]
+    ids = [a for a in attrs if (names is None or a.get("name") in names) and a.get("attributeId")]
     if not ids:
         return []
     info = ac.tapir("GetLayers", {"attributeIds": [{"attributeId": a["attributeId"]} for a in ids]}).get("layers", [])
@@ -1260,8 +1263,8 @@ def set_layer(ac, guids, index, report, what):
         if guids and not index:
             report.errors.append(f"Слой для «{what}» не найден в проекте: элементы остались на текущем слое.")
         return
-    ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [
-        {"elementId": {"guid": g}, "details": {"layerIndex": index}} for g in guids]})
+    _check_details(ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [
+        {"elementId": {"guid": g}, "details": {"layerIndex": index}} for g in guids]}), report, f"Слой «{what}»")
 
 
 def analyze_scan(ac, e57_path, **helper_options):
@@ -1281,7 +1284,13 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     if not ac.alive():
         raise RuntimeError("Archicad не отвечает. Откройте проект (копию шаблона) и закройте открытые диалоги.")
     opened = Report()
-    closed = open_layers(ac, set(profile["layers"].values()), opened)
+    names = set(profile["layers"].values())
+    if scene.get("mep") or scene.get("tracing"):
+        # deslab: shaft and tracing walls and the objects are made on the tool's default layer
+        # first, which may be hidden («009 …ПЛИТКА», run kv94i): then no layer change takes; all
+        # layers are opened for the build
+        names = None
+    closed = open_layers(ac, names, opened)
     try:
         out = _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_favorites)
     finally:
@@ -1374,6 +1383,13 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         set_layer(ac, [g for w, g in zip(extra_walls, guids) if g and w["kind"] == "tracing"],
                   idx.get(L.get("tracing", L["partitions"])), report, "трассировка")
         scene["walls"] = scene.get("walls", []) + extra_walls
+    from .mep import mep_outlines
+    outlines = mep_outlines(scene, profile)
+    if outlines:
+        guids = _created(ac.tapir("CreatePolylines", {"polylinesData": [
+            {"coordinates": pts, "floorInd": floor_index, **({"layerIndex": mep_layer} if mep_layer else {}),
+             **({"linePenIndex": profile.get("mep", {}).get("pen")} if profile.get("mep", {}).get("pen") else {})}
+            for pts in outlines]}), "elements", report, "Контур щитка")
     objects = mep_objects(scene, profile)
     if objects:
         guids = _created(ac.tapir("CreateObjects", {"objectsData": [

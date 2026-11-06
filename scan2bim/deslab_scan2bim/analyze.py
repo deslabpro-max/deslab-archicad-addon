@@ -575,13 +575,29 @@ def find_tracing(pts, floor, walls, res=RES):
                     m = (a + b) // 2
                     mids[r, m] = True
                     width[(r, m)] = b - a
-        prof = mids.sum(axis=0)
+        # the middles of one strip wander a cell or two: count them over three columns
+        m3 = mids.astype(np.int32)
+        prof = m3.sum(axis=0)
+        prof = prof + np.r_[0, prof[:-1]] + np.r_[prof[1:], 0]
         used = np.zeros(cols, bool)
         for c in np.argsort(-prof):
-            if prof[c] < 25 or used[max(c - 3, 0):c + 4].any():
+            if prof[c] < 15 or used[max(c - 3, 0):c + 4].any():
                 continue
             band = mids[:, max(c - 2, 0):c + 3]
-            for a, b in _runs(band.any(axis=1), 12, 25):
+            centre_col = img[:, max(c - 1, 0):c + 2].any(axis=1)
+            for a, b in _runs(band.any(axis=1), 12, 15):
+                # run on while the strip's own cells go on, where clutter beside it makes the rows
+                # too wide (run JK v4: T1 lost 1.2 m next to low stuff, T8 and T10 too)
+                miss = 0
+                while a > 0 and miss <= 4:
+                    a -= 1
+                    miss = 0 if centre_col[a] else miss + 1
+                a += miss
+                miss = 0
+                while b < rows and miss <= 4:
+                    miss = 0 if centre_col[b] else miss + 1
+                    b += 1
+                b -= miss
                 rr, cc = np.nonzero(band[a:b])
                 centre = float(np.mean(cc + max(c - 2, 0) + 0.5))
                 ws = [width.get((r + a, k + max(c - 2, 0)), 0) for r, k in zip(rr, cc)]
@@ -985,6 +1001,12 @@ def straighten(walls, max_gap=0.3, min_len=0.25):
                 continue
             if w.measured and o.measured and abs(w.thickness - o.thickness) > 0.03:
                 continue
+            # deslab: two scanned room faces on one side 0.1 m or more apart are a real step, not
+            # a jog (run JK v4, 06.11.2026: a shaft box at the entrance door, face x 4.683, went
+            # onto the corridor wall's line, face 4.901, and stood in the doorway)
+            steps = [abs(fw.c - fo.c) for fw in w.faces for fo in o.faces if fw.side == fo.side]
+            if steps and min(steps) >= 0.1:
+                continue
             o_backed = o.measured or getattr(o, "backed", False)
             if o_backed and not w.measured and w.room_side:
                 # a deep step on the room side (a shaft box, a pier, 0.3 m or more) stays: the
@@ -1004,7 +1026,14 @@ def straighten(walls, max_gap=0.3, min_len=0.25):
                 w.thickness = o.thickness
                 w.backed = True
             w.beg, w.end = _line(w)
-    return [w for w in walls if w.openings or length(w) >= min_len]
+    def continued(w):
+        # a short piece that runs on in line with another wall of its thickness (the measured end
+        # of the JK box, 0.24 m) is part of it, no connector
+        cw, lw, hw = _span(w)
+        return any(o is not w and o.axis == w.axis and abs(_span(o)[0] - cw) < 0.01
+                   and abs(o.thickness - w.thickness) < 0.01
+                   and min(abs(_span(o)[1] - hw), abs(lw - _span(o)[2])) < 0.02 for o in walls)
+    return [w for w in walls if w.openings or length(w) >= min_len or continued(w)]
 
 
 def align_backs(walls, reach=0.6, min_t=0.08, max_t=0.9):

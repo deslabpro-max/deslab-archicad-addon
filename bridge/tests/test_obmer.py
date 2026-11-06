@@ -244,7 +244,7 @@ class FakeArchicad:
                     "zones": [{"id": "R1", "elementId": {"guid": "Z1"}}], "errors": []}
         key = {"CreateTexts": "textsData", "CreateLabels": "labelsData", "CreateHotspots": "hotspotsData",
                "CreateAssociativeDimensions": "dimensionsData", "CreateHatches": "hatchesData",
-               "CreateWalls": "wallsData", "CreateObjects": "objectsData"}.get(command)
+               "CreateWalls": "wallsData", "CreateObjects": "objectsData", "CreatePolylines": "polylinesData"}.get(command)
         if key:
             return {"elements": self._new(len(params[key]))}
         if command == "GetElementsByType":
@@ -286,6 +286,10 @@ def test_engineering_and_tracing():
         {"kind": "radiator", "id": "RD1", "start": {"x": 1.5, "y": 0}, "end": {"x": 2.5, "y": 0}, "depth": 0.07},
     ]
     scene["tracing"] = [{"id": "T1", "start": {"x": 2.5, "y": 1.2}, "end": {"x": 2.5, "y": 3.0}, "thickness": 0.08, "height": 0.25}]
+    scene["mep"][0]["partitions"] = [[{"x": 0.0, "y": 2.5}, {"x": 0.55, "y": 2.5}]]
+    scene["mep"].append({"kind": "panel", "id": "EL1", "start": {"x": 4, "y": 0.3}, "end": {"x": 4, "y": 0.62}, "depth": 0.158})
+    moved = obmer.shift_scene(copy.deepcopy(scene), {"x": 100, "y": 0})
+    assert moved["mep"][0]["partitions"][0][0]["x"] == 100  # run kv94i: the partition stayed at x=0
     assert not obmer.check_room_faces(scene)
     ac = FakeArchicad()
     report = obmer.build_measured_plan(ac, scene, PROFILE)
@@ -293,9 +297,9 @@ def test_engineering_and_tracing():
     assert calls["ModifyDoors"]["doorsWithDetails"] == [{"elementId": {"guid": "OD"}, "reflected": True}]
     walls = calls["CreateWalls"]["wallsData"]
     # a shaft in the corner: walls on its two free sides only, inside its outline; the tracing low
-    assert len(walls) == 3 and all("id" not in w for w in walls), walls  # no id: add-on 2ae7b30 loses such walls
+    assert len(walls) == 4 and all("id" not in w for w in walls), walls  # no id: add-on 2ae7b30 loses such walls
     assert walls[0]["begCoordinate"] == {"x": 0.0, "y": 2.05} and walls[1]["endCoordinate"] == {"x": 0.55, "y": 3.0}
-    assert walls[2]["height"] == 0.25 and walls[2]["thickness"] == 0.08
+    assert walls[3]["height"] == 0.25 and walls[3]["thickness"] == 0.08
     objects = {o["id"]: o for o in calls["CreateObjects"]["objectsData"]}
     rad = objects["RD1"]
     assert rad["angle"] == 0 and abs(rad["coordinates"]["y"] - 0.015) < 1e-9 and abs(rad["dimensions"]["x"] - 1.0) < 1e-9
@@ -303,6 +307,9 @@ def test_engineering_and_tracing():
     sizes = [g["gdlParameters"] for g in next(p for c, p in ac.calls if c == "SetGDLParametersOfElements"
                                                 and any(x["gdlParameters"][0]["name"] == "radius_1" for x in p["elementsWithGDLParameters"]))["elementsWithGDLParameters"]]
     assert {"name": "A", "value": 1.0} in sizes[1], sizes  # the radiator's size as GDL A too
+    panel = calls["CreatePolylines"]["polylinesData"][0]["coordinates"]  # «Электрощиты 21» drew 0.5 x 0.5
+    assert panel[0] == {"x": 3.985, "y": 0.3} and panel[2] == {"x": 3.827, "y": 0.62} and panel[4] == panel[0], panel
+    assert rad["pen"] == 161
     dims = calls["CreateAssociativeDimensions"]["dimensionsData"]
     assert len(dims) >= 7, len(dims)  # 4 room chains + radiators + shaft depth + tracing length and place
     texts = ["".join(r["text"] for r in l["runs"]) for l in calls["CreateLabels"]["labelsData"]]

@@ -43,7 +43,8 @@ in a niche, rotated 7°).
    0.3 m) with the other face of the wall whole behind it is a niche, not a doorway: no
    opening, and the wall stays closed there.
 7. No jogs: a wall continuing a longer parallel wall end to end, off its line by less than half
-   the thickness, goes onto that line (a one-sided wall takes the measured thickness). A step of
+   the thickness, goes onto that line, unless their scanned room faces are 0.1 m or more apart (a real
+   step: the JK shaft box at the entrance door went onto the corridor wall's line and into the doorway) (a one-sided wall takes the measured thickness). A step of
    0.3 m or more on the room side (a shaft box, a pier) stays: the one-sided piece keeps its face
    and takes the back face of the measured wall, so the back stays straight. Short
    connectors (under 0.25 m) are dropped. A one-sided wall lying on another wall is dropped and
@@ -80,7 +81,8 @@ in a niche, rotated 7°).
     down but nothing above 1.2 m over most of their length is dropped (noted in `assumptions`).
 14. Tracing (the first row of blocks of new walls): 2 cm cells with points 0.04–0.6 m over the floor
     and nothing at 0.65–2.0 m, away from the walls; runs 6–26 cm across that line up over at least
-    0.5 m, standing on the floor (a radiator hangs above it), 0.12–0.6 m high. Width and position
+    0.3 m, standing on the floor (a radiator hangs above it), 0.12–0.6 m high, up to 0.2 m wide; a strip
+    runs on along its own cells where clutter beside it makes the rows too wide. Width and position
     from the points. An end runs on to a wall face up to 0.25 m off and onto the axis of a square
     strip it meets (L and T joints). Written as `tracing` (the bridge builds low walls).
 
