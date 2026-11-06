@@ -20,8 +20,8 @@ from pathlib import Path
 
 DEFAULTS = {
     "baseUrl": "https://api.polza.ai/api/v1",
-    "model": "anthropic/claude-sonnet-4.5",
-    "hardModel": "anthropic/claude-opus-4.1",
+    "model": "anthropic/claude-sonnet-5.5",
+    "hardModel": "anthropic/claude-opus-5.5",
     "timeout": 180,
     "retries": 1,
     "maxTokens": 8000,

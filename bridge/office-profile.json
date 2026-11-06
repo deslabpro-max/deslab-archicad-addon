@@ -5,8 +5,8 @@
   "ai": {
     "comment": "Polza.ai (OpenAI-совместимый). Идентификаторы моделей надо сверить со списком /models: `python -m deslab_bridge.ai models`. Ключ в переменной POLZA_API_KEY, не здесь.",
     "baseUrl": "https://api.polza.ai/api/v1",
-    "model": "anthropic/claude-sonnet-4.5",
-    "hardModel": "anthropic/claude-opus-4.1",
+    "model": "anthropic/claude-sonnet-5.5",
+    "hardModel": "anthropic/claude-opus-5.5",
     "timeout": 180,
     "retries": 1,
     "maxTokens": 8000
