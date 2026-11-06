@@ -2,10 +2,10 @@
  "kv94": {
   "scene": "Обмер тест/Kvartira94_pdf.v3.scene.json",
   "mep": "bridge/tests/kv94_mep.json",
-  "origin": {"x": 1200, "y": 0}
+  "origin": {"x": 0, "y": 0}
  },
  "jk": {
   "scene": "JK_Will_Towers_463/JK_Will_Towers_463.e57.v7.scene.json",
-  "origin": {"x": 1300, "y": 0}
+  "origin": {"x": 40, "y": 0}
  }
 }
