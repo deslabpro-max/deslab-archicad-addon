@@ -98,6 +98,30 @@ def snapshots(ac, guids, out_dir, name, views=(("view1", "Обмерный пл�
     return files
 
 
+# deslab: Archicad takes the next free JSON API port when 19723 is busy (19724 after a restart,
+# 06.11.2026); the office template must never be built into
+PORTS = range(19723, 19731)
+PROTECTED = ("Антон Крючков",)
+
+
+def connect():
+    for port in PORTS:
+        ac = Archicad(port=port)
+        if ac.alive():
+            break
+    else:
+        raise SystemExit("Archicad не отвечает: откройте тестовый файл и закройте диалоги.")
+    try:
+        info = ac.tapir("GetProjectInfo")
+    except ArchicadError:
+        info = {}
+    project = info.get("projectName") or info.get("projectLocation") or "?"
+    print(f"Проект: {project} (порт {port})")
+    if any(n in str(info.get("projectName", "")) + str(info.get("projectLocation", "")) for n in PROTECTED):
+        raise SystemExit("Открыт шаблон «Антон Крючков.pln»: в него не строю. Откройте тестовый файл.")
+    return ac
+
+
 def rebuild(name, root=None, keep=False, pictures=True):
     root = _root(root)
     presets = _load(PRESETS)
@@ -108,9 +132,7 @@ def rebuild(name, root=None, keep=False, pictures=True):
     out_dir.mkdir(parents=True, exist_ok=True)
     state_path = out_dir / f"rebuild-{name}.json"
 
-    ac = Archicad()
-    if not ac.alive():
-        raise SystemExit("Archicad не отвечает: откройте тест-угол.pln и закройте диалоги.")
+    ac = connect()
     scene = load_scene(preset, root)
     deleted = 0 if keep else delete_previous(ac, state_path)
     before = _all_guids(ac)
