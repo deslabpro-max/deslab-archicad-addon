@@ -10,6 +10,7 @@ import os
 import sys
 from pathlib import Path
 
+from . import check as layout_check
 from . import obmer
 from .archicad import Archicad, ArchicadError
 
@@ -61,6 +62,34 @@ def delete_previous(ac, state_path):
     return len(guids)
 
 
+def snapshots(ac, guids, out_dir, name, views=(("view1", "Обмерный план"), ("view2", "Инженерные узлы"))):
+    """deslab: a picture of each view, fitted to the new walls (one call each, no Claude needed)."""
+    tree = ac.api("API.GetNavigatorItemTree", {"navigatorTreeId": {"type": "ViewMap"}})
+
+    def walk(i):
+        i = i.get("navigatorItem", i)
+        yield i
+        for c in i.get("children", []):
+            yield from walk(c)
+    items = list(walk(tree["navigatorTree"]["rootItem"]))
+    walls = {e["elementId"]["guid"] for e in ac.api("API.GetElementsByType", {"elementType": "Wall"}).get("elements", [])}
+    fit = [{"elementId": {"guid": g}} for g in guids if g in walls]
+    files = []
+    for tag, view in views:
+        hit = [i for i in items if view in (i.get("name") or "")]
+        if not hit or not fit:
+            continue
+        try:
+            ac.tapir("ChangeWindow", {"navigatorItemId": hit[0]["navigatorItemId"]})
+            ac.tapir("FitInWindow", {"elements": fit})
+            path = str(out_dir / f"rebuild-{name}-{tag}.png")
+            ac.tapir("SaveCurrentWindowAsImage", {"imageFilePath": path})
+            files.append(path)
+        except ArchicadError:
+            pass
+    return files
+
+
 def rebuild(name, root=None, keep=False):
     root = _root(root)
     presets = _load(PRESETS)
@@ -77,14 +106,27 @@ def rebuild(name, root=None, keep=False):
     scene = load_scene(preset, root)
     deleted = 0 if keep else delete_previous(ac, state_path)
     before = _all_guids(ac)
+    # deslab: the planned texts and lines of each plan, for the check below
+    planned = []
+    place = obmer.place_dimension_texts
+
+    def capture(chains, labels, profile, marks=(), inside=None):
+        out = place(chains, labels, profile, marks, inside)
+        planned.append((chains, labels))
+        return out
+    obmer.place_dimension_texts = capture
     try:
         report = obmer.build_measured_plan(ac, scene, rooms=preset.get("rooms"), origin=preset.get("origin"))
     finally:
+        obmer.place_dimension_texts = place
         new = sorted(_all_guids(ac) - before)
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"preset": name, "guids": new}, f)
     report["deleted"] = deleted
     report["created"] = len(new)
+    shifted = obmer.shift_scene(json.loads(json.dumps(scene)), preset.get("origin"))
+    report["check"] = {f"план {i + 1}": layout_check.check(shifted, c, l) for i, (c, l) in enumerate(planned)}
+    report["pictures"] = snapshots(ac, new, out_dir, name)
     with open(out_dir / f"rebuild-{name}-report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
     return report
@@ -104,6 +146,10 @@ def main(argv=None):
     print(f"Готово за {r.get('seconds')} с: удалено {r['deleted']}, создано {r['created']} элементов.")
     errors = r.get("errors") or []
     print("Ошибок нет." if not errors else "Замечания моста:\n- " + "\n- ".join(errors))
+    for plan, items in r.get("check", {}).items():
+        print(f"Проверка наложений, {plan}: " + ("чисто." if not items else f"{len(items)}\n- " + "\n- ".join(items)))
+    for path in r.get("pictures", []):
+        print(f"Снимок: {path}")
     return 0
 
 
