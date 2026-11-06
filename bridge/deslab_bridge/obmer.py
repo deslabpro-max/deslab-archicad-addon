@@ -742,7 +742,8 @@ def plan_dimension_chains(scene, profile):
 
     def text_hits(ch, a, b):
         box = _rect_of_segment(a, b, text_half)
-        return any(_box_hits(box, t) for c, t in texts if c is not ch)
+        # deslab: its own chain's texts too (run kv94j: «215» on its leader ran into «340» → «215340»)
+        return any(_box_hits(box, t) for c, t in texts)
 
     for ch in chains:
         d, n = _pt(ch["direction"]), _pt(ch["normal"])
