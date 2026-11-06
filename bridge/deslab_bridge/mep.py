@@ -75,10 +75,12 @@ def shaft_walls(scene, height=None):
             # deslab: the shaft's walls given by their axes, as drawn in Игорь's example (kv94: the
             # sewer box of the left shaft is open to the room at the top, the water risers stand
             # inside it, not on a wall, 06.11.2026)
+            own = []
             for k, (a, b) in enumerate(s["walls"], 1):
-                walls.append({"id": f"{s['id']}.{k}", "start": _xy(_pt(a)), "end": _xy(_pt(b)), "thickness": t,
-                              "height": float(s.get("height", height)), "kind": "partition", "shaft": s["id"],
-                              "openings": []})
+                own.append({"id": f"{s['id']}.{k}", "start": _xy(_pt(a)), "end": _xy(_pt(b)), "thickness": t,
+                            "height": float(s.get("height", height)), "kind": "partition", "shaft": s["id"],
+                            "openings": []})
+            walls.extend(snap_joints(own))
             continue
         poly = [_pt(p) for p in s["polygon"]]
         n = len(poly)
@@ -111,7 +113,47 @@ def shaft_walls(scene, height=None):
             walls.append({"id": f"{s['id']}.{k}", "start": _xy(_pt(a)), "end": _xy(_pt(b)), "thickness": t,
                           "height": float(s.get("height", height)), "kind": "partition", "shaft": s["id"],
                           "openings": []})
-    return walls
+    # deslab: the polygon walls and inner partitions of one shaft also meet on their axes
+    out = []
+    for sid in dict.fromkeys(w["shaft"] for w in walls):
+        out.extend(snap_joints([w for w in walls if w["shaft"] == sid]))
+    return out
+
+
+def snap_joints(walls, tol=None):
+    """deslab: Archicad joins walls only where an end lies on the other wall's axis (Игорь 06.11.2026:
+    the kv94 left shaft came out as separate boxes, the ends stopped on a face or ran past it).
+    An end within one thickness of a crossing wall's axis, near that wall, is moved along its own
+    wall onto that axis: a T joint, or an L corner when both ends meet there."""
+    out = [dict(w) for w in walls]
+    for w in out:
+        for key in ("start", "end"):
+            p = _pt(w[key])
+            a, b = _pt(w["start"]), _pt(w["end"])
+            u = _unit(_sub(b, a))
+            best = None
+            for o in out:
+                if o is w:
+                    continue
+                oa, ob = _pt(o["start"]), _pt(o["end"])
+                ou = _unit(_sub(ob, oa))
+                if abs(_dot(u, ou)) > 0.01:
+                    continue
+                reach = tol if tol is not None else max(w["thickness"], o["thickness"])
+                q = _meet(p, u, oa, ou)
+                if q is None:
+                    continue
+                shift = _len(_sub(q, p))
+                along = _dot(_sub(q, oa), ou)
+                olen = _len(_sub(ob, oa))
+                if shift > reach + 1e-6 or along < -reach - 1e-6 or along > olen + reach + 1e-6:
+                    continue
+                if best is None or shift < best[0]:
+                    best = (shift, q)
+            if best and best[0] > 1e-6:
+                w[key] = _xy(best[1])
+    # a crossing wall whose end now sits past the other axis (L corner) stays as it is
+    return out
 
 
 def tracing_walls(scene):

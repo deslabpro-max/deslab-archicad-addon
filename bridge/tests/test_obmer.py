@@ -352,6 +352,19 @@ def test_refused_items_are_reported():
     assert any("Выноска" in e and "no favorite" in e for e in report["errors"]), report["errors"]
 
 
+def test_shaft_walls_join_on_axes():
+    from deslab_bridge import mep
+    walls = mep.snap_joints([
+        {"start": {"x": 0.24, "y": 0.963}, "end": {"x": 0.56, "y": 0.963}, "thickness": 0.1},
+        {"start": {"x": 0.56, "y": 0.963}, "end": {"x": 0.56, "y": 0.053}, "thickness": 0.1},
+        {"start": {"x": 0.29, "y": 0.913}, "end": {"x": 0.29, "y": 0.584}, "thickness": 0.1},
+        {"start": {"x": 0.24, "y": 0.534}, "end": {"x": 0.51, "y": 0.534}, "thickness": 0.1}])
+    # ends that stopped on a face or ran past an axis are put on the axis (L and T joints)
+    assert walls[0]["start"] == {"x": 0.29, "y": 0.963}, walls[0]
+    assert walls[2]["start"] == {"x": 0.29, "y": 0.963} and walls[2]["end"] == {"x": 0.29, "y": 0.534}, walls[2]
+    assert walls[3]["start"] == {"x": 0.29, "y": 0.534} and walls[3]["end"] == {"x": 0.56, "y": 0.534}, walls[3]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
