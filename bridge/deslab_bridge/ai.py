@@ -24,7 +24,7 @@ DEFAULTS = {
     "hardModel": "anthropic/claude-opus-5.5",
     "timeout": 180,
     "retries": 1,
-    "maxTokens": 8000,
+    "maxTokens": 16000,
     "rulesFile": "правила-черчения.md",
 }
 
@@ -175,7 +175,11 @@ def ai_review(scene, images=(), profile=None, hard=False, call=chat, with_mep=Tr
     content += [image_part(p) for p in images]
     messages = [{"role": "system", "content": build_system_prompt(profile)}, {"role": "user", "content": content}]
     text, usage = call(messages, profile, cfg["hardModel"] if hard else cfg["model"])
-    return parse_json(text), usage, text
+    try:
+        return parse_json(text), usage, text
+    except AIError as error:
+        error.raw, error.usage = text, usage  # deslab: keep the answer, it was paid for
+        raise
 
 
 # --------------------------------------------------------- applying, with checks
@@ -198,6 +202,13 @@ def _inside_flat(p, scene, tolerance=0.3):
         return True
     return any(_point_in_polygon({"x": p["x"] + dx, "y": p["y"] + dy}, poly)
                for poly in polys for dx in (-tolerance, 0, tolerance) for dy in (-tolerance, 0, tolerance))
+
+
+def _near_polygon(p, polygon, tolerance=0.4):
+    """deslab: kv94 has risers that stand just outside the shaft contour (the contour is drawn around the box), so
+    «inside» means inside or within 0.4 m."""
+    return any(_point_in_polygon({"x": p["x"] + dx, "y": p["y"] + dy}, polygon)
+               for dx in (-tolerance, 0, tolerance) for dy in (-tolerance, 0, tolerance))
 
 
 def _is_point(p):
@@ -283,8 +294,8 @@ def apply_review(scene, review, min_confidence=0.5):
         if not pts or not all(_is_point(p) for p in pts) or not all(_inside_flat(p, new) for p in pts):
             rejected.append(f"инженерный элемент {mid}: координаты не в квартире")
             continue
-        if kind in ("sewerRiser", "waterRiser") and not any(s.get("polygon") and _point_in_polygon(item["at"], s["polygon"]) for s in shafts):
-            rejected.append(f"стояк {mid}: не внутри шахты")
+        if kind in ("sewerRiser", "waterRiser") and not any(s.get("polygon") and _near_polygon(item["at"], s["polygon"]) for s in shafts):
+            rejected.append(f"стояк {mid}: не в шахте и не ближе 0.4 м к ней")
             continue
         ids.add(mid)
         mep.append(item)
@@ -344,7 +355,7 @@ def main(argv=None):
         scene = json.loads(Path(a.scene).read_text(encoding="utf-8"))
         started = time.time()
         review, usage, _ = ai_review(scene, a.images, profile, a.hard, with_mep=not a.no_mep)
-        new, report = apply_review(scene, review)
+        new, report = apply_review({k: v for k, v in scene.items() if not (a.no_mep and k in ("mep", "tracing"))}, review)
         print(f"{time.time() - started:.1f} с, токены: {usage}")
         print("применено:", len(report["applied"]), "отклонено:", len(report["rejected"]), "сомнений:", len(report["doubts"]))
         if a.out:
@@ -352,6 +363,9 @@ def main(argv=None):
         return 0
     except AIError as error:
         print("ОШИБКА:", error)
+        if getattr(error, "raw", None) is not None and a.out:
+            Path(a.out + ".raw.txt").write_text(error.raw, encoding="utf-8")
+            print("токены:", getattr(error, "usage", {}), "; ответ сохранён в", a.out + ".raw.txt")
         return 1
 
 

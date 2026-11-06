@@ -5,6 +5,10 @@ description = "deslab bridge: Claude to Archicad through the deslab add-on, offi
 requires-python = ">=3.10"
 dependencies = ["mcp>=1.2,<2"]
 
+[project.optional-dependencies]
+# deslab: PDF pages to PNG and images for the AI review (deslab_bridge.ai)
+ai = ["pymupdf", "pillow"]
+
 [project.scripts]
 deslab-mcp = "deslab_bridge.server:main"
 
