@@ -66,26 +66,45 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
         # (ratio * drawingScale between 1:100 and 1:16; this also finds the one placed by the previous run)
         old = [e for e, d in zip(drawings, details)
                if 0.009 <= d["details"].get("ratio", 1) * d["details"].get("drawingScale", 1) <= 0.06]
-        # measured on this template (A27, drawing clipped with a polygon): the drawing's position is the paper point
-        # of the model origin, not of the content corner (that is only so for an unclipped drawing), and a clip polygon
-        # moves the drawing by -(clip corner) * ratio. So: put the flat's centre on the frame centre, then move back.
         s = 1 / denominator
-        # "offset" (profile): what is still left after that, in model metres, found by looking at the layouts
-        shift = cfg.get("offset", {"x": 0.0, "y": 0.0})
-        position = {"x": fx - cx * s + frame["xMin"] * ratio + shift["x"] * s,
-                    "y": fy - cy * s + frame["yMin"] * ratio + shift["y"] * s}
-        clip = [{"x": frame["xMin"], "y": frame["yMin"]}, {"x": frame["xMax"], "y": frame["yMin"]},
-                {"x": frame["xMax"], "y": frame["yMax"]}, {"x": frame["xMin"], "y": frame["yMax"]}]
-        new = ac.tapir("CreateDrawings", {"drawingsData": [{
-            "navigatorItemId": view["navigatorItemId"], "position": position, "scale": ratio,
-            "drawingScale": 1 / view_scale, "modelOffset": {"x": 0, "y": 0}, "clipPolygon": clip,
-            "nameType": "ViewOrSourceFileName"}]})["elements"][0]
+        source = {"navigatorItemId": view["navigatorItemId"], "drawingScale": 1 / view_scale,
+                  "modelOffset": {"x": 0, "y": 0}, "nameType": "ViewOrSourceFileName"}
+        # Игорь 06.11.2026: the frame must be «Рамка по размеру Чертежа», so the drawing is created without a clip
+        # polygon (the add-on then clears the crop and the frame follows the drawing). That shows the WHOLE view, so
+        # a probe tells whether the view holds only the flat (plus dimensions); otherwise the crop is the only way
+        # to keep the template's own flat and old leftovers off the sheet, and the frame stays manual.
+        probe = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position={"x": fx, "y": fy}, scale=ratio)]})["elements"][0]
+        content = ac.tapir("GetDrawingContentBoxes", {"elements": [{"elementId": probe["elementId"]}]})["contentBoxes"][0]["contentBox"]
+        ac.tapir("DeleteElements", {"elements": [{"elementId": probe["elementId"]}]})
+        tolerance = float(cfg.get("onlyFlatTolerance", 1.0))
+        only_flat = (content["xMin"] >= bbox["xMin"] - tolerance and content["xMax"] <= bbox["xMax"] + tolerance and
+                     content["yMin"] >= bbox["yMin"] - tolerance and content["yMax"] <= bbox["yMax"] + tolerance)
+        if only_flat:
+            # the content box is the frame: scale to it, then an unclipped drawing sits with its corner at the position
+            width, height = content["xMax"] - content["xMin"] + 2 * margin, content["yMax"] - content["yMin"] + 2 * margin
+            denominator = pick_scale(width, height, box, cfg.get("scales", SCALES))
+            ratio, s = view_scale / denominator, 1 / denominator
+            position = {"x": fx - (content["xMax"] - content["xMin"]) * s / 2, "y": fy - (content["yMax"] - content["yMin"]) * s / 2}
+            new = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position=position, scale=ratio)]})["elements"][0]
+            note = "рамка по размеру чертежа"
+        else:
+            # measured on this template (A27, drawing clipped with a polygon): the drawing's position is the paper point
+            # of the model origin, not of the content corner (that is only so for an unclipped drawing), and a clip polygon
+            # moves the drawing by -(clip corner) * ratio. So: put the flat's centre on the frame centre, then move back.
+            # "offset" (profile): what is still left after that, in model metres, found by looking at the layouts
+            shift = cfg.get("offset", {"x": 0.0, "y": 0.0})
+            position = {"x": fx - cx * s + frame["xMin"] * ratio + shift["x"] * s,
+                        "y": fy - cy * s + frame["yMin"] * ratio + shift["y"] * s}
+            clip = [{"x": frame["xMin"], "y": frame["yMin"]}, {"x": frame["xMax"], "y": frame["yMin"]},
+                    {"x": frame["xMax"], "y": frame["yMax"]}, {"x": frame["xMin"], "y": frame["yMax"]}]
+            new = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position=position, scale=ratio, clipPolygon=clip)]})["elements"][0]
+            note = "рамка обрезает вид: в виде есть лишнее вне плана (проект не только кв. 94), «по размеру чертежа» невозможна"
         if "elementId" not in new:
             out.append(f"{entry['layout']}: чертёж не создан ({new})")
             continue
         if old:  # the template's own plan drawing is replaced, the rest of the layout stays
             ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in old]})
-        out.append(f"{entry['layout']}: «{entry['view']}» 1:{denominator}")
+        out.append(f"{entry['layout']}: «{entry['view']}» 1:{denominator}, {note}")
     # deslab: leave a floor plan window in front, the next rebuild creates walls and cannot do it on a layout
     show_plan_view(ac, cfg["items"][0]["view"])
     return out
