@@ -455,7 +455,9 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
     labels = []
     for ident, text, dot in items:
         others = [b for i, b in riser_boxes if i != ident]
-        width = (len(text) * cfg.get("charMm", 1.4) + cfg.get("padMm", 1.5)) * k
+        # a little wider than the opening labels' estimate: run kv94k, «Стояк канализации» started
+        # over the last letter of «Вытяжка»
+        width = (len(text) * cfg.get("charMm", 1.4) * 1.15 + cfg.get("padMm", 1.5)) * k
         best = None
         for length in (0.5, 0.8, 1.1, 1.4, 1.8, 2.2, 2.6, 3.0, 3.5):
             for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1), (0, -1), (1, 0), (-1, 0)):

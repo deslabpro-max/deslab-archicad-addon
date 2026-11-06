@@ -832,7 +832,7 @@ def _seg_box(a, b, box):
     return True
 
 
-def place_dimension_texts(chains, labels, profile):
+def place_dimension_texts(chains, labels, profile, marks=()):
     """Slide dimension texts along their line so that no line crosses them (Игорь, 04.11.2026:
     «2711» crossed by the line of «714», «661», «861», «1468» by a door label leader; the text
     need not stand in the middle of its segment). Lines: the other chains' dimension and witness
@@ -866,6 +866,10 @@ def place_dimension_texts(chains, labels, profile):
             # the shelf runs under the whole text (run 18: «1498» on the shelf of «hокна 1785»)
             lines.append((None, ((x0 - margin, mid[1]), (x1 + margin, mid[1]))))
             boxes.append((None, (x0 - margin, y0, x1 + margin, y1)))
+
+    # deslab: and clear of zone stamps, «Н» texts, tracing strips, shafts (run JK v6: «86», «114»
+    # on the zone circle, «91» on a tracing strip)
+    boxes += [(None, tuple(m)) for m in marks]
 
     # clear of any line (run 18: 1 cm looked cramped; kv94e, 05.11.2026: with 4 cm the label
     # shelves still came 1.7-2.7 cm to «2 107», «1 550», «2 251» as drawn)
@@ -1453,7 +1457,11 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     labels = plan_opening_labels(scene, profile, obstacles)
     from .mep import plan_mep_labels
     labels += plan_mep_labels(scene, profile, obstacles, taken=[lab["box"] for lab in labels])
-    place_dimension_texts(chains, labels, profile)
+    from .mep import mep_blockers
+    strips = [_rect_of_segment(_pt(t["start"]), _pt(t["end"]), float(t.get("thickness", 0.08)) / 2)
+              for t in scene.get("tracing", [])]
+    stamps = [m for m in obstacles["marks"] if m not in [tuple(b) for ch in chains for b in ch.get("leaderBoxes", [])]]
+    place_dimension_texts(chains, labels, profile, marks=stamps + strips + mep_blockers(scene))
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}

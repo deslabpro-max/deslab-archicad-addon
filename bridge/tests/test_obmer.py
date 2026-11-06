@@ -283,7 +283,7 @@ def test_engineering_and_tracing():
         {"kind": "shaft", "id": "SH1", "label": "Вытяжка", "thickness": 0.1,
          "polygon": [{"x": 0, "y": 2.0}, {"x": 0.6, "y": 2.0}, {"x": 0.6, "y": 3.0}, {"x": 0, "y": 3.0}]},
         {"kind": "sewerRiser", "id": "K1", "at": {"x": 0.2, "y": 2.5}, "diameter": 0.16, "label": "Стояк канализации"},
-        {"kind": "radiator", "id": "RD1", "start": {"x": 1.5, "y": 0}, "end": {"x": 2.5, "y": 0}, "depth": 0.07},
+        {"kind": "radiator", "id": "RD1", "start": {"x": 0.3, "y": 0}, "end": {"x": 1.3, "y": 0}, "depth": 0.07},
     ]
     scene["tracing"] = [{"id": "T1", "start": {"x": 2.5, "y": 1.2}, "end": {"x": 2.5, "y": 3.0}, "thickness": 0.08, "height": 0.25}]
     scene["mep"][0]["partitions"] = [[{"x": 0.0, "y": 2.5}, {"x": 0.55, "y": 2.5}]]

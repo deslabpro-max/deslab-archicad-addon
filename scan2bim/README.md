@@ -82,8 +82,8 @@ in a niche, rotated 7°).
 14. Tracing (the first row of blocks of new walls): 2 cm cells with points 0.04–0.6 m over the floor
     and nothing at 0.65–2.0 m, away from the walls; runs 6–26 cm across that line up over at least
     0.3 m, standing on the floor (a radiator hangs above it), 0.18–0.4 m high, up to 0.2 m wide; a strip
-    runs on along its own cells where clutter beside it makes the rows too wide, as long as one side of
-    it stays clear (inside a pile it stops); a strip found twice is kept once. Width and position
+    runs on along its own cells where clutter beside it makes the rows too wide, a strip found twice is
+    kept once, one along a wall face less than 0.1 m off it is stuff at the wall foot. Width and position
     from the points. An end runs on to a wall face up to 0.25 m off and onto the axis of a square
     strip it meets (L and T joints). Written as `tracing` (the bridge builds low walls).
 

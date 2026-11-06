@@ -585,11 +585,6 @@ def find_tracing(pts, floor, walls, res=RES):
                 continue
             band = mids[:, max(c - 2, 0):c + 3]
             centre_col = img[:, max(c - 1, 0):c + 2].any(axis=1)
-            # ...and with one side of it clear 10-16 cm off the middle (inside a pile both sides
-            # are full: run JK v5, T1 ran on 1 m into low stuff)
-            side_l = img[:, max(c - 8, 0):max(c - 4, 0)].any(axis=1) if c >= 5 else np.zeros(rows, bool)
-            side_r = img[:, c + 5:c + 9].any(axis=1)
-            centre_col &= ~(side_l & side_r)
             for a, b in _runs(band.any(axis=1), 12, 15):
                 # run on while the strip's own cells go on, where clutter beside it makes the rows
                 # too wide (run JK v4: T1 lost 1.2 m next to low stuff, T8 and T10 too)
@@ -631,6 +626,22 @@ def find_tracing(pts, floor, walls, res=RES):
                 if 0.06 <= wd <= 0.2 and 0.18 <= top <= 0.4:
                     strips.append([axis, cpos, t0, t1, wd, top])
             used[max(c - 3, 0):c + 4] = True
+    # a strip along a wall face, less than 0.1 m off it, is stuff at the wall foot, not a row of
+    # blocks (run JK v6: a pile 12 cm in front of a wall came out as tracing)
+    def by_wall(s_):
+        axis, c, a, b, wd, top = s_
+        for w in walls:
+            if w.axis != axis:
+                continue
+            (bx, by), (ex, ey) = w.beg, w.end
+            line = (bx + ex) / 2 if axis == 0 else (by + ey) / 2
+            lo, hi = sorted((by, ey) if axis == 0 else (bx, ex))
+            if min(b, hi) - max(a, lo) < 0.5 * (b - a):
+                continue
+            if abs(c - line) - w.thickness / 2 - wd / 2 < 0.1:
+                return True
+        return False
+    strips = [s_ for s_ in strips if not by_wall(s_)]
     # one strip found twice (two peaks of the profile a few cells apart): keep the longer
     strips.sort(key=lambda s_: -(s_[3] - s_[2]))
     kept = []
