@@ -163,4 +163,8 @@ def fit_walls_to_rooms(scene, reach=0.25):
             for (x, y), dx, dy in filled:
                 notes.append(f"{room.get('id', '')}: выступ {dx * 1000:.0f} x {dy * 1000:.0f} мм у ({x:.3f}; {y:.3f}) "
                              "без стены убран из контура")
+    # deslab: a last pass, every outline edge square (run JK v7, 06.11.2026: an edge 5 mm off its
+    # axis over 1.73 m came through)
+    for room in scene.get("rooms", []):
+        room["polygon"] = [{"x": round(x, 4), "y": round(y, 4)} for x, y in _square_outline([_xy(p) for p in room["polygon"]])]
     return notes
