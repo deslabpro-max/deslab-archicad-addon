@@ -390,13 +390,30 @@ def mep_blockers(scene):
     return out
 
 
+def mep_marks(scene):
+    """deslab: boxes no dimension text may cover: shafts, risers and the panel (run kv94l: «340»
+    next to the water risers)."""
+    out = mep_blockers(scene)
+    for m in scene.get("mep", []):
+        if m.get("kind") in RISERS:
+            c, r = _pt(m["at"]), float(m.get("diameter", 0.1)) / 2
+            out.append((c[0] - r, c[1] - r, c[0] + r, c[1] + r))
+        elif m.get("kind") == "panel":
+            a, b = _pt(m["start"]), _pt(m["end"])
+            half = float(m.get("depth", 0.15))
+            out.append((min(a[0], b[0]) - half, min(a[1], b[1]) - half, max(a[0], b[0]) + half, max(a[1], b[1]) + half))
+    return out
+
+
 def plan_mep_labels(scene, profile, obstacles, taken=()):
     """A one-line label for every item with a "label" (and every tracing strip, «Трассировка»):
     the dot on the item, a 45° leader into the free room and a horizontal shelf; of eight places
     the one clear of walls, dimension lines, texts and the labels placed before."""
     cfg = profile["labels"]
-    k = cfg.get("drawingScale", 45) / 1000.0
-    line = cfg.get("lineMm", 4.32) * k
+    # deslab: "scale", not "k": the loop over the tracing groups below reused k, and with tracing
+    # every label came out tens of metres wide and went behind the walls (run JK v7)
+    scale = cfg.get("drawingScale", 45) / 1000.0
+    line = cfg.get("lineMm", 4.32) * scale
     rooms = _rooms(scene)
     items = []
     for m in scene.get("mep", []):
@@ -453,32 +470,63 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
     riser_boxes = [(m["id"], _rect_of_segment(_pt(m["at"]), _pt(m["at"]), float(m.get("diameter", 0.1)) / 2 + 0.02))
                    for m in scene.get("mep", []) if m.get("kind") in RISERS]
     labels = []
+    dirs = list(obstacles.get("dimDirs") or []) + [None] * len(obstacles["dims"])
     for ident, text, dot in items:
         others = [b for i, b in riser_boxes if i != ident]
-        # a little wider than the opening labels' estimate: run kv94k, «Стояк канализации» started
-        # over the last letter of «Вытяжка»
-        width = (len(text) * cfg.get("charMm", 1.4) * 1.15 + cfg.get("padMm", 1.5)) * k
+        # deslab: the width as Archicad draws it, measured on kv94l (06.11.2026, boxWidth at 1:45):
+        # «Вытяжка» 13.70 mm, «Стояк канализации» 30.01, «Щиток электрический» 34.62, i.e. about
+        # 1.8 mm a letter; the old estimate (1.4 x 1.15) put «Стояк канализации» over «Вытяжка»
+        width = (len(text) * cfg.get("mepCharMm", 1.8) + cfg.get("mepPadMm", 1.0)) * scale
+        gap = cfg.get("mepLabelGap", 0.06)  # between two labels, and a label and a dimension band
         best = None
-        for length in (0.5, 0.8, 1.1, 1.4, 1.8, 2.2, 2.6, 3.0, 3.5):
-            for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1), (0, -1), (1, 0), (-1, 0)):
+        # the leader ends: on the eight 45° rays, and (deslab) on a 0.25 m grid around the item, so
+        # that a long label finds a free spot in a crowded room (test room 4 x 3 m, JK v7)
+        ends = [(length, (dx, dy)) for length in (0.5, 0.8, 1.1, 1.4, 1.8, 2.2, 2.6, 3.0, 3.5)
+                for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1), (0, 1), (0, -1), (1, 0), (-1, 0))]
+        reach = cfg.get("mepGridReach", 2.5)
+        steps_ = int(reach / 0.25)
+        for i in range(-steps_, steps_ + 1):
+            for j in range(-steps_, steps_ + 1):
+                off = (i * 0.25, j * 0.25)
+                if 0.45 <= _len(off) <= reach and i and j and abs(i) != abs(j):
+                    ends.append((_len(off), off))
+        for length, (dx, dy) in ends:
+            if True:
                 d = _unit((dx, dy))
                 mid = _add(dot, _mul(d, length))
-                for way in ((1.0, -1.0) if dx >= 0 else (-1.0, 1.0)):
+                dx = (dx > 0) - (dx < 0)
+                dy = (dy > 0) - (dy < 0)
+                for way in (1.0, -1.0):  # deslab: both shelf directions, the back one costs more
                     x0 = mid[0] + 0.01 if way > 0 else mid[0] - 0.01 - width
                     box = (x0, mid[1], x0 + width, mid[1] + line)
+                    wide = (box[0] - gap, box[1] - gap, box[2] + gap, box[3] + gap)
                     cost = length * 10 + (5 if dx and way != dx else 0) + (3 if not dx or not dy else 0)
                     cost += 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
-                    cost += 100 * sum(_box_hits(box, w) for w in obstacles["dims"] + obstacles["marks"] + placed)
+                    cost += 100 * sum(_box_hits(wide, w) for w in obstacles["marks"] + placed)
+                    # deslab: lying along a horizontal chain takes its whole text room; crossing a
+                    # vertical one takes a narrow band, its texts slide past (test room 4 x 3 m)
+                    cost += sum((100 if dirs[i] is None or abs(dirs[i][0]) >= abs(dirs[i][1]) else 35)
+                                for i, w in enumerate(obstacles["dims"]) if _box_hits(wide, w))
+                    # and never right on a horizontal dimension line: its texts would have nowhere to go
+                    cost += 300 * sum(1 for i, w in enumerate(obstacles["dims"])
+                                      if (dirs[i] is None or abs(dirs[i][0]) >= abs(dirs[i][1]))
+                                      and _seg_box((w[0], (w[1] + w[3]) / 2), (w[2], (w[1] + w[3]) / 2), box))
+                    # the shelf runs under the whole text: no other label text on it
+                    cost += 100 * sum(_seg_hits_box((box[0], mid[1]), (box[2], mid[1]), w) for w in placed)
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.15)), mid, w) for w in obstacles["walls"])
-                    cost += 20 * sum(_seg_hits_box(dot, mid, w) for w in placed)
+                    # deslab: a leader through another label's text is as bad as a text on it (run kv94l:
+                    # the leader of «Стояк канализации» through «Вытяжка»)
+                    cost += 100 * sum(_seg_hits_box(dot, mid, w) for w in placed)
                     cost += 100 * sum(_box_hits(box, w) for w in swings + others)
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in others)
                     # a long leader across dimension chains is worse than a short one (run kv94j:
                     # the panel label ran 3 m through the hall across three chains)
                     cost += 50 * sum(_seg_box(_add(dot, _mul(d, 0.1)), mid, w) for w in obstacles["dims"])
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in swings)
-                    if not all(_in_rooms(rooms, c) for c in ((box[0], box[1]), (box[2], box[3]))):
-                        cost += 150  # the labels stay inside the flat
+                    if not all(_in_rooms(rooms, c) for c in ((box[0], box[1]), (box[2], box[3]), (box[0], box[3]), (box[2], box[1]))):
+                        # deslab: the labels stay inside the flat, whatever it costs (run JK v7: three
+                        # «Трассировка» labels behind the walls, kv94l: the panel's one)
+                        cost += 1000
                     if best is None or cost < best[0]:
                         best = (cost, mid, way, box)
         cost, mid, way, box = best

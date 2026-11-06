@@ -89,6 +89,34 @@ def polygon_centroid(poly):
     return (cx / (6 * a), cy / (6 * a))
 
 
+def zone_spot(scene, room, reach=2.5, step=0.1):
+    """deslab: where the zone stamp goes, with «Н» under it: the room centroid, or the nearest
+    point to it whose block (stamp and «Н») keeps clear of the tracing strips with their own
+    chains, and of the shafts (run JK v7: the centroid fell on the joint of two strips, and the
+    strip thickness texts «89», «114» landed on the number circle)."""
+    poly = [_pt(p) for p in room["polygon"]]
+    c = polygon_centroid(poly)
+    keep = [_rect_of_segment(_pt(t["start"]), _pt(t["end"]), float(t.get("thickness", 0.08)) / 2 + 0.5)
+            for t in scene.get("tracing", [])]
+    from .mep import mep_blockers
+    keep += [(b[0] - 0.3, b[1] - 0.3, b[2] + 0.3, b[3] + 0.3) for b in mep_blockers(scene)]
+    if not keep:
+        return c
+
+    def block(p):
+        return (p[0] - 0.5, p[1] - 0.8, p[0] + 0.5, p[1] + 0.4)
+
+    n = int(reach / step)
+    spots = sorted(((i * step, j * step) for i in range(-n, n + 1) for j in range(-n, n + 1)),
+                   key=lambda o: o[0] * o[0] + o[1] * o[1])
+    for o in spots:
+        p = _add(c, o)
+        b = block(p)
+        if all(_inside(poly, q) for q in ((b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3]))) and                 not any(_box_hits(b, k) for k in keep):
+            return p
+    return c
+
+
 def _mm(value):
     return int(round(float(value) * 1000))
 
@@ -286,8 +314,7 @@ def plan_height_texts(scene, profile):
     texts = []
     fmt = profile["zone"]["heightTextFormat"]
     for room in scene.get("rooms", []):
-        poly = [_pt(p) for p in room["polygon"]]
-        c = polygon_centroid(poly)
+        c = zone_spot(scene, room)
         texts.append({"room": room["id"], "coordinate": {"x": round(c[0], 4), "y": round(c[1] + profile["zone"]["heightTextOffset"], 4), "z": 0},
                       "text": fmt.format(height_mm=_mm(room.get("height", room.get("ceiling", 0) - room.get("floor", 0))))})
     return texts
@@ -346,7 +373,7 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         c = (t["coordinate"]["x"], t["coordinate"]["y"])
         marks.append((c[0] - 0.45, c[1] - 0.2, c[0] + 0.45, c[1] + 0.2))
     for room in scene.get("rooms", []):
-        c = polygon_centroid([_pt(p) for p in room["polygon"]])
+        c = zone_spot(scene, room)
         r = cfg["stampRadius"]
         marks.append((c[0] - r, c[1] - r, c[0] + r, c[1] + r))
     return {"walls": walls, "dims": dims, "marks": marks, "dimDirs": dim_dirs}
@@ -462,7 +489,10 @@ def plan_opening_labels(scene, profile, obstacles=None):
                         for o, c, _, _, runs, width, (nlines, line) in items:
                             dot = _add(c, _mul(side, half_t))
                             mid = _add(dot, _mul(lead_dir, length))
-                            y0, y1 = (mid[1], mid[1] + line) if nlines == 1 else (mid[1] - line, mid[1] + line)
+                            # deslab: a two-line label stands mostly over its shelf: measured on kv94n
+                            # (06.11.2026), «hокна 2500 / hподокон 550» from 0.16 m under the shelf
+                            # to 0.40 m over it (the old +-0.19 let «801» onto «hокна 2500»)
+                            y0, y1 = (mid[1], mid[1] + line) if nlines == 1 else                                 (mid[1] - cfg.get("twoLineBelow", 0.16), mid[1] + cfg.get("twoLineAbove", 0.4))
                             # the row keeps one shelf way; a label at the end of the row whose
                             # text would run onto a dimension chain or another label turns its
                             # shelf back (kv94 corner window, 04.11.2026)
@@ -857,6 +887,9 @@ def place_dimension_texts(chains, labels, profile, marks=()):
             own.append((p, _add(q, _mul(_unit(_sub(q, p)) if _len(_sub(q, p)) > 1e-9 else (0.0, 0.0), over))))
         lines += [(ch, s_) for s_ in own]
         boxes += [(ch, bx) for bx in ch.get("leaderBoxes", [])]
+        # deslab: the legs of the short texts' leaders are lines too (JK v7: the leader of «86» through «2 166»)
+        for info in ch.get("textLeaders", {}).values():
+            lines += [(ch, (_pt(info["beg"]), _pt(info["mid"]))), (ch, (_pt(info["mid"]), _pt(info["end"])))]
     margin = cfg.get("labelMargin", 0.05)  # the real label text runs a little longer than estimated
     for lb in labels:
         beg, mid, end = _pt(lb["begCoordinate"]), _pt(lb["midCoordinate"]), _pt(lb["endCoordinate"])
@@ -869,19 +902,34 @@ def place_dimension_texts(chains, labels, profile, marks=()):
 
     # deslab: and clear of zone stamps, «Н» texts, tracing strips, shafts (run JK v6: «86», «114»
     # on the zone circle, «91» on a tracing strip)
-    boxes += [(None, tuple(m)) for m in marks]
+    # (owner "mark": a text keeps off them, a leader leg may cross them, the leader of a strip's
+    # thickness starts on the strip itself)
+    boxes += [("mark", tuple(m)) for m in marks]
 
     # clear of any line (run 18: 1 cm looked cramped; kv94e, 05.11.2026: with 4 cm the label
     # shelves still came 1.7-2.7 cm to «2 107», «1 550», «2 251» as drawn)
     pad = cfg.get("textPad", 0.07)
 
+    # deslab: Archicad draws a dimension text on ONE side of its line, the left of the reading way
+    # (above a horizontal line, left of a vertical one), 0.03-0.18 m off it at 1:45 (kv94l, 06.11.2026:
+    # the ink of «1 201» from 0.033 to 0.178 m over its line). The old box of +-textHalf around the
+    # line missed the upper part, and a leader over «2 493», a label leader by «801» went unnoticed.
+    below, above = cfg.get("textBelow", 0.0), cfg.get("textAbove", 0.2)
+
+    def side_box(a, b, read, gap=0.0):
+        """Box of a text running from a to b along its line, drawn on the left of `read`."""
+        sd = _left(read)
+        u = _unit(_sub(b, a)) if _len(_sub(b, a)) > 1e-9 else read
+        a, b = _sub(a, _mul(u, gap)), _add(b, _mul(u, gap))
+        pts = [_add(a, _mul(sd, -below)), _add(a, _mul(sd, above)), _add(b, _mul(sd, -below)), _add(b, _mul(sd, above))]
+        return (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+
+    def reading(d):
+        return (1.0, 0.0) if abs(d[0]) >= abs(d[1]) else (0.0, 1.0)
+
     def text_box(c, d, width, gap=pad):
-        # along the line: the text and a small gap; across: the text height on either side
-        e = _add(_mul(d, width / 2 + gap), _mul(_left(d), half))
-        f = _sub(_mul(d, width / 2 + gap), _mul(_left(d), half))
-        xs = [c[0] + e[0], c[0] - e[0], c[0] + f[0], c[0] - f[0]]
-        ys = [c[1] + e[1], c[1] - e[1], c[1] + f[1], c[1] - f[1]]
-        return (min(xs), min(ys), max(xs), max(ys))
+        # along the line: the text and a small gap; across: the text on its side of the line
+        return side_box(_sub(c, _mul(d, width / 2)), _add(c, _mul(d, width / 2)), reading(d), gap)
 
     def clear(ch, box):
         return not any(c is not ch and _seg_box(s_[0], s_[1], box) for c, s_ in lines) and \
@@ -900,18 +948,21 @@ def place_dimension_texts(chains, labels, profile, marks=()):
         offs = [0.0] + [o for i in range(1, int(room / step) + 1) for o in (i * step, -i * step)]
         for o in offs:
             beg = _add(ref, _mul(d, mid_t + o))
-            for r in (rise, rise + 0.15, rise + 0.3):
+            # deslab: a little further out too, for the crowded joints of tracing strips (JK v7)
+            for r in (rise, rise + 0.15, rise + 0.3, rise + 0.45, rise + 0.6):
                 for sg in (out, -out):
-                    for sh in (run, run + 0.15, run + 0.3):
+                    for sh in (run, run + 0.15, run + 0.3, run + 0.45):
                         mid = _add(beg, _mul(n, r))
                         end = _add(mid, _mul(d, sg * sh))
-                        tbox = _rect_of_segment(end, _add(end, _mul(d, sg * width)), half)
+                        tbox = side_box(end, _add(end, _mul(d, sg * width)), read)
                         legs = [(beg, mid), (mid, end)]
                         if any(c is not ch and _seg_box(s_[0], s_[1], tbox) for c, s_ in lines):
                             continue
-                        if any(c is not ch and _box_hits(tbox, bx) for c, bx in boxes):
+                        # deslab: its own chain's texts count too (run kv94: «215» and «340» of one
+                        # shaft chain, both on leaders, one on the other)
+                        if any(_box_hits(tbox, bx) for c, bx in boxes):
                             continue
-                        if any(c is not ch and _box_hits(_rect_of_segment(a_, b_, 0.01), bx)
+                        if any(c is not ch and c != "mark" and _box_hits(_rect_of_segment(a_, b_, 0.01), bx)
                                for a_, b_ in legs for c, bx in boxes):
                             continue
                         # a leader may cross a line, never run along it
@@ -924,15 +975,73 @@ def place_dimension_texts(chains, labels, profile, marks=()):
                         return info, tbox
         return None
 
+    fit = cfg.get("fitMargin", 0.12)
+
+    def free(ch, tbox):
+        return not any(c is not ch and _seg_box(s_[0], s_[1], tbox) for c, s_ in lines) and \
+            not any(c is not ch and _box_hits(tbox, bx) for c, bx in boxes)
+
+    def to_leader(ch, d, ref, ts, k, width):
+        lead = leader_spot(ch, d, ref, ts, k, width)
+        if lead is None:
+            return False
+        info, box = lead
+        ch.setdefault("textLeaders", {})[k + 1] = info
+        ch.setdefault("leaderBoxes", []).append(box)
+        boxes.append((ch, box))
+        # deslab: its legs are lines the texts placed later keep off (kv94m: the shelf of «1 550»
+        # over «900»)
+        lines.extend([(ch, (_pt(info["beg"]), _pt(info["mid"]))), (ch, (_pt(info["mid"]), _pt(info["end"])))])
+        return True
+
+    # deslab: first the texts already on leaders (their new spots must be known before the
+    # ordinary texts look for theirs), then the ordinary ones
     for ch in chains:
         d, ref = _pt(ch["direction"]), _pt(ch["referencePoint"])
         ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
         for k in range(len(ts) - 1):
             seg = abs(ts[k + 1] - ts[k])
-            if seg < short or k + 1 in ch.get("textLeaders", {}):
-                continue
             width = dimension_text_width(seg, profile)
+            if k + 1 in ch.get("textLeaders", {}):
+                # deslab: a short text put on its leader by plan_dimension_chains only knew the other
+                # texts; when it lands on a zone stamp, an «Н» text, a tracing strip, a shaft, a label
+                # or a line (run JK v7: «89», «114» on the zone circle, «117» on «616», «93» on a
+                # strip), it gets a new spot the same way as a blocked ordinary text
+                info = ch["textLeaders"][k + 1]
+                m_, e_ = _pt(info["mid"]), _pt(info["end"])
+                sg_d = _unit(_sub(e_, m_)) if _len(_sub(e_, m_)) > 1e-9 else d
+                tbox = side_box(e_, _add(e_, _mul(sg_d, width)), reading(d))
+                if not free(ch, tbox):
+                    old = ch["textLeaders"].pop(k + 1)
+                    # its old box out of the way while a new spot is looked for
+                    mine = [i for i, (c, bx) in enumerate(boxes) if c is ch and bx[0] - 0.01 <= e_[0] <= bx[2] + 0.01
+                            and bx[1] - 0.01 <= e_[1] <= bx[3] + 0.01]
+                    kept = [boxes.pop(i) for i in reversed(mine)]
+                    if not to_leader(ch, d, ref, ts, k, width):
+                        boxes.extend(kept)
+                        ch["textLeaders"][k + 1] = old
+                        ch.setdefault("textConflict", []).append(int(round(seg * 1000)))
+                    else:  # the old legs are gone
+                        legs = {(_pt(old["beg"]), _pt(old["mid"])), (_pt(old["mid"]), _pt(old["end"]))}
+                        lines[:] = [(c, s_) for c, s_ in lines if not (c is ch and tuple(s_) in legs)]
+                continue
+    for ch in chains:
+        d, ref = _pt(ch["direction"]), _pt(ch["referencePoint"])
+        ts = [_dot(_sub(_pt(p), ref), d) for p in ch["points"]]
+        for k in range(len(ts) - 1):
+            seg = abs(ts[k + 1] - ts[k])
+            width = dimension_text_width(seg, profile)
+            if k + 1 in ch.get("textLeaders", {}):
+                continue
+            if seg < short:
+                continue
             mid_t = (ts[k] + ts[k + 1]) / 2
+            if seg < width + fit:
+                # deslab: Archicad itself moves a text that does not fit between the witness ticks
+                # out of its segment, wherever it likes (run kv94l: «340» onto the chain «9 259»,
+                # «321» onto «2 493»): such a text goes on our leader to a clear spot instead
+                if to_leader(ch, d, ref, ts, k, width):
+                    continue
             room = max(0.0, (seg - width) / 2)
             shifts = [0.0]
             i = 1
@@ -950,12 +1059,7 @@ def place_dimension_texts(chains, labels, profile, marks=()):
                 # deslab: no clear place on the line (runs JK and kv94: a label leader through
                 # «315», «540», «1 370» in short segments): the text goes on a leader, as the
                 # short ones do, to a spot where neither the leader nor the text is crossed
-                lead = leader_spot(ch, d, ref, ts, k, width)
-                if lead is not None:
-                    info, box = lead
-                    ch.setdefault("textLeaders", {})[k + 1] = info
-                    ch.setdefault("leaderBoxes", []).append(box)
-                    boxes.append((ch, box))
+                if to_leader(ch, d, ref, ts, k, width):
                     continue
                 ch.setdefault("textConflict", []).append(int(round(seg * 1000)))
                 c = _add(ref, _mul(d, mid_t))
@@ -1416,7 +1520,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         items = []
         for room in scene.get("rooms", []):
             if room["id"] in zone_guid:
-                c = polygon_centroid([_pt(p) for p in room["polygon"]])
+                c = zone_spot(scene, room)
                 items.append({"elementId": {"guid": zone_guid[room["id"]]},
                               "details": {"typeSpecificDetails": {"stampPosition": _xy(c)}}})
         _check_details(ac.tapir("SetDetailsOfElements", {"elementsWithDetails": items}), report, "Штамп зоны в центр")
@@ -1457,11 +1561,11 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     labels = plan_opening_labels(scene, profile, obstacles)
     from .mep import plan_mep_labels
     labels += plan_mep_labels(scene, profile, obstacles, taken=[lab["box"] for lab in labels])
-    from .mep import mep_blockers
+    from .mep import mep_marks
     strips = [_rect_of_segment(_pt(t["start"]), _pt(t["end"]), float(t.get("thickness", 0.08)) / 2)
               for t in scene.get("tracing", [])]
     stamps = [m for m in obstacles["marks"] if m not in [tuple(b) for ch in chains for b in ch.get("leaderBoxes", [])]]
-    place_dimension_texts(chains, labels, profile, marks=stamps + strips + mep_blockers(scene))
+    place_dimension_texts(chains, labels, profile, marks=stamps + strips + mep_marks(scene))
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}
