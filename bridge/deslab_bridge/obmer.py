@@ -357,7 +357,7 @@ def label_obstacles(scene, profile, texts=None, chains=None):
     """Boxes (xmin, ymin, xmax, ymax) the labels must keep clear of: walls, dimension lines with
     their text band, height texts and zone stamps."""
     cfg = profile["labels"]
-    walls, dims, marks, dim_dirs = [], [], [], []
+    walls, dims, marks, dim_dirs, witness = [], [], [], [], []
     for wall in scene.get("walls", []):
         a, b = _pt(wall["start"]), _pt(wall["end"])
         u = _unit(_sub(b, a))
@@ -367,6 +367,11 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         a, b = _chain_line(ch)
         dim_dirs.append(_pt(ch["direction"]))
         dims.append(_rect_of_segment(a, b, cfg["dimensionBand"]))
+        # deslab: the witness lines too (kv94: «Щиток» across the panel chain's witness lines)
+        d_, ref_ = _pt(ch["direction"]), _pt(ch["referencePoint"])
+        for p_ in ch["points"]:
+            p_ = _pt(p_)
+            witness.append((p_, _add(ref_, _mul(d_, _dot(_sub(p_, ref_), d_)))))
         # deslab: the texts of short dimensions on their leaders (run JK: «220» under a door label)
         marks.extend(tuple(bx) for bx in ch.get("leaderBoxes", []))
     for t in texts or []:
@@ -376,7 +381,7 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         c = zone_spot(scene, room)
         r = cfg["stampRadius"]
         marks.append((c[0] - r, c[1] - r, c[0] + r, c[1] + r))
-    return {"walls": walls, "dims": dims, "marks": marks, "dimDirs": dim_dirs}
+    return {"walls": walls, "dims": dims, "marks": marks, "dimDirs": dim_dirs, "witness": witness}
 
 
 def plan_opening_labels(scene, profile, obstacles=None):
@@ -696,8 +701,9 @@ def plan_dimension_chains(scene, profile):
                            "points": [_xy(p) for p in kept]})
     # deslab: engineering items and tracing (Игорь 05.11.2026): a room chain does not run through a
     # shaft box, and the radiators, shafts and tracing strips get their own chains
-    from .mep import mep_blockers, plan_extra_chains
+    from .mep import mep_blockers, panel_boxes, plan_extra_chains
     blockers = mep_blockers(scene)
+    panels = panel_boxes(scene)
     for ch in chains:
         for _ in range(4):
             a, b = _chain_line(ch)
@@ -706,6 +712,27 @@ def plan_dimension_chains(scene, profile):
             ch["referencePoint"] = _xy(_add(_pt(ch["referencePoint"]), _mul(_pt(ch["normal"]), step)))
             ch["offset"] = round(ch["offset"] + step, 4)
     chains += plan_extra_chains(scene, profile, chains)
+
+    def conflicting(c1):
+        # any other chain, its own item chains included, with a wider band: the stepped line must
+        # leave room for both chains' texts (test room: the radiator chain right over it)
+        return any(c2 is not c1 and _chain_conflict(c1, c2, band + 0.1) for c2 in chains)
+    # deslab: a room chain steps off an electrical panel too, but only when the new line makes no
+    # conflict with the other chains (kv94: «2 493» across the panel; the test room has no room for it)
+    for ch in chains:
+        if ch.get("extra"):
+            continue
+        before = (ch["referencePoint"], ch["offset"])
+        for _ in range(2):
+            a, b = _chain_line(ch)
+            if not any(_seg_box(a, b, bx) for bx in panels):
+                break
+            ch["referencePoint"] = _xy(_add(_pt(ch["referencePoint"]), _mul(_pt(ch["normal"]), step)))
+            ch["offset"] = round(ch["offset"] + step, 4)
+        if (ch["referencePoint"], ch["offset"]) != before:
+            a, b = _chain_line(ch)
+            if conflicting(ch) or any(_seg_box(a, b, bx) for bx in panels):
+                ch["referencePoint"], ch["offset"] = before
 
     # move the shorter of two conflicting chains further in, a few times at most (a chain of the
     # radiators always gives way to a room chain; the short chains of shafts and tracing strips stay
@@ -862,7 +889,7 @@ def _seg_box(a, b, box):
     return True
 
 
-def place_dimension_texts(chains, labels, profile, marks=()):
+def place_dimension_texts(chains, labels, profile, marks=(), inside=None):
     """Slide dimension texts along their line so that no line crosses them (Игорь, 04.11.2026:
     «2711» crossed by the line of «714», «661», «861», «1468» by a door label leader; the text
     need not stand in the middle of its segment). Lines: the other chains' dimension and witness
@@ -949,13 +976,16 @@ def place_dimension_texts(chains, labels, profile, marks=()):
         for o in offs:
             beg = _add(ref, _mul(d, mid_t + o))
             # deslab: a little further out too, for the crowded joints of tracing strips (JK v7)
-            for r in (rise, rise + 0.15, rise + 0.3, rise + 0.45, rise + 0.6):
+            for r in (rise, rise + 0.15, rise + 0.3, rise + 0.45, rise + 0.6, rise + 0.8, rise + 1.0):
                 for sg in (out, -out):
-                    for sh in (run, run + 0.15, run + 0.3, run + 0.45):
+                    for sh in (run, run + 0.15, run + 0.3, run + 0.45, run + 0.65):
                         mid = _add(beg, _mul(n, r))
                         end = _add(mid, _mul(d, sg * sh))
                         tbox = side_box(end, _add(end, _mul(d, sg * width)), read)
                         legs = [(beg, mid), (mid, end)]
+                        if inside is not None and not all(inside(q) for q in ((tbox[0], tbox[1]), (tbox[2], tbox[3]),
+                                                                              (tbox[0], tbox[3]), (tbox[2], tbox[1]))):
+                            continue
                         if any(c is not ch and _seg_box(s_[0], s_[1], tbox) for c, s_ in lines):
                             continue
                         # deslab: its own chain's texts count too (run kv94: «215» and «340» of one
@@ -1565,7 +1595,15 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     strips = [_rect_of_segment(_pt(t["start"]), _pt(t["end"]), float(t.get("thickness", 0.08)) / 2)
               for t in scene.get("tracing", [])]
     stamps = [m for m in obstacles["marks"] if m not in [tuple(b) for ch in chains for b in ch.get("leaderBoxes", [])]]
-    place_dimension_texts(chains, labels, profile, marks=stamps + strips + mep_marks(scene))
+    # deslab: a text on a leader stays on the flat or its walls (JK v7: «1 039» beyond the right wall)
+    area = [[_pt(p) for p in r["polygon"]] for r in scene.get("rooms", [])]
+    wall_rects = [_rect_of_segment(_pt(w["start"]), _pt(w["end"]), float(w.get("thickness", 0.2)) / 2)
+                  for w in scene.get("walls", [])]
+
+    def on_flat(q):
+        return any(_inside(r, q) for r in area) or any(b[0] - 1e-3 <= q[0] <= b[2] + 1e-3 and b[1] - 1e-3 <= q[1] <= b[3] + 1e-3
+                                                     for b in wall_rects)
+    place_dimension_texts(chains, labels, profile, marks=stamps + strips + mep_marks(scene), inside=on_flat)
     data = []
     for lab in labels:
         item = {k: lab[k] for k in ("runs", "begCoordinate", "midCoordinate", "endCoordinate")}

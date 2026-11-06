@@ -390,18 +390,26 @@ def mep_blockers(scene):
     return out
 
 
+def panel_boxes(scene):
+    """deslab: the electrical panels (a room chain keeps off them when it can, kv94l-p: «2 493» ran
+    across the panel)."""
+    out = []
+    for m in scene.get("mep", []):
+        if m.get("kind") == "panel":
+            a, b = _pt(m["start"]), _pt(m["end"])
+            half = float(m.get("depth", 0.15))
+            out.append((min(a[0], b[0]) - half, min(a[1], b[1]) - half, max(a[0], b[0]) + half, max(a[1], b[1]) + half))
+    return out
+
+
 def mep_marks(scene):
     """deslab: boxes no dimension text may cover: shafts, risers and the panel (run kv94l: «340»
     next to the water risers)."""
-    out = mep_blockers(scene)
+    out = mep_blockers(scene) + panel_boxes(scene)
     for m in scene.get("mep", []):
         if m.get("kind") in RISERS:
             c, r = _pt(m["at"]), float(m.get("diameter", 0.1)) / 2
             out.append((c[0] - r, c[1] - r, c[0] + r, c[1] + r))
-        elif m.get("kind") == "panel":
-            a, b = _pt(m["start"]), _pt(m["end"])
-            half = float(m.get("depth", 0.15))
-            out.append((min(a[0], b[0]) - half, min(a[1], b[1]) - half, max(a[0], b[0]) + half, max(a[1], b[1]) + half))
     return out
 
 
@@ -469,8 +477,11 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
     # the risers: no leader through another riser, no text on one (run kv94i)
     riser_boxes = [(m["id"], _rect_of_segment(_pt(m["at"]), _pt(m["at"]), float(m.get("diameter", 0.1)) / 2 + 0.02))
                    for m in scene.get("mep", []) if m.get("kind") in RISERS]
+    # deslab: nor on a panel, its own one included (kv94: «Щиток» lay on its own panel)
+    riser_boxes += [(None, bx) for bx in panel_boxes(scene)]
     labels = []
     dirs = list(obstacles.get("dimDirs") or []) + [None] * len(obstacles["dims"])
+    panel_ids = {m["id"] for m in scene.get("mep", []) if m.get("kind") == "panel"}
     for ident, text, dot in items:
         others = [b for i, b in riser_boxes if i != ident]
         # deslab: the width as Archicad draws it, measured on kv94l (06.11.2026, boxWidth at 1:45):
@@ -502,11 +513,23 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     wide = (box[0] - gap, box[1] - gap, box[2] + gap, box[3] + gap)
                     cost = length * 10 + (5 if dx and way != dx else 0) + (3 if not dx or not dy else 0)
                     cost += 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
+                    # deslab: and a little air to the walls and strips (JK: «Трассировка h=310» right over
+                    # the bottom wall, «h=280» against the strip T9)
+                    cost += 15 * sum(_box_hits(wide, w) and not _box_hits(box, w) for w in obstacles["walls"])
                     cost += 100 * sum(_box_hits(wide, w) for w in obstacles["marks"] + placed)
                     # deslab: lying along a horizontal chain takes its whole text room; crossing a
                     # vertical one takes a narrow band, its texts slide past (test room 4 x 3 m)
                     cost += sum((100 if dirs[i] is None or abs(dirs[i][0]) >= abs(dirs[i][1]) else 35)
                                 for i, w in enumerate(obstacles["dims"]) if _box_hits(wide, w))
+                    # deslab: the panel's label crossed by a vertical dimension line is out (kv94: «Щиток»
+                    # across the hall chains; Игорь shortened it so that it fits between them). Only
+                    # for the panel: in a small room the other labels would end up on a horizontal
+                    # chain instead (the test room 4 x 3 m).
+                    cost += (150 if ident in panel_ids else 0) * sum(1 for i, w in enumerate(obstacles["dims"])
+                                      if not (dirs[i] is None or abs(dirs[i][0]) >= abs(dirs[i][1]))
+                                      and _seg_box(((w[0] + w[2]) / 2, w[1]), ((w[0] + w[2]) / 2, w[3]), box))
+                    if ident in panel_ids:
+                        cost += 150 * sum(1 for a_, b_ in obstacles.get("witness", []) if _seg_box(a_, b_, box))
                     # and never right on a horizontal dimension line: its texts would have nowhere to go
                     cost += 300 * sum(1 for i, w in enumerate(obstacles["dims"])
                                       if (dirs[i] is None or abs(dirs[i][0]) >= abs(dirs[i][1]))
