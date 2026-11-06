@@ -10,7 +10,7 @@ Scene keys (all optional):
     {"kind": "sewerRiser" | "waterRiser", "id": "K1", "at": {x, y}, "diameter": 0.16, "label": "..."},
     {"kind": "radiator", "id": "RD1", "start": {x, y}, "end": {x, y}, "depth": 0.07, "gap": 0.015,
         "height": 0.6, "elevation": 0.1}, start-end on the wall face, the radiator on its room side;
-    {"kind": "panel", ...the same as a radiator..., "label": "Щиток электрический"}
+    {"kind": "panel", ...the same as a radiator..., "label": "Щиток"}
   ]
   "tracing": [{"id": "T1", "start": {x, y}, "end": {x, y}, "thickness": 0.08, "height": 0.25}]
         the axis of a first row of blocks (the helper finds them in the cloud)
