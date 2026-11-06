@@ -36,6 +36,8 @@ class AIError(RuntimeError):
 def settings(profile=None):
     out = dict(DEFAULTS)
     out.update((profile or {}).get("ai", {}))
+    if os.environ.get("POLZA_MODEL"):  # deslab: Игорь 06.11.2026, cheaper models (Kimi, DeepSeek) for tests without editing the profile
+        out["model"] = os.environ["POLZA_MODEL"]
     return out
 
 
@@ -187,7 +189,7 @@ def parse_json(text):
         raise AIError("Модель вернула неверный JSON: " + str(error)) from None
 
 
-def ai_review(scene, images=(), profile=None, hard=False, call=chat, with_mep=True):
+def ai_review(scene, images=(), profile=None, hard=False, call=chat, with_mep=True, model=None):
     """Asks the model for a review. `call` is replaceable for tests. Returns (review, usage, raw_text).
     TODO next step: pictures straight from the point cloud (top slices, wall elevations); for now `images` is a list of
     file paths (a plan PNG of the helper, a PDF page rendered to PNG)."""
@@ -195,7 +197,8 @@ def ai_review(scene, images=(), profile=None, hard=False, call=chat, with_mep=Tr
     content = [{"type": "text", "text": "Сцена обмера (JSON):\n" + scene_for_model(scene, with_mep)}]
     content += [image_part(p) for p in images]
     messages = [{"role": "system", "content": build_system_prompt(profile)}, {"role": "user", "content": content}]
-    text, usage = call(messages, profile, cfg["hardModel"] if hard else cfg["model"])
+    text, usage = call(messages, profile, model or (cfg["hardModel"] if hard else cfg["model"]))
+    usage = dict(usage or {}, model=model or (cfg["hardModel"] if hard else cfg["model"]))
     try:
         return parse_json(text), usage, text
     except AIError as error:
@@ -454,6 +457,7 @@ def main(argv=None):
     p.add_argument("command", choices=("models", "review"))
     p.add_argument("scene", nargs="?")
     p.add_argument("--hard", action="store_true", help="the hard model (Opus) instead of the default one")
+    p.add_argument("--model", help="any Polza model id, e.g. moonshotai/kimi-k2.5 (see `models`)")
     p.add_argument("--images", nargs="*", default=[])
     p.add_argument("--no-mep", action="store_true", help="do not send the existing mep items (a blind test)")
     p.add_argument("--out", help="where to save the review JSON")
@@ -466,7 +470,7 @@ def main(argv=None):
             return 0
         scene = json.loads(Path(a.scene).read_text(encoding="utf-8"))
         started = time.time()
-        review, usage, _ = ai_review(scene, a.images, profile, a.hard, with_mep=not a.no_mep)
+        review, usage, _ = ai_review(scene, a.images, profile, a.hard, with_mep=not a.no_mep, model=a.model)
         new, report = apply_review({k: v for k, v in scene.items() if not (a.no_mep and k in ("mep", "tracing"))}, review)
         print(f"{time.time() - started:.1f} с, токены: {usage}")
         print("применено:", len(report["applied"]), "отклонено:", len(report["rejected"]), "сомнений:", len(report["doubts"]))
