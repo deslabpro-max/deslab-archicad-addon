@@ -513,8 +513,28 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
     line = cfg.get("lineMm", 4.32) * scale
     rooms = _rooms(scene)
     items = []
+    # deslab: risers of one kind standing together (kv94 AI build: six «Стояк воды» in one shaft,
+    # six piled labels) get ONE label at their middle, «Стояки воды (6)» (Игорь 06.11.2026: our call)
+    risers = [m for m in scene.get("mep", []) if m.get("label") and m.get("kind") in RISERS]
+    grouped = set()
+    for m in risers:
+        if m["id"] in grouped:
+            continue
+        group, todo = [m], [m]
+        while todo:
+            a = todo.pop()
+            for b in risers:
+                if b not in group and b.get("kind") == m.get("kind") and \
+                        _len(_sub(_pt(a["at"]), _pt(b["at"]))) <= 0.4:
+                    group.append(b)
+                    todo.append(b)
+        if len(group) > 1:
+            grouped.update(g["id"] for g in group)
+            mid = (sum(_pt(g["at"])[0] for g in group) / len(group), sum(_pt(g["at"])[1] for g in group) / len(group))
+            many = {"waterRiser": "Стояки воды", "sewerRiser": "Стояки канализации"}.get(m.get("kind"), m["label"])
+            items.append((m["id"], f"{many} ({len(group)})", mid))
     for m in scene.get("mep", []):
-        if not m.get("label"):
+        if not m.get("label") or m["id"] in grouped:
             continue
         if m.get("kind") == "shaft":
             poly = [_pt(p) for p in m["polygon"]]
