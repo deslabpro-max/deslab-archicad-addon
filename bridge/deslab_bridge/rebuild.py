@@ -156,6 +156,8 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     state_path = out_dir / f"rebuild-{name}.json"
 
     ac = connect()
+    # deslab: walls were refused ("Failed to create new Wall") on a run right after a layouts step; build in the floor plan window
+    layouts.show_plan_view(ac, _load(Path(__file__).resolve().parent.parent / "office-profile.json")["layouts"]["items"][0]["view"])
     if preset.get("e57"):
         # deslab: a new scan (Игорь 06.11.2026: «обмер из скана.bat», drop an E57 on it): the helper
         # turns the cloud into a scene first, then the scene is built like a preset
