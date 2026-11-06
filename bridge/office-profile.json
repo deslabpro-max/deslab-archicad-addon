@@ -8,6 +8,7 @@
     "anchor": "topLeft",
     "inset": 0.015,
     "preferScale": 45,
+    "titleLibraryPartIndex": 0,
     "overflow": 0.01,
     "margin": 0.0,
     "offset": {"x": 0.0, "y": -0.3},

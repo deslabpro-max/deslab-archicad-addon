@@ -117,6 +117,12 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
         if "elementId" not in new:
             out.append(f"{entry['layout']}: чертёж не создан ({new})")
             continue
+        # deslab: CreateDrawings gives the Drawing tool's default title; Игорь wants none, and the add-on accepts the
+        # title part index in SetDetailsOfElements (0 = no title)
+        done = ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [{"elementId": new["elementId"], "details": {
+            "typeSpecificDetails": {"titleLibraryPartIndex": int(cfg.get("titleLibraryPartIndex", 0))}}}]})
+        if not all(r.get("success") for r in done.get("executionResults", [])):
+            note += f"; заголовок не убран ({done})"
         if old:  # the template's own plan drawing is replaced, the rest of the layout stays
             ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in old]})
         out.append(f"{entry['layout']}: «{entry['view']}» 1:{denominator}, {note}")
