@@ -137,33 +137,44 @@ def place(ac, guids):
     return layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
 
 
-def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True):
+def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=None):
     root = _root(root)
-    presets = _load(PRESETS)
-    if name not in presets:
-        raise SystemExit(f"Нет пресета «{name}». Есть: {', '.join(presets)}")
-    preset = presets[name]
+    if preset is None:
+        presets = _load(PRESETS)
+        if name not in presets:
+            raise SystemExit(f"Нет пресета «{name}». Есть: {', '.join(presets)}")
+        preset = presets[name]
     out_dir = root / "captures"
     out_dir.mkdir(parents=True, exist_ok=True)
     state_path = out_dir / f"rebuild-{name}.json"
 
     ac = connect()
+    if preset.get("e57"):
+        # deslab: a new scan (Игорь 06.11.2026: «обмер из скана.bat», drop an E57 on it): the helper
+        # turns the cloud into a scene first, then the scene is built like a preset
+        print("Разбираю облако точек, это несколько минут…")
+        preset = dict(preset, scene=obmer.analyze_scan(ac, str(preset["e57"])))
+        print(f"Задание: {preset['scene']}")
+        found = _load(Path(preset["scene"]))
+        if "error" in found:
+            raise SystemExit(f"Облако не разобрано: {found['error']}")
     scene = load_scene(preset, root)
     deleted = 0 if keep else delete_previous(ac, state_path)
     before = _all_guids(ac)
     # deslab: the planned texts and lines of each plan, for the check below
     planned = []
-    place = obmer.place_dimension_texts
+    # deslab: not "place": that name is the layouts step below (it was shadowed here)
+    place_texts = obmer.place_dimension_texts
 
     def capture(chains, labels, profile, marks=(), inside=None):
-        out = place(chains, labels, profile, marks, inside)
+        out = place_texts(chains, labels, profile, marks, inside)
         planned.append((chains, labels))
         return out
     obmer.place_dimension_texts = capture
     try:
         report = obmer.build_measured_plan(ac, scene, rooms=preset.get("rooms"), origin=preset.get("origin"))
     finally:
-        obmer.place_dimension_texts = place
+        obmer.place_dimension_texts = place_texts
         new = sorted(_all_guids(ac) - before)
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"preset": name, "guids": new}, f)
@@ -181,7 +192,7 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description="Пересобрать тестовый обмерный план одной командой.")
-    p.add_argument("name", help="пресет из rebuild-presets.json, например kv94 или jk")
+    p.add_argument("name", help="пресет из rebuild-presets.json (kv94, jk) или путь к файлу облака .e57")
     p.add_argument("--root", help="папка «Архикад» (по умолчанию Desktop\\Архикад)")
     p.add_argument("--no-pictures", action="store_true", help="не снимать картинки видов")
     p.add_argument("--no-layouts", action="store_true", help="не ставить чертёж на листы")
@@ -194,7 +205,13 @@ def main(argv=None):
             for line in place(connect(), state["guids"]):
                 print(line)
             return 0
-        r = rebuild(a.name, a.root, a.keep, not a.no_pictures, not a.no_layouts)
+        if a.name.lower().endswith(".e57"):
+            # a scan: built at the origin of the open file (one flat per file, from the template)
+            e57 = Path(a.name).resolve()
+            r = rebuild(e57.stem.split(".")[0], a.root, a.keep, not a.no_pictures, not a.no_layouts,
+                        preset={"e57": str(e57), "origin": {"x": 0, "y": 0}})
+        else:
+            r = rebuild(a.name, a.root, a.keep, not a.no_pictures, not a.no_layouts)
     except (ArchicadError, ValueError) as error:
         print(f"ОШИБКА: {error}")
         return 1
