@@ -573,6 +573,12 @@ def _chain_line(ch):
     return _add(ref, _mul(d, min(ts))), _add(ref, _mul(d, max(ts)))
 
 
+def _parallel_overlap(c1, c2, band):
+    """deslab: two parallel dimension lines closer than their text bands, along a common stretch."""
+    d1, d2 = _pt(c1["direction"]), _pt(c2["direction"])
+    return abs(_dot(d1, d2)) > 0.99 and _chain_conflict(c1, c2, band)
+
+
 def _chain_conflict(c1, c2, band):
     """True when two dimension lines (with their text band) overlap or cross away from their
     ends. Inner chains of two neighbouring walls cross near the room corner; that is allowed."""
@@ -755,10 +761,16 @@ def plan_dimension_chains(scene, profile):
         moved = False
         for i, c1 in enumerate(chains):
             for c2 in chains[i + 1:]:
-                if "item" in (c1.get("extra"), c2.get("extra")) or c1.get("plan") != c2.get("plan"):
-                    continue  # a shaft's or a tracing strip's own short chain stays at its item
+                if c1.get("plan") != c2.get("plan"):
+                    continue
+                # deslab: a shaft's or strip's own chain moves away from its item when it lies on
+                # another chain (Игорь 06.11.2026, kv94: «1 010» of the left shaft right on «9 854»)
+                if "item" in (c1.get("extra"), c2.get("extra")) and not _parallel_overlap(c1, c2, band):
+                    continue
                 if _chain_conflict(c1, c2, band):
-                    if c1.get("extra") != c2.get("extra"):
+                    if "item" in (c1.get("extra"), c2.get("extra")) and c1.get("extra") != c2.get("extra"):
+                        short = c1 if c1.get("extra") == "item" else c2
+                    elif c1.get("extra") != c2.get("extra"):
                         short = c1 if c1.get("extra") else c2
                     else:
                         short = c1 if length(c1) <= length(c2) else c2
@@ -772,7 +784,8 @@ def plan_dimension_chains(scene, profile):
             break
     for i, c1 in enumerate(chains):
         for c2 in chains[i + 1:]:
-            if "item" not in (c1.get("extra"), c2.get("extra")) and c1.get("plan") == c2.get("plan")                     and _chain_conflict(c1, c2, band):
+            if ("item" not in (c1.get("extra"), c2.get("extra")) or _parallel_overlap(c1, c2, band)) \
+                    and c1.get("plan") == c2.get("plan") and _chain_conflict(c1, c2, band):
                 c1.setdefault("conflict", []).append(c2["edge"])
     # deslab: a dimension text that does not fit between its witness lines goes on a leader, as
     # in the office template (Игорь, 03.11.2026; read from «Антон Крючков.pln»): the leader

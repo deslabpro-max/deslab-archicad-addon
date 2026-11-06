@@ -494,6 +494,14 @@ def mep_marks(scene):
     return out
 
 
+def _segs_cross(a, b, c, d):
+    """True when the segments a-b and c-d cross (touching ends do not count)."""
+    def side(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    d1, d2, d3, d4 = side(c, d, a), side(c, d, b), side(a, b, c), side(a, b, d)
+    return d1 * d2 < -1e-12 and d3 * d4 < -1e-12
+
+
 def plan_mep_labels(scene, profile, obstacles, taken=()):
     """A one-line label for every item with a "label" (and every tracing strip, «Трассировка»):
     the dot on the item, a 45° leader into the free room and a horizontal shelf; of eight places
@@ -561,6 +569,7 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
     # deslab: nor on a panel, its own one included (kv94: «Щиток» lay on its own panel)
     riser_boxes += [(None, bx) for bx in panel_boxes(scene)]
     labels = []
+    leaders = []  # (start, end) of the leaders and shelves placed so far
     dirs = list(obstacles.get("dimDirs") or []) + [None] * len(obstacles["dims"])
     panel_ids = {m["id"] for m in scene.get("mep", []) if m.get("kind") == "panel"}
     for ident, text, dot in items:
@@ -593,6 +602,13 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     box = (x0, mid[1], x0 + width, mid[1] + line)
                     wide = (box[0] - gap, box[1] - gap, box[2] + gap, box[3] + gap)
                     cost = length * 10 + (5 if dx and way != dx else 0) + (3 if not dx or not dy else 0)
+                    # deslab: the office leader is short, at 45° or square, with a horizontal shelf; a long
+                    # one at an odd angle reads as a mistake, and two leaders never cross (Игорь 06.11.2026,
+                    # kv94 bottom shaft: «Вытяжка» and «Стояк канализации» on long crossed leaders)
+                    if abs(abs(d[0]) - abs(d[1])) > 0.01 and abs(d[0]) > 0.01 and abs(d[1]) > 0.01:
+                        cost += 25
+                    cost += 20 * max(0.0, length - 1.1)
+                    cost += 200 * sum(1 for a_, b_ in leaders if _segs_cross(dot, mid, a_, b_))
                     cost += 100 * sum(_box_hits(box, w) for w in obstacles["walls"])
                     # deslab: and a little air to the walls and strips (JK: «Трассировка h=310» right over
                     # the bottom wall, «h=280» against the strip T9)
@@ -635,6 +651,8 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                         best = (cost, mid, way, box)
         cost, mid, way, box = best
         placed.append(box)
+        leaders.append((dot, mid))
+        leaders.append((mid, _add(mid, (way * (box[2] - box[0]), 0.0))))
         labels.append({"item": ident, "runs": [{"text": text}], "begCoordinate": _xy(dot), "midCoordinate": _xy(mid),
                        "endCoordinate": _xy(_add(mid, (way * 0.01, 0.0))), "box": box, "cost": round(cost, 1)})
     return labels
