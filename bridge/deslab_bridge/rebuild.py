@@ -144,6 +144,39 @@ def place(ac, guids):
     return layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
 
 
+def clear_area(ac, scene, origin, margin=3.0):
+    """deslab: everything left in the flat's area from earlier runs goes before the build (Игорь
+    06.11.2026, kv94ai: a second zone, old labels «Щиток электрический» and «Вытяжка, шахта …» that
+    no state file listed). The area is the scene's rooms moved to the origin, plus a margin for the
+    dimensions and labels; only elements lying wholly inside it are deleted."""
+    pts = [obmer._pt(p) for r in scene.get("rooms", []) for p in r["polygon"]] + \
+          [obmer._pt(p) for w in scene.get("walls", []) for p in (w["start"], w["end"])]
+    if not pts:
+        return 0
+    ox, oy = (origin or {}).get("x", 0.0), (origin or {}).get("y", 0.0)
+    x0, x1 = min(p[0] for p in pts) + ox - margin, max(p[0] for p in pts) + ox + margin
+    y0, y1 = min(p[1] for p in pts) + oy - margin, max(p[1] for p in pts) + oy + margin
+    guids = sorted(_all_guids(ac))
+    doomed = []
+    for k in range(0, len(guids), 500):
+        part = guids[k:k + 500]
+        try:
+            boxes = ac.tapir("Get3DBoundingBoxes", {"elements": [{"elementId": {"guid": g}} for g in part]})["boundingBoxes3D"]
+        except ArchicadError:
+            continue
+        for g, b in zip(part, boxes):
+            b = b.get("boundingBox3D", b) if isinstance(b, dict) else None
+            if b and "xMin" in b and x0 <= b["xMin"] and b["xMax"] <= x1 and y0 <= b["yMin"] and b["yMax"] <= y1:
+                doomed.append(g)
+    if doomed:
+        closed = obmer.open_layers(ac, None, obmer.Report())
+        try:
+            ac.tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in doomed]})
+        finally:
+            obmer.restore_layers(ac, closed)
+    return len(doomed)
+
+
 def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=None):
     root = _root(root)
     if preset is None:
@@ -171,6 +204,8 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     deleted = 0 if keep else delete_previous(ac, state_path)
     for other in preset.get("replaces", []):  # deslab: «kv94ai» takes the place of «kv94» at the same origin
         deleted += 0 if keep else delete_previous(ac, out_dir / f"rebuild-{other}.json")
+    if not keep:
+        deleted += clear_area(ac, scene, preset.get("origin"))
     before = _all_guids(ac)
     # deslab: the planned texts and lines of each plan, for the check below
     planned = []

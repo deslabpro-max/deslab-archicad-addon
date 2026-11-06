@@ -286,7 +286,7 @@ def _confident(item, minimum):
         return False
 
 
-OFFICE_LABELS = {"panel": "Щиток", "sewerRiser": "Стояк канализации", "waterRiser": "Стояк воды"}
+OFFICE_LABELS = {"shaft": "Вытяжка", "radiator": None, "panel": "Щиток", "sewerRiser": "Стояк канализации", "waterRiser": "Стояк воды"}
 
 
 def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
@@ -378,7 +378,10 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
         # deslab: the office's own short labels win over the model's wording (Игорь 06.11.2026 chose
         # «Щиток», the AI build wrote «Щиток электрический» and it was crossed by the chains)
         if kind in OFFICE_LABELS:
-            item["label"] = OFFICE_LABELS[kind]
+            if OFFICE_LABELS[kind]:
+                item["label"] = OFFICE_LABELS[kind]
+            else:
+                item.pop("label", None)  # radiators: no label, their sizes are the dimension chain
         if kind == "shaft":
             item.setdefault("thickness", 0.1)
         elif kind in ("sewerRiser", "waterRiser"):
