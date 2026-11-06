@@ -54,16 +54,11 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
     cfg = profile.get("layouts") or {}
     margin = float(cfg.get("margin", 0.25))
     frame = cfg["frame"]  # {"xMin","xMax","yMin","yMax"} on paper, metres: the plan area of the template's layouts
-    box = {"width": frame["xMax"] - frame["xMin"], "height": frame["yMax"] - frame["yMin"]}
-    inset = float(cfg.get("inset", 0.015))  # deslab: the drawing always starts 15 mm from the frame's top-left corner
+    inset = float(cfg.get("inset", 0.015))  # deslab: the drawing always starts 15 mm right of and below the area's top-left corner
     prefer = int(cfg.get("preferScale", 45))
     tolerance_paper = float(cfg.get("overflow", 0.01))  # m on paper that the plan may stick out at the preferred scale
-    avail = {"width": frame["xMax"] - frame["xMin"] - inset, "height": frame["yMax"] - frame["yMin"] - inset}
-    tx, ty = frame["xMin"] + inset, frame["yMax"] - inset
     width = bbox["xMax"] - bbox["xMin"] + 2 * margin
     height = bbox["yMax"] - bbox["yMin"] + 2 * margin
-    denominator = choose_scale(width, height, avail, cfg.get("scales", SCALES), prefer, tolerance_paper)
-    ratio = view_scale / denominator
     views = {i.get("prefix", "") + " " + i["name"]: i for i in _tree(ac, "ViewMap") if i.get("type") != "FolderItem"}
     layouts = {(i.get("prefix", "") + " " + i["name"]).strip(): i for i in _tree(ac, "LayoutBook") if i.get("type") == "LayoutItem"}
     out = []
@@ -73,6 +68,13 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
         if not layout or not view:
             out.append(f"{entry['layout']}: нет листа или вида в шаблоне")
             continue
+        # the corner of the layout's drawing area (page minus margins, Layout Settings), not a guessed number
+        page = ac.tapir("GetLayoutSettings", {"layoutDatabaseIds": [{"navigatorItemId": layout["navigatorItemId"]}]})["layoutSettings"][0]
+        tx = page["leftMargin"] / 1000 + inset
+        ty = (page["verticalSize"] - page["topMargin"]) / 1000 - inset
+        avail = {"width": frame["xMax"] - tx, "height": ty - frame["yMin"]}  # frame: right and bottom limits (stamp, legend)
+        denominator = choose_scale(width, height, avail, cfg.get("scales", SCALES), prefer, tolerance_paper)
+        ratio = view_scale / denominator
         ac.tapir("ChangeWindow", {"navigatorItemId": layout["navigatorItemId"]})
         drawings = ac.tapir("GetElementsByType", {"elementType": "Drawing"}).get("elements", [])
         details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
@@ -102,6 +104,14 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
             position = {"x": tx + margin * s, "y": ty - margin * s - (content["yMax"] - content["yMin"]) * s}
             new = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position=position, scale=ratio)]})["elements"][0]
             note = "рамка по размеру чертежа"
+            if "elementId" in new:
+                # measure the real frame on the layout and move the drawing onto the anchor point
+                got = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": new["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
+                dx, dy = tx - got["xMin"], ty - got["yMax"]
+                if abs(dx) > 0.0002 or abs(dy) > 0.0002:
+                    ac.tapir("MoveElements", {"elementsWithMoveVectors": [{"elementId": new["elementId"], "moveVector": {"x": dx, "y": dy, "z": 0}, "copy": False}]})
+                    got = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": new["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
+                note += f", левый верхний угол в {1000 * (got['xMin'] - page['leftMargin'] / 1000):.1f} мм справа и {1000 * ((page['verticalSize'] - page['topMargin']) / 1000 - got['yMax']):.1f} мм ниже угла области"
         else:
             # measured on this template (A27, drawing clipped with a polygon): the drawing's position is the paper point
             # of the model origin, not of the content corner (that is only so for an unclipped drawing), and a clip polygon
