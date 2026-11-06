@@ -90,7 +90,7 @@ def snapshots(ac, guids, out_dir, name, views=(("view1", "Обмерный пл�
     return files
 
 
-def rebuild(name, root=None, keep=False):
+def rebuild(name, root=None, keep=False, pictures=True):
     root = _root(root)
     presets = _load(PRESETS)
     if name not in presets:
@@ -126,7 +126,8 @@ def rebuild(name, root=None, keep=False):
     report["created"] = len(new)
     shifted = obmer.shift_scene(json.loads(json.dumps(scene)), preset.get("origin"))
     report["check"] = {f"план {i + 1}": layout_check.check(shifted, c, l) for i, (c, l) in enumerate(planned)}
-    report["pictures"] = snapshots(ac, new, out_dir, name)
+    # deslab: --no-pictures skips ChangeWindow/SaveCurrentWindowAsImage (a run must not touch the open view)
+    report["pictures"] = snapshots(ac, new, out_dir, name) if pictures else []
     with open(out_dir / f"rebuild-{name}-report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
     return report
@@ -136,10 +137,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Пересобрать тестовый обмерный план одной командой.")
     p.add_argument("name", help="пресет из rebuild-presets.json, например kv94 или jk")
     p.add_argument("--root", help="папка «Архикад» (по умолчанию Desktop\\Архикад)")
+    p.add_argument("--no-pictures", action="store_true", help="не снимать картинки видов")
     p.add_argument("--keep", action="store_true", help="не удалять прошлую сборку")
     a = p.parse_args(argv)
     try:
-        r = rebuild(a.name, a.root, a.keep)
+        r = rebuild(a.name, a.root, a.keep, not a.no_pictures)
     except (ArchicadError, ValueError) as error:
         print(f"ОШИБКА: {error}")
         return 1
