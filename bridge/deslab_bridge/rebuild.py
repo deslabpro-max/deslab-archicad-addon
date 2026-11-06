@@ -29,7 +29,15 @@ def _load(path):
 
 
 def _all_guids(ac):
-    return {e["elementId"]["guid"] for e in ac.api("API.GetAllElements").get("elements", []) if "elementId" in e}
+    # deslab: API.GetAllElements has no 2D elements (dimensions, labels, texts, polylines), so they were never
+    # in the state file and piled up with every rebuild. Add them by type.
+    found = {e["elementId"]["guid"] for e in ac.api("API.GetAllElements").get("elements", []) if "elementId" in e}
+    for kind in ("Dimension", "Label", "Text", "PolyLine", "Line", "Arc", "Hatch"):
+        try:
+            found |= {e["elementId"]["guid"] for e in ac.tapir("GetElementsByType", {"elementType": kind}).get("elements", [])}
+        except ArchicadError:
+            pass
+    return found
 
 
 def load_scene(preset, root):
