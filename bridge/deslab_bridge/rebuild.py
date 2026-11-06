@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from . import check as layout_check
+from . import layouts
 from . import obmer
 from .archicad import Archicad, ArchicadError
 
@@ -122,7 +123,21 @@ def connect():
     return ac
 
 
-def rebuild(name, root=None, keep=False, pictures=True):
+def flat_bbox(ac, guids):
+    """The bounding box (model metres) of the built elements, 2D dimensions and labels included."""
+    boxes = ac.tapir("Get3DBoundingBoxes", {"elements": [{"elementId": {"guid": g}} for g in guids]})["boundingBoxes3D"]
+    boxes = [b.get("boundingBox3D", b) for b in boxes]
+    return {k: (min if k.endswith("Min") else max)(b[k] for b in boxes) for k in ("xMin", "xMax", "yMin", "yMax")}
+
+
+def place(ac, guids):
+    # deslab: the built flat goes to the template layouts (layouts.py)
+    profile = _load(Path(__file__).resolve().parent.parent / "office-profile.json")
+    layouts.show_plan_view(ac, profile["layouts"]["items"][0]["view"])
+    return layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
+
+
+def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True):
     root = _root(root)
     presets = _load(PRESETS)
     if name not in presets:
@@ -158,6 +173,7 @@ def rebuild(name, root=None, keep=False, pictures=True):
     report["check"] = {f"план {i + 1}": layout_check.check(shifted, c, l) for i, (c, l) in enumerate(planned)}
     # deslab: --no-pictures skips ChangeWindow/SaveCurrentWindowAsImage (a run must not touch the open view)
     report["pictures"] = snapshots(ac, new, out_dir, name) if pictures else []
+    report["layouts"] = place(ac, new) if on_layouts else []
     with open(out_dir / f"rebuild-{name}-report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
     return report
@@ -168,14 +184,23 @@ def main(argv=None):
     p.add_argument("name", help="пресет из rebuild-presets.json, например kv94 или jk")
     p.add_argument("--root", help="папка «Архикад» (по умолчанию Desktop\\Архикад)")
     p.add_argument("--no-pictures", action="store_true", help="не снимать картинки видов")
+    p.add_argument("--no-layouts", action="store_true", help="не ставить чертёж на листы")
+    p.add_argument("--layouts-only", action="store_true", help="только поставить уже собранный план на листы")
     p.add_argument("--keep", action="store_true", help="не удалять прошлую сборку")
     a = p.parse_args(argv)
     try:
-        r = rebuild(a.name, a.root, a.keep, not a.no_pictures)
+        if a.layouts_only:
+            state = _load(_root(a.root) / "captures" / f"rebuild-{a.name}.json")
+            for line in place(connect(), state["guids"]):
+                print(line)
+            return 0
+        r = rebuild(a.name, a.root, a.keep, not a.no_pictures, not a.no_layouts)
     except (ArchicadError, ValueError) as error:
         print(f"ОШИБКА: {error}")
         return 1
     print(f"Готово за {r.get('seconds')} с: удалено {r['deleted']}, создано {r['created']} элементов.")
+    for line in r.get("layouts", []):
+        print("Лист:", line)
     errors = r.get("errors") or []
     print("Ошибок нет." if not errors else "Замечания моста:\n- " + "\n- ".join(errors))
     for plan, items in r.get("check", {}).items():
