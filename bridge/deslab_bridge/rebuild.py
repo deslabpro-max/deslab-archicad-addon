@@ -201,6 +201,25 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         if "error" in found:
             raise SystemExit(f"Облако не разобрано: {found['error']}")
     scene = load_scene(preset, root)
+    ai_report = None
+    if preset.get("ai"):
+        # deslab: Игорь 06.11.2026, the AI analyses the scene while building: the review is asked for (one paid call), saved, applied
+        # through the checks, and its doubts are printed for Игорь; the hand-made mep of a preset is dropped, the model supplies it
+        from . import ai
+        profile = _load(Path(__file__).resolve().parent.parent / "office-profile.json")
+        images = [str(root / i) if not Path(i).is_absolute() else i for i in preset.get("aiImages", [])]
+        for spec in preset.get("aiPdf", []):  # "file.pdf:12"
+            pdf, _, page = str(spec).rpartition(":")
+            images.append(ai.pdf_page_png(Path(pdf), page or 1, out_dir / f"ai-page-{name}-{page}.png"))
+        print("ИИ разбирает сцену…")
+        review, usage, _ = ai.ai_review(scene, images, profile, with_mep=False)
+        scene_in = {k: v for k, v in scene.items() if k not in ("mep", "tracing")}
+        scene, ai_report = ai.apply_review(scene_in, review)
+        with open(out_dir / f"ai-review-{name}.json", "w", encoding="utf-8") as f:
+            json.dump({"review": review, "report": ai_report, "usage": usage}, f, ensure_ascii=False, indent=1)
+        print(f"ИИ: применено {len(ai_report['applied'])}, отклонено {len(ai_report['rejected'])}, токены {usage.get('prompt_tokens')}+{usage.get('completion_tokens')}, {usage.get('cost_rub', '?')} ₽")
+        for q in ai_report["doubts"]:
+            print("Вопрос Игорю:", q)
     deleted = 0 if keep else delete_previous(ac, state_path)
     for other in preset.get("replaces", []):  # deslab: «kv94ai» takes the place of «kv94» at the same origin
         deleted += 0 if keep else delete_previous(ac, out_dir / f"rebuild-{other}.json")
@@ -224,6 +243,8 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         new = sorted(_all_guids(ac) - before)
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"preset": name, "guids": new}, f)
+    if ai_report is not None:
+        report["ai"] = ai_report
     report["deleted"] = deleted
     report["created"] = len(new)
     shifted = obmer.shift_scene(json.loads(json.dumps(scene)), preset.get("origin"))
@@ -243,6 +264,10 @@ def main(argv=None):
     p.add_argument("--no-pictures", action="store_true", help="не снимать картинки видов")
     p.add_argument("--no-layouts", action="store_true", help="не ставить чертёж на листы")
     p.add_argument("--layouts-only", action="store_true", help="только поставить уже собранный план на листы")
+    p.add_argument("--ai", action="store_true", help="разбор сцены ИИ при построении (один платный вызов); для .e57 включён по умолчанию")
+    p.add_argument("--no-ai", action="store_true", help="для .e57: без ИИ")
+    p.add_argument("--pdf", nargs="*", default=[], help="страницы PDF для ИИ в виде файл.pdf:12")
+    p.add_argument("--images", nargs="*", default=[], help="картинки для ИИ")
     p.add_argument("--keep", action="store_true", help="не удалять прошлую сборку")
     a = p.parse_args(argv)
     try:
@@ -255,9 +280,13 @@ def main(argv=None):
             # a scan: built at the origin of the open file (one flat per file, from the template)
             e57 = Path(a.name).resolve()
             r = rebuild(e57.stem.split(".")[0], a.root, a.keep, not a.no_pictures, not a.no_layouts,
-                        preset={"e57": str(e57), "origin": {"x": 0, "y": 0}})
+                        preset={"e57": str(e57), "origin": {"x": 0, "y": 0}, "ai": not a.no_ai,
+                                "aiPdf": a.pdf, "aiImages": a.images})
         else:
-            r = rebuild(a.name, a.root, a.keep, not a.no_pictures, not a.no_layouts)
+            presets = _load(PRESETS)
+            if a.ai and a.name in presets:
+                presets[a.name] = dict(presets[a.name], ai=True, aiPdf=a.pdf, aiImages=a.images)
+            r = rebuild(a.name, a.root, a.keep, not a.no_pictures, not a.no_layouts, preset=presets.get(a.name))
     except (ArchicadError, ValueError) as error:
         print(f"ОШИБКА: {error}")
         return 1

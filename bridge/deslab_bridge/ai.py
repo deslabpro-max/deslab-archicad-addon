@@ -82,6 +82,19 @@ def image_part(path):
     return {"type": "image_url", "image_url": {"url": f"data:image/{kind};base64," + base64.b64encode(raw).decode("ascii")}}
 
 
+def pdf_page_png(pdf, page, out, width=2000):
+    """A PDF page (1-based) rendered to a PNG at most `width` px wide (needs the extra «ai»: pymupdf)."""
+    try:
+        import pymupdf
+    except ImportError:
+        raise AIError("Нужен PyMuPDF: pip install pymupdf (extra «ai»).") from None
+    doc = pymupdf.open(str(pdf))
+    pg = doc[int(page) - 1]
+    zoom = width / pg.rect.width
+    pg.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).save(str(out))
+    return str(out)
+
+
 def chat(messages, profile=None, model=None, json_mode=True):
     """One chat-completions call with a timeout and one retry. Returns (text, usage)."""
     cfg = settings(profile)
