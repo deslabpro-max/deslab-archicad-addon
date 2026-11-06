@@ -286,6 +286,9 @@ def _confident(item, minimum):
         return False
 
 
+OFFICE_LABELS = {"panel": "Щиток", "sewerRiser": "Стояк канализации", "waterRiser": "Стояк воды"}
+
+
 def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
     """Applies the review to a COPY of the scene. Returns (new_scene, report) with report = {"applied": [...],
     "rejected": [...], "doubts": [...]}. Rules: an opening stays on its wall and does not overlap another; points are inside
@@ -372,6 +375,10 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
         ids.add(mid)
         item = dict(item)
         item.pop("confidence", None)
+        # deslab: the office's own short labels win over the model's wording (Игорь 06.11.2026 chose
+        # «Щиток», the AI build wrote «Щиток электрический» and it was crossed by the chains)
+        if kind in OFFICE_LABELS:
+            item["label"] = OFFICE_LABELS[kind]
         if kind == "shaft":
             item.setdefault("thickness", 0.1)
         elif kind in ("sewerRiser", "waterRiser"):
