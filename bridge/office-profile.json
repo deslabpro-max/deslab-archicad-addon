@@ -1,0 +1,194 @@
+{
+  "format": "deslab.profile/1",
+  "name": "deslab, шаблон «Антон Крючков.pln», обмерный план",
+  "comment": "Правила черчения в коде. Источник: Архикад\\правила-черчения.md и template-notes.md. Новое замечание Игоря = правка здесь.",
+  "ai": {
+    "comment": "Polza.ai (OpenAI-совместимый). Идентификаторы моделей надо сверить со списком /models: `python -m deslab_bridge.ai models`. Ключ в переменной POLZA_API_KEY, не здесь.",
+    "baseUrl": "https://api.polza.ai/api/v1",
+    "model": "anthropic/claude-sonnet-5.5",
+    "hardModel": "anthropic/claude-opus-5.5",
+    "timeout": 180,
+    "retries": 1,
+    "maxTokens": 16000
+  },
+  "layouts": {
+    "comment": "Игорь 06.11.2026: чертёж встаёт на листы шаблона по максимуму. frame: область плана на листах шаблона, метры на бумаге (как у плана на листах 06-14). margin: запас вокруг плана, м модели.",
+    "frame": {"xMin": 0.034, "xMax": 0.326, "yMin": 0.04, "yMax": 0.296},
+    "anchor": "topLeft",
+    "inset": 0.015,
+    "preferScale": 45,
+    "titleLibraryPartIndex": 0,
+    "overflow": 0.01,
+    "margin": 0.0,
+    "offset": {"x": 0.0, "y": -0.3},
+    "scales": [20, 25, 30, 40, 45, 50, 60, 75, 100],
+    "items": [
+      {"layout": "ОБМЕРНЫЙ ПЛАН", "view": "Обмерный план"},
+      {"layout": "ИНЖЕНЕРНЫЕ УЗЛЫ", "view": "Инженерные узлы"}
+    ]
+  },
+  "layers": {
+    "bearingWalls": "000 СТЕНЫ НЕСУЩИЕ",
+    "partitions": "001 Обмерный план ПЕРЕГОРОДКИ",
+    "zones": "001 Обмерный план ЗОНЫ",
+    "labels": "001 Обмерный план ВЫНОСКИ",
+    "dimensions": "001 Обмерный план РАЗМЕРЫ",
+    "wetZones": "001 Обмерный план ЗОНЫ",
+    "mep": "001 Обмерный план ПЕРЕГОРОДКИ",
+    "tracing": "001 Обмерный план ПЕРЕГОРОДКИ",
+    "engDimensions": "002 Инженерные узлы РАЗМЕРЫ",
+    "engLabels": "002 Инженерные узлы ВЫНОСКИ",
+    "radiators": "002 Инженерные узлы РАДИАТОРЫ",
+    "panel": "002 Инженерные узлы РОЗЕТКИ и ВЫКЛЮЧАТЕЛИ",
+    "risers": "002 Инженерные узлы"
+  },
+  "mep": {
+    "comment": "Игорь 05.11.2026: шахты, стояки, радиаторы с размерами, трассировка. Объекты как в ручной кв. 94 (тест-угол.pln, x=0).",
+    "riserPart": "Цилиндр 27",
+    "radiatorPart": "Панельный Радиатор 27",
+    "panelPart": null,
+    "pen": 161,
+    "tracingId": "Трассировка {id}",
+    "tracingLabel": "Трассировка h={height_mm}",
+    "splitViews": true,
+    "shaftMaterial": "Штукатурка - Гипсовая"
+  },
+  "favoritesFile": "C:\\Users\\user\\Desktop\\Архикад\\obmer_fav.prefs",
+  "favorites": {
+    "zone": "ОБМЕР шаблон Зона",
+    "heightText": "ОБМЕР шаблон Текст Н",
+    "label": "ОБМЕР шаблон Выноска",
+    "dimension": "ОБМЕР шаблон Размер",
+    "wall": null,
+    "window": null,
+    "door": null,
+    "wetBathroom": null,
+    "wetKitchen": null
+  },
+  "walls": {
+    "partitionMaxThickness": 0.16,
+    "material": "Бетон - Конструкционный",
+    "surface": {
+      "name": null,
+      "comment": "Игорь 03.11.2026: стены в 3D со всех сторон и с торцов одна однотонная краска, бетон не показываем",
+      "like": [
+        "краска - бел",
+        "краска бел",
+        "краска",
+        "штукатурка - бел",
+        "paint - white",
+        "paint"
+      ]
+    }
+  },
+  "zone": {
+    "heightTextFormat": "Н {height_mm}",
+    "heightTextOffset": -0.35,
+    "defaultName": "Помещение",
+    "stampAtCentre": true
+  },
+  "labels": {
+    "window": [
+      [
+        "h",
+        ""
+      ],
+      [
+        "окна",
+        "sub"
+      ],
+      [
+        " {height_mm}\n",
+        ""
+      ],
+      [
+        "h",
+        ""
+      ],
+      [
+        "подокон",
+        "sub"
+      ],
+      [
+        " {sill_mm}",
+        ""
+      ]
+    ],
+    "door": [
+      [
+        "h",
+        ""
+      ],
+      [
+        "двери",
+        "sub"
+      ],
+      [
+        " {height_mm}",
+        ""
+      ]
+    ],
+    "textHeight": 0.125,
+    "lineSpacing": 1.6,
+    "textSpacing": -0.8,
+    "charWidth": 0.62,
+    "drawingScale": 45,
+    "charMm": 1.4,
+    "padMm": 1.5,
+    "lineMm": 4.32,
+    "lengthCost": 20,
+    "leaderLengths": [
+      0.6,
+      0.9,
+      1.2,
+      1.5,
+      1.8
+    ],
+    "dimensionBand": 0.25,
+    "stampRadius": 0.35
+  },
+  "dimensions": {
+    "offsetFromFace": 0.35,
+    "minEdge": 0.3,
+    "mergeStep": 0.45,
+    "offsetStep": 0.35,
+    "maxShifts": 2,
+    "shortSegment": 0.3,
+    "leaderRise": 0.22,
+    "leaderShelf": 0.1,
+    "leaderPen": 120,
+    "digitMm": 1.95,
+    "thousandsGapMm": 1.18
+
+  },
+  "wet": {
+    "bathroom": {
+      "foreground": {
+        "red": 0.55,
+        "green": 0.8,
+        "blue": 0.95
+      }
+    },
+    "kitchen": {
+      "foreground": {
+        "red": 0.6,
+        "green": 0.88,
+        "blue": 0.6
+      }
+    },
+    "legend": {
+      "bathroom": "Мокрая зона санузла",
+      "kitchen": "Мокрая зона кухни"
+    }
+  },
+  "openings": {
+    "doubleSashMinWidth": 1.0,
+    "interiorDoorHeight": 2.1,
+    "innerBoard": false,
+    "cornerJoint": "frame",
+    "cornerWindowPen": 161,
+    "cornerTwoSashFavorite": "Двустворчатое Окно",
+    "cornerThreeSashFavorite": "deslab Трехстворчатое Окно",
+    "comment": "Игорь 03.11.2026: подоконник в бетонной квартире не ставим; если ставим, только белый пластик"
+  }
+}

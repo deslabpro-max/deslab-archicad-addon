@@ -55,6 +55,22 @@ struct AssociativeDimensionPoint {
     short nodeType = 0;
     short nodeStatus = 0;
     UInt32 nodeId = 0;
+    // deslab: where the text this witness point carries is put (a short segment's text would
+    // otherwise be pushed past the chain end, onto the wall hatch)
+    bool hasTextPosition = false;
+    API_Coord textPosition = {0.0, 0.0};
+    // deslab: the text on a leader line, as in the office template (beg at the segment, mid the
+    // elbow, end the shelf end), when the text does not fit between the witness lines
+    bool hasTextLeader = false;
+    API_Coord leaderBeg = {0.0, 0.0};
+    API_Coord leaderMid = {0.0, 0.0};
+    API_Coord leaderEnd = {0.0, 0.0};
+    short leaderPen = 0;  // 0 = the text pen
+    // deslab: the text moved along its dimension line (no leader) to keep it clear of crossing
+    // lines (Игорь, 04.11.2026): textAt is the wanted text middle on the line, absolute
+    bool hasTextAt = false;
+    API_Coord textAt = {0.0, 0.0};
+    bool leaderAnchorAtTextEnd = true;  // as 9 of 10 leaders in the office template
 };
 
 enum class SectionAssociativeDimensionPreset {
@@ -714,6 +730,30 @@ GS::Optional<GS::UniString> ParseAssociativeDimensionPoint (const GS::ObjectStat
 
     pointData.Get ("line", point.line);
     pointData.Get ("inIndex", point.inIndex);
+    if (const GS::ObjectState* textPosition = pointData.Get ("textPosition")) {  // deslab
+        point.hasTextPosition = true;
+        point.textPosition = Get2DCoordinateFromObjectState (*textPosition);
+    }
+    if (const GS::ObjectState* textAt = pointData.Get ("textAt")) {  // deslab
+        point.hasTextAt = true;
+        point.textAt = Get2DCoordinateFromObjectState (*textAt);
+    }
+    if (const GS::ObjectState* textLeader = pointData.Get ("textLeader")) {  // deslab
+        const GS::ObjectState* beg = textLeader->Get ("beg");
+        const GS::ObjectState* mid = textLeader->Get ("mid");
+        const GS::ObjectState* end = textLeader->Get ("end");
+        if (beg != nullptr && mid != nullptr && end != nullptr) {
+            point.hasTextLeader = true;
+            point.leaderBeg = Get2DCoordinateFromObjectState (*beg);
+            point.leaderMid = Get2DCoordinateFromObjectState (*mid);
+            point.leaderEnd = Get2DCoordinateFromObjectState (*end);
+            Int32 pen = 0;
+            if (textLeader->Get ("pen", pen)) {
+                point.leaderPen = static_cast<short> (pen);
+            }
+            textLeader->Get ("anchorAtTextEnd", point.leaderAnchorAtTextEnd);
+        }
+    }
 
     Int32 special = 0;
     if (pointData.Get ("special", special)) {
@@ -772,11 +812,124 @@ GS::Optional<GS::UniString> PopulateAssociativeDimensionMemo (
             dimElem.base.loc = point.coordinate;
         }
         dimElem.note = element.dimension.defNote;
+        if (point.hasTextPosition) {  // deslab: a fixed text position, as if moved by hand
+            dimElem.note.pos = point.textPosition;
+            dimElem.note.fixPos = true;
+            // a fixed text keeps its own angle (0 = horizontal, run 10): turn it along the
+            // dimension line, readable (from below or from the right)
+            double angle = std::atan2 (element.dimension.direction.y, element.dimension.direction.x);
+            if (angle > 1.5708 + 1e-6) {
+                angle -= 3.14159265358979;
+            } else if (angle <= -1.5708 + 1e-6) {
+                angle += 3.14159265358979;
+            }
+            dimElem.note.noteAngle = angle;
+        }
+        // deslab: a text leader is NOT set here; at creation Archicad stores it relative and
+        // turned (run 11). ApplyDimensionTextLeaders sets it after creation, in absolute coords.
         dimElem.witnessVal = element.dimension.defWitnessVal;
         dimElem.witnessForm = element.dimension.defWitnessForm;
     }
 
     return {};
+}
+
+// deslab: short dimension texts on a leader, as in the office template. The leader is set on
+// the created dimension with ACAPI_Element_Change (as in the DevKit Element_Test example), all
+// points absolute: begC on the dimension line, midC square to the chain, endC along it, and the
+// text (pos) continues from endC, underlined. Text angle is 0 for horizontal chains and 90 deg
+// for vertical ones, so it reads from below or from the right.
+GSErrCode ApplyDimensionTextLeaders (
+    API_Element& element,
+    const GS::Array<AssociativeDimensionPoint>& points)
+{
+    bool any = false;
+    for (const AssociativeDimensionPoint& point : points) {
+        any = any || point.hasTextLeader || point.hasTextAt;
+    }
+    if (!any) {
+        return NoError;
+    }
+
+    API_ElementMemo memo = {};
+    const GS::OnExit cleanup ([&]() {
+        ACAPI_DisposeElemMemoHdls (&memo);
+    });
+    GSErrCode err = ACAPI_Element_GetMemo (element.header.guid, &memo);
+    if (err != NoError || memo.dimElems == nullptr) {
+        return err != NoError ? err : APIERR_GENERAL;
+    }
+
+    const Int32 nDimElem = static_cast<Int32> (BMGetHandleSize (reinterpret_cast<GSHandle> (memo.dimElems)) / sizeof (API_DimElem));
+    API_Vector dir = element.dimension.direction;
+    const double dirLen = std::sqrt (dir.x * dir.x + dir.y * dir.y);
+    if (dirLen > 1e-9) {
+        dir.x /= dirLen;
+        dir.y /= dirLen;
+    }
+    double angle = std::atan2 (dir.y, dir.x);
+    angle = (std::fabs (std::sin (angle)) > std::fabs (std::cos (angle))) ? 1.5707963267949 : 0.0;
+    // Archicad may store the witness points in another order than sent (run 12: reversed),
+    // so the leader goes to the segment whose span along the chain holds leaderBeg (the
+    // segment middle), on that segment's later point in Archicad's order, as in the template.
+    auto along = [&] (const API_Coord& c) { return c.x * dir.x + c.y * dir.y; };
+    for (UIndex k = 0; k < points.GetSize (); ++k) {
+        const AssociativeDimensionPoint& point = points[k];
+        if (!point.hasTextLeader && !point.hasTextAt) {
+            continue;
+        }
+        const double t = along (point.hasTextLeader ? point.leaderBeg : point.textAt);
+        Int32 target = -1;
+        double bestMiss = 1e9;
+        for (Int32 i = 1; i < nDimElem; ++i) {
+            const double a = along ((*memo.dimElems)[i - 1].base.loc);
+            const double b = along ((*memo.dimElems)[i].base.loc);
+            const double miss = std::max (0.0, std::max (std::min (a, b) - t, t - std::max (a, b)));
+            if (miss < bestMiss) {
+                bestMiss = miss;
+                target = i;
+            }
+        }
+        if (target < 0 || bestMiss > 0.01) {
+            return APIERR_BADPARS;  // no segment of the chain holds the leader start
+        }
+        API_NoteType& note = (*memo.dimElems)[target].note;
+        if (!point.hasTextLeader) {
+            // the text slides along the line by the distance from the segment middle; its
+            // offset from the line stays Archicad's own (the line through refC)
+            const double a = along ((*memo.dimElems)[target - 1].base.loc);
+            const double b = along ((*memo.dimElems)[target].base.loc);
+            const double shift = t - (a + b) / 2;
+            const API_Coord ref = element.dimension.refC;
+            const double across = (note.pos.x - ref.x) * -dir.y + (note.pos.y - ref.y) * dir.x;
+            const bool posValid = std::fabs (along (note.pos) - (a + b) / 2) < 2.0 && std::fabs (across) < 0.5;
+            if (posValid) {
+                note.pos.x += dir.x * shift;
+                note.pos.y += dir.y * shift;
+            } else {
+                note.pos = point.textAt;
+            }
+            note.fixPos = true;
+            note.useLeaderLine = false;
+            note.noteAngle = angle;
+            continue;
+        }
+        note.fixPos = true;
+        note.useLeaderLine = true;
+        note.anchorAtTextEnd = point.leaderAnchorAtTextEnd;
+        note.begC = point.leaderBeg;
+        note.midC = point.leaderMid;
+        note.endC = point.leaderEnd;
+        note.pos = point.leaderEnd;
+        note.noteAngle = angle;
+        note.leaderShape = API_Segmented;
+        note.anchorPoint = APILbl_Underlined;
+        note.leaderPen = point.leaderPen > 0 ? point.leaderPen : note.notePen;
+    }
+
+    API_Element mask;
+    ACAPI_ELEMENT_MASK_CLEAR (mask);
+    return ACAPI_Element_Change (&element, &mask, &memo, 0, true);
 }
 
 void TryApplyDimensionFloorIndex (
@@ -6250,7 +6403,21 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
         return CreateErrorResponse (APIERR_BADPARS, error.Get ());
     }
 
-    return ExecuteCreateWithElements ("Create Associative Dimensions", [&](GS::Array<GS::ObjectState>& elements) {
+    // deslab: text leaders are set in a second step, after the creating command has ended.
+    // Inside it the new dimension's witness points are not settled yet (run 12: the notes moved
+    // to the mirrored point; run 13: no segment found), so the leaders wait until then.
+    struct PendingLeaders {
+        UIndex resultIndex;
+        API_Guid guid;
+        GS::Array<AssociativeDimensionPoint> points;
+    };
+    GS::Array<PendingLeaders> pendingLeaders;
+    GS::Array<GS::ObjectState> createdResults;
+
+    GS::ObjectState response = ExecuteCreateWithElements ("Create Associative Dimensions", [&](GS::Array<GS::ObjectState>& elements) {
+        const GS::OnExit keepResults ([&]() {
+            createdResults = elements;
+        });
         for (const auto& data : dimensionsData) {
             GS::Array<GS::ObjectState> witnessPointsData;
             {
@@ -6265,7 +6432,7 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
                 elements.Push (CreateErrorResponse (APIERR_BADPARS, "Missing required 'direction' or 'referencePoint' field."));
                 continue;
             }
-            const API_Coord directionCoord = Get2DCoordinateFromObjectState (*data.Get ("direction"));
+            API_Coord directionCoord = Get2DCoordinateFromObjectState (*data.Get ("direction"));
             if (directionCoord.x == 0.0 && directionCoord.y == 0.0) {
                 elements.Push (CreateErrorResponse (APIERR_BADPARS, "Dimension direction must be non-zero."));
                 continue;
@@ -6285,6 +6452,25 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
             }
             if (invalidWitnessPoint) {
                 continue;
+            }
+            // deslab: a chain pointing left or down is stored reversed by Archicad, with its
+            // fixed texts turned by 180 deg (run 12); send it pointing right or up instead
+            const bool hasLeader = [&]() {
+                for (const AssociativeDimensionPoint& p : witnessPoints) {
+                    if (p.hasTextLeader || p.hasTextAt) {
+                        return true;
+                    }
+                }
+                return false;
+            }();
+            if (hasLeader && ((std::fabs (directionCoord.x) >= std::fabs (directionCoord.y)) ? directionCoord.x < 0.0 : directionCoord.y < 0.0)) {
+                directionCoord.x = -directionCoord.x;
+                directionCoord.y = -directionCoord.y;
+                GS::Array<AssociativeDimensionPoint> reversed;
+                for (UIndex i = witnessPoints.GetSize (); i > 0; --i) {
+                    reversed.Push (witnessPoints[i - 1]);
+                }
+                witnessPoints = reversed;
             }
 
             API_Element element = {};
@@ -6329,9 +6515,34 @@ GS::ObjectState CreateAssociativeDimensionsCommand::Execute (const GS::ObjectSta
                 continue;
             }
 
+            if (hasLeader) {  // deslab
+                pendingLeaders.Push ({elements.GetSize (), element.header.guid, witnessPoints});
+            }
             elements.Push (CreateElementIdObjectState (element.header.guid));
         }
     });
+
+    if (pendingLeaders.IsEmpty ()) {
+        return response;
+    }
+    bool anyFailed = false;
+    ACAPI_CallUndoableCommand ("Dimension Text Leaders", [&]() -> GSErrCode {
+        for (const PendingLeaders& pending : pendingLeaders) {
+            API_Element dim = {};
+            dim.header.guid = pending.guid;
+            GSErrCode err = ACAPI_Element_Get (&dim);
+            if (err == NoError) {
+                err = ApplyDimensionTextLeaders (dim, pending.points);
+            }
+            if (err != NoError && pending.resultIndex < createdResults.GetSize ()) {
+                createdResults[pending.resultIndex] = CreateErrorResponse (err,
+                    "The dimension was created, but its text leaders could not be set (is its layer hidden or locked?).");
+                anyFailed = true;
+            }
+        }
+        return NoError;
+    });
+    return anyFailed ? CreateElementListResponse (createdResults) : response;
 }
 
 CreateAssociativeDimensionsOnSectionCommand::CreateAssociativeDimensionsOnSectionCommand () :
@@ -7447,6 +7658,24 @@ GS::ObjectState GetDimensionDataCommand::Execute (const GS::ObjectState& paramet
                 witnessPoint.Add ("nodeType", static_cast<Int32> (dimElem.base.base.node_typ));
                 witnessPoint.Add ("nodeStatus", static_cast<Int32> (dimElem.base.base.node_status));
                 witnessPoint.Add ("nodeId", static_cast<Int64> (dimElem.base.base.node_id));
+
+                // deslab: the text this witness point carries (where it is, fixed by hand or not,
+                // on a leader line or not), to copy how the office template places short texts
+                GS::ObjectState note;
+                note.Add ("fixPos", dimElem.note.fixPos);
+                note.Add ("pos", Create2DCoordinateObjectState (dimElem.note.pos));
+                note.Add ("angle", dimElem.note.noteAngle);
+                note.Add ("useLeaderLine", dimElem.note.useLeaderLine);
+                if (dimElem.note.useLeaderLine) {
+                    note.Add ("leaderBeg", Create2DCoordinateObjectState (dimElem.note.begC));
+                    note.Add ("leaderMid", Create2DCoordinateObjectState (dimElem.note.midC));
+                    note.Add ("leaderEnd", Create2DCoordinateObjectState (dimElem.note.endC));
+                    note.Add ("anchorAtTextEnd", dimElem.note.anchorAtTextEnd);
+                    note.Add ("anchorPoint", static_cast<Int32> (dimElem.note.anchorPoint));
+                    note.Add ("leaderShape", static_cast<Int32> (dimElem.note.leaderShape));
+                    note.Add ("leaderPen", static_cast<Int32> (dimElem.note.leaderPen));
+                }
+                witnessPoint.Add ("note", note);
 
                 const API_Guid& baseGuid = dimElem.base.base.guid;
                 if (baseGuid != APINULLGuid) {
