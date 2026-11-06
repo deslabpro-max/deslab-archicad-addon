@@ -1,0 +1,359 @@
+"""deslab: the AI review step of the measured plan (Игорь 06.11.2026: «все должно обрабатываться через ИИ»).
+
+The scan helper writes scene.json, the model looks at the scene (and pictures, when there are some) and answers ONLY with
+a JSON review: openings (kind, sashes, swing), engineering items to add, clutter to drop, room names and wet zones, doubts
+for Игорь. apply_review() applies the review where it passes hard checks and lists what it rejected, so the model decides
+WHAT to build and the code keeps the drawing rules.
+
+Stdlib only. Provider: Polza.ai, OpenAI-compatible chat completions; the key is read from POLZA_API_KEY (the process
+environment, on Windows also the user scope, because setx does not reach running processes). The key is never printed,
+logged or put into an error text."""
+import base64
+import copy
+import json
+import math
+import os
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+DEFAULTS = {
+    "baseUrl": "https://api.polza.ai/api/v1",
+    "model": "anthropic/claude-sonnet-4.5",
+    "hardModel": "anthropic/claude-opus-4.1",
+    "timeout": 180,
+    "retries": 1,
+    "maxTokens": 8000,
+    "rulesFile": "правила-черчения.md",
+}
+
+
+class AIError(RuntimeError):
+    pass
+
+
+def settings(profile=None):
+    out = dict(DEFAULTS)
+    out.update((profile or {}).get("ai", {}))
+    return out
+
+
+def api_key():
+    key = os.environ.get("POLZA_API_KEY")
+    if not key and os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+                key = winreg.QueryValueEx(k, "POLZA_API_KEY")[0]
+        except OSError:
+            key = None
+    if not key:
+        raise AIError("Нет ключа: переменная POLZA_API_KEY не задана ни в процессе, ни в пользовательских переменных Windows.")
+    return key.strip()
+
+
+def _clean(text, key):
+    return str(text).replace(key, "***") if key else str(text)
+
+
+def _request(method, url, key, body=None, timeout=60):
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data, method=method, headers={
+        "Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "deslab-bridge"})
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def list_models(profile=None):
+    cfg = settings(profile)
+    key = api_key()
+    try:
+        data = _request("GET", cfg["baseUrl"].rstrip("/") + "/models", key, timeout=60)
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        raise AIError("Список моделей: " + _clean(error, key)) from None
+    return data.get("data", data)
+
+
+def image_part(path):
+    """An image as a base64 data URL part of a chat message."""
+    raw = Path(path).read_bytes()
+    kind = "png" if raw[:4] == b"\x89PNG" else "jpeg"
+    return {"type": "image_url", "image_url": {"url": f"data:image/{kind};base64," + base64.b64encode(raw).decode("ascii")}}
+
+
+def chat(messages, profile=None, model=None, json_mode=True):
+    """One chat-completions call with a timeout and one retry. Returns (text, usage)."""
+    cfg = settings(profile)
+    key = api_key()
+    body = {"model": model or cfg["model"], "messages": messages, "max_tokens": cfg["maxTokens"], "temperature": 0.1}
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    last = None
+    for attempt in range(int(cfg["retries"]) + 1):
+        try:
+            data = _request("POST", cfg["baseUrl"].rstrip("/") + "/chat/completions", key, body, timeout=cfg["timeout"])
+            return data["choices"][0]["message"]["content"], data.get("usage", {})
+        except urllib.error.HTTPError as error:
+            last = f"HTTP {error.code}: " + _clean(error.read().decode("utf-8", "replace")[:300], key)
+            if error.code < 500 and error.code != 429:
+                break
+        except (urllib.error.URLError, OSError, ValueError, KeyError) as error:
+            last = _clean(error, key)
+        time.sleep(2 + 3 * attempt)
+    raise AIError("Запрос к модели не удался: " + str(last))
+
+
+# ---------------------------------------------------------------- the review
+
+OPENING_KINDS = ("window", "door", "balconyDoor")
+MEP_KINDS = ("shaft", "sewerRiser", "waterRiser", "radiator", "panel")
+WET_KINDS = ("bathroom", "kitchen")
+
+REVIEW_SCHEMA = {
+    "openings": [{"id": "W1.1", "kind": "window|door|balconyDoor", "sashes": "1..4 (window)", "reflected": "bool (door hinges at the other jamb)",
+                  "oSide": "bool (door opens to the other side)", "confidence": "0..1", "note": "short text"}],
+    "newOpenings": [{"wallId": "W1", "id": "W1.9", "kind": "window|door|balconyDoor", "centerOffset": "m along the wall",
+                     "width": "m", "sill": "m", "height": "m", "confidence": "0..1"}],
+    "mep": [{"kind": "shaft|sewerRiser|waterRiser|radiator|panel", "id": "SH1", "label": "text",
+             "polygon": "[{x,y}] for a shaft", "at": "{x,y} for a riser or panel", "diameter": "m for a riser",
+             "start": "{x,y}", "end": "{x,y}", "depth": "m for a radiator", "confidence": "0..1"}],
+    "clutter": [{"wallId": "W7", "reason": "short text"}],
+    "rooms": [{"id": "R1", "name": "text"}],
+    "wetZones": [{"kind": "bathroom|kitchen", "polygon": "[{x,y}]"}],
+    "doubts": ["question for Игорь"],
+}
+
+MEMORY_RULES = """Правила офиса, которые нельзя нарушать (кратко):
+- Стены бетонные или газобетонные, углы 90 градусов, если в исходнике нет явного другого угла.
+- Окна ПВХ белые, открываются внутрь помещения; одна створка, если ширина меньше 0.9 м; подоконников на обмерном плане нет.
+- Входная дверь: сторону открывания берём с исходника (PDF или скан), ошибка критична; без исходника ставь сомнение в doubts, а не угадывай.
+- Подписи не лежат поверх размеров и стен; на чертеже только то, что есть на исходнике.
+- Мелкие предметы на полу (плитка, мусор) не стены: такие «стены» нужно предлагать в clutter.
+- Коммуникации: вентшахты, стояки канализации и воды, радиаторы и щиток рисуем и размеряем; трассировка это низкая стена."""
+
+
+def build_system_prompt(profile=None, rules_text=None):
+    cfg = settings(profile)
+    if rules_text is None:
+        for base in (Path.cwd(), Path(__file__).resolve().parents[3], Path.home() / "Desktop" / "Архикад"):
+            path = base / cfg["rulesFile"]
+            if path.exists():
+                rules_text = path.read_text(encoding="utf-8")
+                break
+    return ("Ты помощник архитектора-обмерщика. Тебе дают сцену обмера (метры, ось Y вверх) и иногда картинки. "
+            "Проверь сцену и предложи ПРАВКИ. Ответь ТОЛЬКО одним JSON-объектом без пояснений и без Markdown, по схеме:\n"
+            + json.dumps(REVIEW_SCHEMA, ensure_ascii=False, indent=1)
+            + "\nНе выдумывай то, чего нет в данных: если не уверен, положи вопрос в doubts, а confidence поставь ниже 0.6. "
+            "Все координаты в тех же метрах и осях, что и в сцене. Пустые разделы оставляй пустыми списками.\n\n"
+            + MEMORY_RULES + ("\n\nПолные правила черчения офиса:\n" + rules_text if rules_text else ""))
+
+
+def scene_for_model(scene, with_mep=True):
+    """The scene without the noise: what the model needs to judge walls, openings and rooms."""
+    names = ("source", "levels", "walls", "rooms", "slabs", "assumptions", "warnings") + (("mep", "tracing") if with_mep else ())
+    return json.dumps({k: scene[k] for k in names if k in scene}, ensure_ascii=False, separators=(",", ":"))
+
+
+def parse_json(text):
+    text = text.strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise AIError("Модель вернула не JSON.")
+    try:
+        return json.loads(text[start:end + 1])
+    except ValueError as error:
+        raise AIError("Модель вернула неверный JSON: " + str(error)) from None
+
+
+def ai_review(scene, images=(), profile=None, hard=False, call=chat, with_mep=True):
+    """Asks the model for a review. `call` is replaceable for tests. Returns (review, usage, raw_text).
+    TODO next step: pictures straight from the point cloud (top slices, wall elevations); for now `images` is a list of
+    file paths (a plan PNG of the helper, a PDF page rendered to PNG)."""
+    cfg = settings(profile)
+    content = [{"type": "text", "text": "Сцена обмера (JSON):\n" + scene_for_model(scene, with_mep)}]
+    content += [image_part(p) for p in images]
+    messages = [{"role": "system", "content": build_system_prompt(profile)}, {"role": "user", "content": content}]
+    text, usage = call(messages, profile, cfg["hardModel"] if hard else cfg["model"])
+    return parse_json(text), usage, text
+
+
+# --------------------------------------------------------- applying, with checks
+
+def _point_in_polygon(p, polygon):
+    x, y, inside = p["x"], p["y"], False
+    for a, b in zip(polygon, polygon[1:] + polygon[:1]):
+        if (a["y"] > y) != (b["y"] > y) and x < (b["x"] - a["x"]) * (y - a["y"]) / (b["y"] - a["y"]) + a["x"]:
+            inside = not inside
+    return inside
+
+
+def _flat_polygons(scene):
+    return [s["polygon"] for s in scene.get("slabs", []) if s.get("polygon")] or [r["polygon"] for r in scene.get("rooms", []) if r.get("polygon")]
+
+
+def _inside_flat(p, scene, tolerance=0.3):
+    polys = _flat_polygons(scene)
+    if not polys:
+        return True
+    return any(_point_in_polygon({"x": p["x"] + dx, "y": p["y"] + dy}, poly)
+               for poly in polys for dx in (-tolerance, 0, tolerance) for dy in (-tolerance, 0, tolerance))
+
+
+def _is_point(p):
+    return isinstance(p, dict) and all(isinstance(p.get(k), (int, float)) and math.isfinite(p[k]) for k in ("x", "y"))
+
+
+def _wall_length(w):
+    return math.hypot(w["end"]["x"] - w["start"]["x"], w["end"]["y"] - w["start"]["y"])
+
+
+def _confident(item, minimum):
+    try:
+        return float(item.get("confidence", 1)) >= minimum
+    except (TypeError, ValueError):
+        return False
+
+
+def apply_review(scene, review, min_confidence=0.5):
+    """Applies the review to a COPY of the scene. Returns (new_scene, report) with report = {"applied": [...],
+    "rejected": [...], "doubts": [...]}. Rules: an opening stays on its wall and does not overlap another; points are inside
+    the flat; a riser is inside a shaft; only short or tracing walls may be dropped; low confidence is not applied."""
+    new = copy.deepcopy(scene)
+    applied, rejected = [], []
+    walls = {w["id"]: w for w in new.get("walls", [])}
+    openings = {o["id"]: (w, o) for w in new.get("walls", []) for o in w.get("openings", [])}
+
+    for item in review.get("openings", []) or []:
+        oid = item.get("id")
+        if oid not in openings:
+            rejected.append(f"проём {oid}: нет такого проёма в сцене")
+            continue
+        if not _confident(item, min_confidence):
+            rejected.append(f"проём {oid}: уверенность {item.get('confidence')} ниже порога")
+            continue
+        wall, opening = openings[oid]
+        if item.get("kind") in OPENING_KINDS and item["kind"] != opening.get("kind"):
+            if {item["kind"], opening.get("kind")} <= {"door", "balconyDoor"}:
+                opening["kind"] = item["kind"]
+            else:
+                rejected.append(f"проём {oid}: смена типа {opening.get('kind')} на {item['kind']} не принимается")
+        sashes = item.get("sashes")
+        if sashes is not None:
+            if isinstance(sashes, int) and 1 <= sashes <= 4 and opening.get("kind") == "window" and not (opening["width"] < 0.9 and sashes > 1):
+                opening["sashes"] = sashes
+            else:
+                rejected.append(f"проём {oid}: створок {sashes} не принимается (окно уже 0.9 м только с одной створкой)")
+        for k in ("reflected", "oSide"):
+            if k in item and isinstance(item[k], bool) and opening.get("kind") != "window":
+                opening[k] = item[k]
+        applied.append(f"проём {oid}: " + ", ".join(f"{k}={opening[k]}" for k in ("kind", "sashes", "reflected", "oSide") if k in opening))
+
+    for item in review.get("newOpenings", []) or []:
+        wall = walls.get(item.get("wallId"))
+        try:
+            offset, width = float(item["centerOffset"]), float(item["width"])
+        except (KeyError, TypeError, ValueError):
+            rejected.append(f"новый проём {item.get('id')}: нет centerOffset или width")
+            continue
+        if not wall or item.get("kind") not in OPENING_KINDS:
+            rejected.append(f"новый проём {item.get('id')}: нет стены {item.get('wallId')} или неверный тип")
+        elif not _confident(item, min_confidence):
+            rejected.append(f"новый проём {item.get('id')}: низкая уверенность")
+        elif offset - width / 2 < 0.05 or offset + width / 2 > _wall_length(wall) - 0.05:
+            rejected.append(f"новый проём {item.get('id')}: выходит за стену {wall['id']}")
+        elif any(abs(offset - o["centerOffset"]) < (width + o["width"]) / 2 for o in wall.get("openings", [])):
+            rejected.append(f"новый проём {item.get('id')}: пересекается с другим проёмом")
+        else:
+            wall.setdefault("openings", []).append({k: item[k] for k in ("id", "kind", "width", "sill", "height", "centerOffset") if k in item})
+            applied.append(f"новый проём {item.get('id')} на {wall['id']}")
+
+    mep = list(new.get("mep", []))
+    shafts = [m for m in mep if m.get("kind") == "shaft"]
+    ids = {m.get("id") for m in mep}
+    for item in review.get("mep", []) or []:
+        kind, mid = item.get("kind"), item.get("id")
+        if kind not in MEP_KINDS or not mid or mid in ids:
+            rejected.append(f"инженерный элемент {mid}: неверный тип или повтор id")
+            continue
+        if not _confident(item, min_confidence):
+            rejected.append(f"инженерный элемент {mid}: низкая уверенность")
+            continue
+        pts = [item.get("at")] if "at" in item else item.get("polygon", []) if kind == "shaft" else [item.get("start"), item.get("end")]
+        if not pts or not all(_is_point(p) for p in pts) or not all(_inside_flat(p, new) for p in pts):
+            rejected.append(f"инженерный элемент {mid}: координаты не в квартире")
+            continue
+        if kind in ("sewerRiser", "waterRiser") and not any(s.get("polygon") and _point_in_polygon(item["at"], s["polygon"]) for s in shafts):
+            rejected.append(f"стояк {mid}: не внутри шахты")
+            continue
+        ids.add(mid)
+        mep.append(item)
+        if kind == "shaft":
+            shafts.append(item)
+        applied.append(f"{kind} {mid}")
+    new["mep"] = mep
+
+    for item in review.get("clutter", []) or []:
+        wall = walls.get(item.get("wallId"))
+        if not wall:
+            rejected.append(f"мусор {item.get('wallId')}: нет такой стены")
+        elif _wall_length(wall) > 1.0 and wall.get("kind") != "tracing":
+            rejected.append(f"мусор {wall['id']}: стена длиннее 1 м, выбрасывать нельзя без Игоря")
+        else:
+            new["walls"] = [w for w in new["walls"] if w["id"] != wall["id"]]
+            applied.append(f"убрана стена {wall['id']} (мусор): {item.get('reason', '')}")
+
+    rooms = {r["id"]: r for r in new.get("rooms", [])}
+    for item in review.get("rooms", []) or []:
+        if item.get("id") in rooms and isinstance(item.get("name"), str) and item["name"].strip():
+            rooms[item["id"]]["name"] = item["name"].strip()
+            applied.append(f"помещение {item['id']}: «{item['name'].strip()}»")
+        else:
+            rejected.append(f"помещение {item.get('id')}: нет такого или пустое имя")
+    wet = []
+    for item in review.get("wetZones", []) or []:
+        poly = item.get("polygon")
+        if item.get("kind") in WET_KINDS and isinstance(poly, list) and len(poly) >= 3 and all(_is_point(p) and _inside_flat(p, new) for p in poly):
+            wet.append(item)
+            applied.append(f"мокрая зона {item['kind']}")
+        else:
+            rejected.append(f"мокрая зона {item.get('kind')}: неверные данные или не в квартире")
+    if wet:
+        new["wetZones"] = wet
+    return new, {"applied": applied, "rejected": rejected, "doubts": list(review.get("doubts", []) or [])}
+
+
+def main(argv=None):
+    """python -m deslab_bridge.ai models | review <scene.json> [--hard] [--images a.png b.png] [--out review.json]
+    Prints token use; never prints the key. `review` only asks and applies in memory, it builds nothing."""
+    import argparse
+    p = argparse.ArgumentParser(description="AI review of a measured-plan scene (Polza.ai).")
+    p.add_argument("command", choices=("models", "review"))
+    p.add_argument("scene", nargs="?")
+    p.add_argument("--hard", action="store_true", help="the hard model (Opus) instead of the default one")
+    p.add_argument("--images", nargs="*", default=[])
+    p.add_argument("--no-mep", action="store_true", help="do not send the existing mep items (a blind test)")
+    p.add_argument("--out", help="where to save the review JSON")
+    a = p.parse_args(argv)
+    profile = json.loads((Path(__file__).resolve().parent.parent / "office-profile.json").read_text(encoding="utf-8"))
+    try:
+        if a.command == "models":
+            for m in list_models(profile):
+                print(m.get("id"))
+            return 0
+        scene = json.loads(Path(a.scene).read_text(encoding="utf-8"))
+        started = time.time()
+        review, usage, _ = ai_review(scene, a.images, profile, a.hard, with_mep=not a.no_mep)
+        new, report = apply_review(scene, review)
+        print(f"{time.time() - started:.1f} с, токены: {usage}")
+        print("применено:", len(report["applied"]), "отклонено:", len(report["rejected"]), "сомнений:", len(report["doubts"]))
+        if a.out:
+            Path(a.out).write_text(json.dumps({"review": review, "report": report, "usage": usage}, ensure_ascii=False, indent=1), encoding="utf-8")
+        return 0
+    except AIError as error:
+        print("ОШИБКА:", error)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

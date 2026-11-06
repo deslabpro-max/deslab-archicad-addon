@@ -2,6 +2,15 @@
   "format": "deslab.profile/1",
   "name": "deslab, шаблон «Антон Крючков.pln», обмерный план",
   "comment": "Правила черчения в коде. Источник: Архикад\\правила-черчения.md и template-notes.md. Новое замечание Игоря = правка здесь.",
+  "ai": {
+    "comment": "Polza.ai (OpenAI-совместимый). Идентификаторы моделей надо сверить со списком /models: `python -m deslab_bridge.ai models`. Ключ в переменной POLZA_API_KEY, не здесь.",
+    "baseUrl": "https://api.polza.ai/api/v1",
+    "model": "anthropic/claude-sonnet-4.5",
+    "hardModel": "anthropic/claude-opus-4.1",
+    "timeout": 180,
+    "retries": 1,
+    "maxTokens": 8000
+  },
   "layouts": {
     "comment": "Игорь 06.11.2026: чертёж встаёт на листы шаблона по максимуму. frame: область плана на листах шаблона, метры на бумаге (как у плана на листах 06-14). margin: запас вокруг плана, м модели.",
     "frame": {"xMin": 0.034, "xMax": 0.326, "yMin": 0.04, "yMax": 0.296},
