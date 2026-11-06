@@ -34,7 +34,7 @@ REVIEW = {
     ],
     "mep": [
         {"kind": "sewerRiser", "id": "K1", "at": {"x": 0.2, "y": 0.8}, "diameter": 0.11, "confidence": 0.9},   # applied: inside SH1
-        {"kind": "sewerRiser", "id": "K2", "at": {"x": 3.0, "y": 2.0}, "diameter": 0.11, "confidence": 0.9},   # rejected: not in a shaft
+        {"kind": "sewerRiser", "id": "K2", "at": {"x": 3.0, "y": 2.0}, "diameter": 0.11, "confidence": 0.9},   # applied: a riser may stand outside a shaft (kv94 K3)
         {"kind": "radiator", "id": "RD1", "start": {"x": 1, "y": 3.9}, "end": {"x": 2, "y": 3.9}, "depth": 0.07, "confidence": 0.9},  # applied
         {"kind": "radiator", "id": "RD2", "start": {"x": 9, "y": 9}, "end": {"x": 10, "y": 9}, "depth": 0.07, "confidence": 0.9},      # rejected: outside the flat
         {"kind": "boiler", "id": "B1", "at": {"x": 1, "y": 1}, "confidence": 0.9},                                                       # rejected: kind
@@ -57,15 +57,15 @@ def test_apply_review():
     assert "sashes" not in new["walls"][0]["openings"][1]
     assert new["walls"][0]["openings"][0]["kind"] == "window"
     assert [o["id"] for o in new["walls"][1]["openings"]] == ["W2.1", "W2.2"]
-    assert {m["id"] for m in new["mep"]} == {"SH1", "K1", "RD1"}
+    assert {m["id"] for m in new["mep"]} == {"SH1", "K1", "K2", "RD1"}
     assert [w["id"] for w in new["walls"]] == ["W1", "W2"]
     assert new["rooms"][0]["name"] == "Гостиная"
     assert len(new["wetZones"]) == 1
     assert report["doubts"] == ["Входная дверь открывается внутрь?"]
     text = "\n".join(report["rejected"])
-    for part in ("NOPE", "W1.2", "W1.1", "W2.3", "W1.9", "K2", "RD2", "B1", "SH1", "W1:", "R7"):
+    for part in ("NOPE", "W1.2", "W1.1", "W2.3", "W1.9", "RD2", "B1", "SH1", "W1:", "R7"):
         assert part in text or part.rstrip(":") in text, (part, text)
-    assert len(report["rejected"]) == 13, len(report["rejected"])
+    assert len(report["rejected"]) == 12, len(report["rejected"])
 
 
 def test_parse_json_and_prompt():
@@ -91,6 +91,43 @@ def test_ai_review_with_fake_model():
     assert review["doubts"] == ["?"] and seen["model"] == "m1" and "W1.1" in seen["user"]
     ai.ai_review(SCENE, profile={"ai": {"model": "m1", "hardModel": "m2"}}, hard=True, call=fake)
     assert seen["model"] == "m2"
+
+
+KV94_DOOR = {
+    "walls": [{"id": "W3", "start": {"x": -0.1, "y": 10.0745}, "end": {"x": -0.1, "y": -0.1}, "thickness": 0.2, "kind": "interior",
+               "openings": [{"id": "W3.1", "kind": "door", "width": 1.2, "sill": 0.0, "height": 2.1, "centerOffset": 8.7835}]}],
+    "rooms": [{"id": "R1", "name": "Помещение 1",
+               "polygon": [{"x": 0, "y": 0}, {"x": 11.752, "y": 0}, {"x": 11.752, "y": 9.854}, {"x": 0, "y": 9.854}]}],
+    "slabs": [],
+}
+
+
+def test_door_swing_w31():
+    # the confirmed kv94 door: hinge at the wall's end, opens out -> reflected True, oSide False
+    new, report = ai.apply_review(KV94_DOOR, {"openings": [{"id": "W3.1", "swing": {"hinge": "end", "opens": "out"}, "confidence": 0.8}]})
+    door = new["walls"][0]["openings"][0]
+    assert (door["reflected"], door["oSide"]) == (True, False), (door, report)
+    # the other three combinations flip exactly one flag each
+    for hinge, opens, expected in (("start", "out", (False, False)), ("end", "into", (True, True)), ("start", "into", (False, True))):
+        new, _ = ai.apply_review(KV94_DOOR, {"openings": [{"id": "W3.1", "swing": {"hinge": hinge, "opens": opens}, "confidence": 0.8}]})
+        door = new["walls"][0]["openings"][0]
+        assert (door["reflected"], door["oSide"]) == expected, (hinge, opens, door)
+    # a wall that is not next to the flat: the side cannot be told, nothing is applied
+    far = json.loads(json.dumps(KV94_DOOR))
+    far["walls"][0]["start"], far["walls"][0]["end"] = {"x": 50, "y": 10}, {"x": 50, "y": 0}
+    new, report = ai.apply_review(far, {"openings": [{"id": "W3.1", "swing": {"hinge": "end", "opens": "out"}, "confidence": 0.8}]})
+    assert "reflected" not in new["walls"][0]["openings"][0] and report["rejected"]
+
+
+def test_risers_in_shaft_need_less_confidence():
+    scene = {"walls": [], "rooms": [{"id": "R1", "polygon": [{"x": 0, "y": 0}, {"x": 6, "y": 0}, {"x": 6, "y": 4}, {"x": 0, "y": 4}]}],
+             "slabs": [], "mep": [{"kind": "shaft", "id": "SH1", "polygon": [{"x": 0, "y": 0.5}, {"x": 0.6, "y": 0.5}, {"x": 0.6, "y": 1.2}, {"x": 0, "y": 1.2}]}]}
+    review = {"mep": [{"kind": "waterRiser", "id": "B1", "at": {"x": 0.3, "y": 0.8}, "confidence": 0.35},
+                      {"kind": "radiator", "id": "RD1", "start": {"x": 1, "y": 3.9}, "end": {"x": 2, "y": 3.9}, "confidence": 0.35}]}
+    new, report = ai.apply_review(scene, review)
+    ids = {m["id"] for m in new["mep"]}
+    assert "B1" in ids and "RD1" not in ids, (ids, report)
+    assert next(m for m in new["mep"] if m["id"] == "B1")["diameter"] == 0.05
 
 
 def test_key_never_in_errors():

@@ -111,13 +111,16 @@ MEP_KINDS = ("shaft", "sewerRiser", "waterRiser", "radiator", "panel")
 WET_KINDS = ("bathroom", "kitchen")
 
 REVIEW_SCHEMA = {
-    "openings": [{"id": "W1.1", "kind": "window|door|balconyDoor", "sashes": "1..4 (window)", "reflected": "bool (door hinges at the other jamb)",
-                  "oSide": "bool (door opens to the other side)", "confidence": "0..1", "note": "short text"}],
+    "openings": [{"id": "W1.1", "kind": "window|door|balconyDoor", "sashes": "1..4 (window)",
+                  "swing": {"hinge": "start|end (the jamb with the hinge: the start or the end of the wall segment, as the wall runs start to end)",
+                            "opens": "into|out (into the flat's room or outward, to the stairwell / outside)"},
+                  "confidence": "0..1", "note": "short text"}],
     "newOpenings": [{"wallId": "W1", "id": "W1.9", "kind": "window|door|balconyDoor", "centerOffset": "m along the wall",
                      "width": "m", "sill": "m", "height": "m", "confidence": "0..1"}],
     "mep": [{"kind": "shaft|sewerRiser|waterRiser|radiator|panel", "id": "SH1", "label": "text",
              "polygon": "[{x,y}] for a shaft", "at": "{x,y} for a riser or panel", "diameter": "m for a riser",
              "start": "{x,y}", "end": "{x,y}", "depth": "m for a radiator", "confidence": "0..1"}],
+    "_panelNote": "a panel (щиток) may be given as a point `at` on the wall: the code makes the segment",
     "clutter": [{"wallId": "W7", "reason": "short text"}],
     "rooms": [{"id": "R1", "name": "text"}],
     "wetZones": [{"kind": "bathroom|kitchen", "polygon": "[{x,y}]"}],
@@ -130,7 +133,12 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
 - Входная дверь: сторону открывания берём с исходника (PDF или скан), ошибка критична; без исходника ставь сомнение в doubts, а не угадывай.
 - Подписи не лежат поверх размеров и стен; на чертеже только то, что есть на исходнике.
 - Мелкие предметы на полу (плитка, мусор) не стены: такие «стены» нужно предлагать в clutter.
-- Коммуникации: вентшахты, стояки канализации и воды, радиаторы и щиток рисуем и размеряем; трассировка это низкая стена."""
+- Коммуникации: вентшахты, стояки канализации и воды, радиаторы и щиток рисуем и размеряем; трассировка это низкая стена.
+- Обозначения на плане дизайнера: вентшахта это контур с внутренним проёмом у стены; рядом со стояком канализации (круг около 110-160 мм) внутри шахты стоят
+  маленькие кружки 30-50 мм: это стояки воды (ХВС/ГВС), их нужно выдать как waterRiser (kind "waterRiser", at, diameter около 0.05), каждый кружок отдельным элементом.
+  Радиатор это тонкий прямоугольник вдоль стены (start, end, depth около 0.07), щиток (panel) прямоугольник у стены.
+- Открывание двери: не придумывай флаги Archicad, а скажи по картинке, у какого косяка петля (hinge: start или end, считая вдоль стены от её начала к концу в сцене)
+  и куда открывается (opens: into или out). Перевод в флаги делает код."""
 
 
 def build_system_prompt(profile=None, rules_text=None):
@@ -211,12 +219,64 @@ def _near_polygon(p, polygon, tolerance=0.4):
                for dx in (-tolerance, 0, tolerance) for dy in (-tolerance, 0, tolerance))
 
 
+def _panel_on_wall(scene, item):
+    """deslab: the builder wants a panel as a segment ON a wall face (start, end, depth), like the radiators. The model gives a
+    point, so the code finds the nearest wall, drops the point on its face on the side where the point lies and makes a 0.32 m
+    segment (the size of kv94's panel)."""
+    p = item["at"]
+    best = None
+    for w in scene.get("walls", []):
+        ax, ay, bx, by = w["start"]["x"], w["start"]["y"], w["end"]["x"], w["end"]["y"]
+        length = math.hypot(bx - ax, by - ay)
+        if not length:
+            continue
+        ux, uy = (bx - ax) / length, (by - ay) / length
+        along = (p["x"] - ax) * ux + (p["y"] - ay) * uy
+        across = -(p["x"] - ax) * uy + (p["y"] - ay) * ux
+        if 0 <= along <= length and (best is None or abs(across) < abs(best[0])):
+            best = (across, along, ax, ay, ux, uy, w.get("thickness", 0.2))
+    if best is None or abs(best[0]) > 0.6:
+        return None
+    across, along, ax, ay, ux, uy, thickness = best
+    side = 1 if across > 0 else -1
+    nx, ny = -uy * side, ux * side
+    fx, fy = ax + ux * along + nx * thickness / 2, ay + uy * along + ny * thickness / 2
+    half = 0.16
+    out = {k: v for k, v in item.items() if k != "at"}
+    out.update(start={"x": round(fx - ux * half, 3), "y": round(fy - uy * half, 3)}, end={"x": round(fx + ux * half, 3), "y": round(fy + uy * half, 3)})
+    return out
+
+
 def _is_point(p):
     return isinstance(p, dict) and all(isinstance(p.get(k), (int, float)) and math.isfinite(p[k]) for k in ("x", "y"))
 
 
 def _wall_length(w):
     return math.hypot(w["end"]["x"] - w["start"]["x"], w["end"]["y"] - w["start"]["y"])
+
+
+def swing_flags(scene, wall, swing):
+    """deslab: the model says WHERE the hinge is and which way the door opens; the code turns that into Archicad's
+    `reflected` (hinge at the wall's end instead of its start) and `oSide` (opens to the left of the wall direction instead of
+    the right). Calibrated on the one door Игорь confirmed on kv94: W3.1, wall running south (start y=10.07, end y=-0.1),
+    the flat on its left, the door opens OUT (to the right) with the hinge at the wall's END = reflected True, oSide False.
+    Returns (reflected, oSide) or None when the flat's side of the wall cannot be told."""
+    if not isinstance(swing, dict) or swing.get("hinge") not in ("start", "end") or swing.get("opens") not in ("into", "out"):
+        return None
+    dx, dy = wall["end"]["x"] - wall["start"]["x"], wall["end"]["y"] - wall["start"]["y"]
+    length = math.hypot(dx, dy)
+    if length == 0:
+        return None
+    mx, my = (wall["start"]["x"] + wall["end"]["x"]) / 2, (wall["start"]["y"] + wall["end"]["y"]) / 2
+    left = {"x": mx - dy / length * 0.5, "y": my + dx / length * 0.5}
+    right = {"x": mx + dy / length * 0.5, "y": my - dx / length * 0.5}
+    polys = _flat_polygons(scene)
+    in_left, in_right = (any(_point_in_polygon(p, poly) for poly in polys) for p in (left, right))
+    if in_left == in_right:
+        return None
+    flat_on_left = in_left
+    opens_left = flat_on_left if swing["opens"] == "into" else not flat_on_left
+    return swing["hinge"] == "end", bool(opens_left)
 
 
 def _confident(item, minimum):
@@ -226,7 +286,7 @@ def _confident(item, minimum):
         return False
 
 
-def apply_review(scene, review, min_confidence=0.5):
+def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
     """Applies the review to a COPY of the scene. Returns (new_scene, report) with report = {"applied": [...],
     "rejected": [...], "doubts": [...]}. Rules: an opening stays on its wall and does not overlap another; points are inside
     the flat; a riser is inside a shaft; only short or tracing walls may be dropped; low confidence is not applied."""
@@ -255,8 +315,14 @@ def apply_review(scene, review, min_confidence=0.5):
                 opening["sashes"] = sashes
             else:
                 rejected.append(f"проём {oid}: створок {sashes} не принимается (окно уже 0.9 м только с одной створкой)")
+        if "swing" in item and opening.get("kind") != "window":
+            flags = swing_flags(new, wall, item["swing"])
+            if flags is None:
+                rejected.append(f"проём {oid}: открывание {item['swing']} не переводится (неизвестна сторона квартиры или неверные значения)")
+            else:
+                opening["reflected"], opening["oSide"] = flags
         for k in ("reflected", "oSide"):
-            if k in item and isinstance(item[k], bool) and opening.get("kind") != "window":
+            if k in item and isinstance(item[k], bool) and opening.get("kind") != "window" and "swing" not in item:
                 opening[k] = item[k]
         applied.append(f"проём {oid}: " + ", ".join(f"{k}={opening[k]}" for k in ("kind", "sashes", "reflected", "oSide") if k in opening))
 
@@ -287,17 +353,35 @@ def apply_review(scene, review, min_confidence=0.5):
         if kind not in MEP_KINDS or not mid or mid in ids:
             rejected.append(f"инженерный элемент {mid}: неверный тип или повтор id")
             continue
-        if not _confident(item, min_confidence):
+        # deslab: risers need not stand in a shaft (kv94 K3 is 2.5 m from any), so the only hard check is «inside the flat»;
+        # near a shaft (0.8 m) the confidence bar is lower, because the circles there are small and easy to read wrongly
+        in_shaft = kind in ("sewerRiser", "waterRiser") and _is_point(item.get("at")) and any(
+            s.get("polygon") and _near_polygon(item["at"], s["polygon"], 0.8) for s in shafts)
+        if not _confident(item, shaft_confidence if in_shaft else min_confidence):  # deslab: risers inside a shaft need less certainty
             rejected.append(f"инженерный элемент {mid}: низкая уверенность")
             continue
+        if kind == "panel" and "at" in item and "start" not in item:
+            item = _panel_on_wall(new, item)
+            if item is None:
+                rejected.append(f"щиток {mid}: рядом нет стены")
+                continue
         pts = [item.get("at")] if "at" in item else item.get("polygon", []) if kind == "shaft" else [item.get("start"), item.get("end")]
         if not pts or not all(_is_point(p) for p in pts) or not all(_inside_flat(p, new) for p in pts):
             rejected.append(f"инженерный элемент {mid}: координаты не в квартире")
             continue
-        if kind in ("sewerRiser", "waterRiser") and not any(s.get("polygon") and _near_polygon(item["at"], s["polygon"]) for s in shafts):
-            rejected.append(f"стояк {mid}: не в шахте и не ближе 0.4 м к ней")
-            continue
         ids.add(mid)
+        item = dict(item)
+        item.pop("confidence", None)
+        if kind == "shaft":
+            item.setdefault("thickness", 0.1)
+        elif kind in ("sewerRiser", "waterRiser"):
+            item.setdefault("diameter", 0.11 if kind == "sewerRiser" else 0.05)
+        elif kind == "radiator":
+            item.setdefault("depth", 0.07)
+        elif kind == "panel":
+            item.setdefault("depth", 0.158)
+            item.setdefault("height", 0.4)
+            item.setdefault("elevation", 1.6)
         mep.append(item)
         if kind == "shaft":
             shafts.append(item)

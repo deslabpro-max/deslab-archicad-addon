@@ -50,6 +50,13 @@ def load_scene(preset, root):
             repo = Path(__file__).resolve().parent.parent.parent
             mep_path = repo / mep_path if (repo / mep_path).exists() else root / mep_path
         scene["mep"] = _load(mep_path)
+    if preset.get("aiReview"):
+        # deslab: the scene WITHOUT its hand-made mep plus the saved AI review applied through the checks (no new paid call)
+        from . import ai
+        review_path = root / preset["aiReview"]
+        scene = {k: v for k, v in scene.items() if k not in ("mep", "tracing")}
+        scene, report = ai.apply_review(scene, _load(review_path)["review"])
+        scene["aiReport"] = report
     return scene
 
 
@@ -160,6 +167,8 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
             raise SystemExit(f"Облако не разобрано: {found['error']}")
     scene = load_scene(preset, root)
     deleted = 0 if keep else delete_previous(ac, state_path)
+    for other in preset.get("replaces", []):  # deslab: «kv94ai» takes the place of «kv94» at the same origin
+        deleted += 0 if keep else delete_previous(ac, out_dir / f"rebuild-{other}.json")
     before = _all_guids(ac)
     # deslab: the planned texts and lines of each plan, for the check below
     planned = []
