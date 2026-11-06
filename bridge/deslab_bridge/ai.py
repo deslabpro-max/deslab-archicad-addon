@@ -392,6 +392,11 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
             item.setdefault("depth", 0.158)
             item.setdefault("height", 0.4)
             item.setdefault("elevation", 1.6)
+        # deslab: the labels of kv94's own drawing are short and few: «Вытяжка», «Стояк канализации», «Щиток»; radiators and water risers
+        # have none (the model's «Радиатор 800», «шахта из пазогребневых блоков (левая стена)» ran over the dimensions)
+        item["label"] = {"shaft": "Вытяжка", "sewerRiser": "Стояк канализации", "panel": "Щиток"}.get(kind)
+        if item["label"] is None:
+            item.pop("label")
         mep.append(item)
         if kind == "shaft":
             shafts.append(item)
