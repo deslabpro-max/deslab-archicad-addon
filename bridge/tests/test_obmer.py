@@ -231,6 +231,8 @@ class FakeArchicad:
         self.log.append((command, 0))
         if command == "GetAttributesByType" and params["attributeType"] == "Surface":
             return {"attributes": [{"name": "Бетон - Гладкий", "attributeId": {"guid": "S0"}}, {"name": "Краска - Белая", "attributeId": {"guid": "S1"}}]}
+        if command == "GetAttributesByType" and params["attributeType"] == "BuildingMaterial":
+            return {"attributes": [{"name": "Штукатурка - Гипсовая", "attributeId": {"guid": "BM1"}}]}
         if command == "GetAttributesByType":
             return {"attributes": [{"name": n, "index": i + 10, "attributeId": {"guid": f"L{i}"}}
                                    for i, n in enumerate(sorted(set(PROFILE["layers"].values())))]}
@@ -315,6 +317,17 @@ def test_engineering_and_tracing():
     texts = ["".join(r["text"] for r in l["runs"]) for l in calls["CreateLabels"]["labelsData"]]
     assert "Вытяжка" in texts and "Стояк канализации" in texts and "Трассировка h=250" in texts, texts
     assert not report["errors"], report["errors"]
+    # Игорь 06.11.2026: shafts in the template's gypsum plaster, not the default orange material
+    mods = [p for c, p in ac.calls if c == "ModifyWalls" and any("buildingMaterialId" in w for w in p["wallsWithDetails"])]
+    assert mods and all(w["buildingMaterialId"] == {"guid": "BM1"} for w in mods[0]["wallsWithDetails"])
+    # two plans: the radiators' chain first at the wall, the overall size of the wall after it,
+    # both on the engineering plan; the room chains on the measured plan
+    chains = obmer.plan_dimension_chains(scene, PROFILE)
+    rad = [c for c in chains if c["edge"] == "оборуд.0"][0]
+    whole = [c for c in chains if c["edge"] == "оборуд.0.всего"][0]
+    room = [c for c in chains if c["edge"] == 0][0]
+    assert rad["plan"] == whole["plan"] == "eng" and room["plan"] == "obmer"
+    assert rad["offset"] < whole["offset"], (rad["offset"], whole["offset"])
 
 
 def test_origin_moves_model_and_drafting():

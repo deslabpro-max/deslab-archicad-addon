@@ -5,6 +5,7 @@ first row of blocks of new walls (tracing), which marks the wet points.
 Scene keys (all optional):
   "mep": [
     {"kind": "shaft", "id": "SH1", "polygon": [...], "thickness": 0.1, "label": "Вытяжка"},
+        (optional "walls": [[{x, y}, {x, y}], ...]: the wall axes as drawn, instead of the outline rule),
         the OUTER outline of the shaft box; its edges that lie on a room face (the shaft stands
         against that wall) get no wall, the others get a wall of `thickness` inside the outline;
     {"kind": "sewerRiser" | "waterRiser", "id": "K1", "at": {x, y}, "diameter": 0.16, "label": "..."},
@@ -69,6 +70,16 @@ def shaft_walls(scene, height=None):
     height = height or scene.get("levels", {}).get("ceiling") or 2.7
     walls = []
     for s in (m for m in scene.get("mep", []) if m.get("kind") == "shaft"):
+        t = float(s.get("thickness", 0.1))
+        if s.get("walls"):
+            # deslab: the shaft's walls given by their axes, as drawn in Игорь's example (kv94: the
+            # sewer box of the left shaft is open to the room at the top, the water risers stand
+            # inside it, not on a wall, 06.11.2026)
+            for k, (a, b) in enumerate(s["walls"], 1):
+                walls.append({"id": f"{s['id']}.{k}", "start": _xy(_pt(a)), "end": _xy(_pt(b)), "thickness": t,
+                              "height": float(s.get("height", height)), "kind": "partition", "shaft": s["id"],
+                              "openings": []})
+            continue
         poly = [_pt(p) for p in s["polygon"]]
         n = len(poly)
         ccw = polygon_area(poly) > 0
@@ -279,9 +290,18 @@ def plan_extra_chains(scene, profile, chains):
                 gap, room, e, pts = best
                 on_edge.setdefault((room["id"], e[0]), (room, e, []))[2].extend(pts)
                 along_wall.add((m["id"], 0 if abs(e[3][0]) > 0.999 else 1))
+    split = profile.get("mep", {}).get("splitViews")
     for (rid, _), (room, (i, p, q, u, n), pts) in sorted(on_edge.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
         own = [c for c in chains if c["room"] == rid and i in c.get("edges", [c["edge"]])]
         off = (max(c["offset"] for c in own) if own else base) + max(step, 2 * band + 0.02)
+        if split:
+            # deslab: on the engineering plan the radiators' chain comes FIRST, next to the wall, and
+            # the overall size of the wall after it (Игорь 06.11.2026)
+            off = base
+            whole = _chain([p, q], u, n, _add(p, _mul(n, base + max(step, 2 * band + 0.02))), rid, f"оборуд.{i}.всего",
+                           base + max(step, 2 * band + 0.02), extra="edge")
+            if whole:
+                out.append(whole)
         # from the nearer corner to the farthest item only (run kv94h: a chain corner to corner ran
         # through a window label at the far end)
         ts = [_dot(_sub(x, p), u) for x in pts]
@@ -336,6 +356,7 @@ def plan_extra_chains(scene, profile, chains):
                     out.append(ch)
                 break
     # tracing: length and the distance from the nearest parallel room face
+    pos_chains = []
     for t in scene.get("tracing", []):
         a, b = _pt(t["start"]), _pt(t["end"])
         u = _unit(_sub(b, a))
@@ -374,9 +395,27 @@ def plan_extra_chains(scene, profile, chains):
             near = _sub(mid, _mul(en, half))
             far = _add(mid, _mul(en, half))
             pos = _add(mid, _mul(u, min(0.4, _len(_sub(b, a)) / 4)))
-            ch = _chain([face, near, far], en, u, pos, room["id"], f"{t['id']}.pos", 0.0)
-            if ch:
-                out.append(ch)
+            # deslab: strips placed from the same face on one line share one chain (JK v7: the chains of
+            # T2 and T5, T3 and T6 lay on top of each other, Игорь 06.11.2026)
+            pos_chains.append({"face": face, "near": near, "far": far, "en": en, "u": u, "pos": pos, "room": room["id"],
+                               "id": t["id"]})
+    groups = []
+    for c in pos_chains:
+        for g in groups:
+            h = g[0]
+            if h["room"] == c["room"] and _dot(h["en"], c["en"]) > 0.99 and _len(_sub(h["face"], c["face"])) < 0.6                     and abs(_dot(_sub(h["face"], c["face"]), h["en"])) < 0.005                     and abs(_dot(_sub(h["pos"], c["pos"]), _left(h["en"]))) < 1.0:
+                g.append(c)
+                break
+        else:
+            groups.append([c])
+    for g in groups:
+        h = g[0]
+        pts = [h["face"]] + [p for c in g for p in (c["near"], c["far"])]
+        ch = _chain(pts, h["en"], h["u"], h["pos"], h["room"], "+".join(c["id"] for c in g) if len(g) > 1 else f"{h['id']}.pos", 0.0)
+        if ch:
+            if len(g) > 1:
+                ch["edge"] = "+".join(c["id"] for c in g) + ".pos"
+            out.append(ch)
     return out
 
 
