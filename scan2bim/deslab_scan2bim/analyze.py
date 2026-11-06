@@ -585,6 +585,11 @@ def find_tracing(pts, floor, walls, res=RES):
                 continue
             band = mids[:, max(c - 2, 0):c + 3]
             centre_col = img[:, max(c - 1, 0):c + 2].any(axis=1)
+            # ...and with one side of it clear 10-16 cm off the middle (inside a pile both sides
+            # are full: run JK v5, T1 ran on 1 m into low stuff)
+            side_l = img[:, max(c - 8, 0):max(c - 4, 0)].any(axis=1) if c >= 5 else np.zeros(rows, bool)
+            side_r = img[:, c + 5:c + 9].any(axis=1)
+            centre_col &= ~(side_l & side_r)
             for a, b in _runs(band.any(axis=1), 12, 15):
                 # run on while the strip's own cells go on, where clutter beside it makes the rows
                 # too wide (run JK v4: T1 lost 1.2 m next to low stuff, T8 and T10 too)
@@ -621,9 +626,18 @@ def find_tracing(pts, floor, walls, res=RES):
                 # the block faces from the points (cells give the width to a cell or two)
                 e0, e1 = np.percentile(ccs[sel], [1, 99])
                 cpos, wd = float((e0 + e1) / 2), float(e1 - e0)
-                if 0.06 <= wd <= 0.2 and 0.12 <= top <= 0.6:
+                # a block row 0.18-0.4 m high (run JK v5: a sill strip 0.13-0.15 m and a pile 0.5 m
+                # along a wall came out as tracing)
+                if 0.06 <= wd <= 0.2 and 0.18 <= top <= 0.4:
                     strips.append([axis, cpos, t0, t1, wd, top])
             used[max(c - 3, 0):c + 4] = True
+    # one strip found twice (two peaks of the profile a few cells apart): keep the longer
+    strips.sort(key=lambda s_: -(s_[3] - s_[2]))
+    kept = []
+    for s_ in strips:
+        if not any(k[0] == s_[0] and abs(k[1] - s_[1]) < 0.06 and min(k[3], s_[3]) - max(k[2], s_[2]) > 0.1 for k in kept):
+            kept.append(s_)
+    strips = kept
     # ends: on to a wall face up to 0.25 m off, and onto the axis of a square strip they meet
     for s_ in strips:
         axis, c, a, b, wd, top = s_

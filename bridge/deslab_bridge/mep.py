@@ -16,7 +16,7 @@ Scene keys (all optional):
         the axis of a first row of blocks (the helper finds them in the cloud)
 """
 
-from .obmer import (_add, _box_hits, _dot, _inside, _left, _len, _mul, _pt, _rect_of_segment, _seg_hits_box,
+from .obmer import (_add, _box_hits, _seg_box, _dot, _inside, _left, _len, _mul, _pt, _rect_of_segment, _seg_hits_box,
                     _sub, _unit, _xy, polygon_area)
 
 import math
@@ -411,9 +411,30 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
             dot = _mul(_add(_pt(m["start"]), _pt(m["end"])), 0.5)
         items.append((m["id"], m["label"], dot))
     tr_text = profile.get("mep", {}).get("tracingLabel", "Трассировка h={height_mm}")
-    for t in scene.get("tracing", []):
+    # one label per joined run of tracing (run JK v5: a label on each of 16 strips piled up)
+    strips = scene.get("tracing", [])
+    group = list(range(len(strips)))
+
+    def root(k):
+        while group[k] != k:
+            k = group[k]
+        return k
+
+    def touches(a, b):
+        pa, pb = _pt(a["start"]), _pt(a["end"])
+        qa, qb = _pt(b["start"]), _pt(b["end"])
+        return any(_seg_hits_box(qa, qb, _rect_of_segment(p, p, 0.15)) for p in (pa, pb)) or \
+            any(_seg_hits_box(pa, pb, _rect_of_segment(p, p, 0.15)) for p in (qa, qb))
+    for i, a in enumerate(strips):
+        for j in range(i + 1, len(strips)):
+            if touches(a, strips[j]):
+                group[root(j)] = root(i)
+    for k in sorted({root(i) for i in range(len(strips))}):
+        members = [t for i, t in enumerate(strips) if root(i) == k]
+        t = max(members, key=lambda t: _len(_sub(_pt(t["end"]), _pt(t["start"]))))
         dot = _mul(_add(_pt(t["start"]), _pt(t["end"])), 0.5)
-        items.append((t["id"], tr_text.format(height_mm=int(round(float(t.get("height", 0.25)) * 1000))), dot))
+        h = max(float(m.get("height", 0.25)) for m in members)
+        items.append((t["id"], tr_text.format(height_mm=int(round(h * 100)) * 10), dot))
     placed = list(taken)
     # door swings (a square of the leaf width on both sides): no label text or leader over them
     # (run kv94h: «Щиток электрический» lay across the entrance door arc)
@@ -450,6 +471,9 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     cost += 20 * sum(_seg_hits_box(dot, mid, w) for w in placed)
                     cost += 100 * sum(_box_hits(box, w) for w in swings + others)
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in others)
+                    # a long leader across dimension chains is worse than a short one (run kv94j:
+                    # the panel label ran 3 m through the hall across three chains)
+                    cost += 50 * sum(_seg_box(_add(dot, _mul(d, 0.1)), mid, w) for w in obstacles["dims"])
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in swings)
                     if not all(_in_rooms(rooms, c) for c in ((box[0], box[1]), (box[2], box[3]))):
                         cost += 150  # the labels stay inside the flat
