@@ -436,7 +436,8 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
 
 bool ReadPackage (const GS::UniString& path, GS::ObjectState& package)
 {
-    IO::File file (IO::Location (path));
+    const IO::Location location (path);
+    IO::File file (location);
     if (file.Open (IO::File::OpenMode::ReadMode) != NoError) {
         return false;
     }
@@ -624,7 +625,8 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
         }
         counts.Add (PackageKey (typeID), count);
     }
-    IO::File file (IO::Location (packagePath), IO::File::OnNotFound::Create);
+    const IO::Location location (packagePath);
+    IO::File file (location, IO::File::OnNotFound::Create);
     GSErrCode err = file.Open (IO::File::OpenMode::WriteEmptyMode);
     if (err == NoError) {
         err = JSON::CreateFromObjectState (package, file, true);
