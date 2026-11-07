@@ -159,7 +159,7 @@ bool RemapReferences (API_Attribute& attribute, API_AttributeDefExt& defs, std::
 // and the standard file must be the same project (or copies of it).
 bool FromPackage (API_AttrTypeID typeID)
 {
-    return typeID == API_LayerID || typeID == API_MaterialID || typeID == API_BuildingMaterialID;
+    return typeID == API_LayerID || typeID == API_MaterialID || typeID == API_BuildingMaterialID || typeID == API_LayerCombID;
 }
 
 const char* PackageKey (API_AttrTypeID typeID)
@@ -168,6 +168,7 @@ const char* PackageKey (API_AttrTypeID typeID)
         case API_LayerID:            return "layers";
         case API_MaterialID:         return "surfaces";
         case API_BuildingMaterialID: return "buildingMaterials";
+        case API_LayerCombID:        return "layerCombinations";
         default:                     return "";
     }
 }
@@ -221,6 +222,26 @@ GS::ObjectState CaptureAttribute (API_AttrTypeID typeID, API_AttributeIndex inde
         case API_LayerID:
             os.Add ("conClassId", a.layer.conClassId);
             break;
+        case API_LayerCombID: {
+            // deslab: the layer statuses come only from the open project; the file read gives none.
+            const auto& stats = os.AddList<GS::ObjectState> ("layers");
+            API_AttributeDefExt defs = {};
+            if (ACAPI_Attribute_GetDefExt (API_LayerCombID, a.header.index, &defs) == NoError && defs.layer_statItems != nullptr) {
+                for (const auto& kv : *defs.layer_statItems) {
+#ifdef ServerMainVers_2800
+                    const API_AttributeIndex& layerIndex = kv.key;
+                    const API_LayerStat& stat = kv.value;
+#else
+                    const API_AttributeIndex& layerIndex = *kv.key;
+                    const API_LayerStat& stat = *kv.value;
+#endif
+                    stats (GS::ObjectState ("layer", GetAttributeIndex (layerIndex),
+                        "flags", static_cast<Int32> (stat.lFlags), "conClassId", stat.conClassId));
+                }
+            }
+            ACAPI_DisposeAttrDefsHdlsExt (&defs);
+            break;
+        }
         case API_MaterialID: {
             const API_MaterialType& m = a.material;
             os.Add ("mtype", static_cast<Int32> (m.mtype));
@@ -299,6 +320,21 @@ void LoadFromPackage (const GS::ObjectState& package, API_AttrTypeID typeID,
             case API_LayerID:
                 ReadNumber (os, "conClassId", a.layer.conClassId);
                 break;
+            case API_LayerCombID: {
+                GS::Array<GS::ObjectState> stats;
+                os.Get ("layers", stats);
+                defs.layer_statItems = new GS::HashTable<API_AttributeIndex, API_LayerStat> ();
+                for (const GS::ObjectState& statOS : stats) {
+                    Int32 layer = 0;
+                    statOS.Get ("layer", layer);
+                    API_LayerStat stat = {};
+                    ReadNumber (statOS, "flags", stat.lFlags);
+                    ReadNumber (statOS, "conClassId", stat.conClassId);
+                    defs.layer_statItems->Put (ACAPI_CreateAttributeIndex (layer), stat);
+                }
+                a.layerComb.lNumb = static_cast<Int32> (defs.layer_statItems->GetSize ());
+                break;
+            }
             case API_MaterialID: {
                 API_MaterialType& m = a.material;
                 Int32 mtype = 0;
@@ -374,7 +410,7 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
     GS::Array<GS::Pair<API_Attribute, API_AttributeDefExt>> loaded;
     std::deque<GS::UniString> strings;
     GS::Array<GS::UniString> packageNames;
-    if (FromPackage (typeID) && package != nullptr) {
+    if (FromPackage (typeID) && package != nullptr && package->Contains (PackageKey (typeID))) {
         LoadFromPackage (*package, typeID, loaded, packageNames, strings);
     } else {
         result.readError = ACAPI_Attribute_GetAttributesFromProject (source, typeID, &loaded);
@@ -596,10 +632,11 @@ GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema (
         "properties": {
             "layers": { "type": "integer" },
             "surfaces": { "type": "integer" },
-            "buildingMaterials": { "type": "integer" }
+            "buildingMaterials": { "type": "integer" },
+            "layerCombinations": { "type": "integer" }
         },
         "additionalProperties": false,
-        "required": ["layers", "surfaces", "buildingMaterials"]
+        "required": ["layers", "surfaces", "buildingMaterials", "layerCombinations"]
     })";
 }
 
@@ -609,7 +646,7 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
     GS::ObjectState package;
     package.Add ("format", GS::UniString ("deslab-office-standard"));
     package.Add ("version", 1);
-    const API_AttrTypeID types[] = { API_LayerID, API_MaterialID, API_BuildingMaterialID };
+    const API_AttrTypeID types[] = { API_LayerID, API_MaterialID, API_BuildingMaterialID, API_LayerCombID };
     for (API_AttrTypeID typeID : types) {
         const auto& list = package.AddList<GS::ObjectState> (PackageKey (typeID));
         GS::Array<API_Attribute> attributes;
