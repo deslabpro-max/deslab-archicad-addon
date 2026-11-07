@@ -1126,7 +1126,11 @@ GSErrCode Initialize (void)
         );
         err |= RegisterCommand<ApplyOfficeStandardCommand> (   // deslab
             attributeCommands, "1.7.4",
-            "deslab: sets up the office standard in the open project. Reads the attributes (pen sets, line types, fills, surfaces, building materials, composites, layers, layer combinations, zone categories) of the given project or template file without opening it and creates the missing ones, with their references moved to the new indices. Existing attributes (same guid or name) are kept. Available from Archicad 27."
+            "deslab: sets up the office standard in the open project. Reads the attributes (pen sets, line types, fills, surfaces, building materials, composites, layers, layer combinations, zone categories) of the given project or template file without opening it and creates the missing ones, with their references moved to the new indices. Existing attributes (same guid or name) are kept. Archicad 27 does not read layers, surfaces and building materials from a file: they come from packagePath, written by CaptureOfficeStandard. A layer combination whose layers are missing is not created; project layers the standard does not know are hidden in the new combinations. Available from Archicad 27."
+        );
+        err |= RegisterCommand<CaptureOfficeStandardCommand> (   // deslab
+            attributeCommands, "1.7.4",
+            "deslab: writes the layers, surfaces and building materials of the open project (the office standard's project or a copy of it) to a JSON standard package for ApplyOfficeStandard. Available from Archicad 27."
         );
         err |= RegisterCommand<DeleteAttributesCommand> (
             attributeCommands, "1.5.4",

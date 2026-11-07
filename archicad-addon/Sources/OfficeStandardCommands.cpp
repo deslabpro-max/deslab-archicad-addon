@@ -3,7 +3,10 @@
 #include "OfficeStandardCommands.hpp"
 #include "MigrationHelper.hpp"
 #include "FileSystem.hpp"
+#include "File.hpp"
+#include "ObjectStateJSONConversion.hpp"
 
+#include <deque>
 #include <map>
 
 namespace {
@@ -79,8 +82,9 @@ void Remap (API_AttributeIndex& index, const IndexMap& map)
     }
 }
 
-// Moves the references of a loaded attribute to the indices of the open project.
-void RemapReferences (API_Attribute& attribute, API_AttributeDefExt& defs, std::map<API_AttrTypeID, IndexMap>& maps)
+// Moves the references of a loaded attribute to the indices of the open project. Returns false when the attribute
+// cannot be made right in this project (a layer combination whose layers did not come over), so it is not created.
+bool RemapReferences (API_Attribute& attribute, API_AttributeDefExt& defs, std::map<API_AttrTypeID, IndexMap>& maps)
 {
     switch (attribute.header.typeID) {
         case API_MaterialID:
@@ -104,8 +108,11 @@ void RemapReferences (API_Attribute& attribute, API_AttributeDefExt& defs, std::
             break;
         case API_LayerCombID:
             if (defs.layer_statItems != nullptr) {
-                auto* remapped = new GS::HashTable<API_AttributeIndex, API_LayerStat> ();
+                // deslab: every layer of the combination must be in the project, otherwise the view would show the
+                // wrong layers. Layers of the project that the standard does not know are hidden in it.
                 const IndexMap& layers = maps[API_LayerID];
+                auto* remapped = new GS::HashTable<API_AttributeIndex, API_LayerStat> ();
+                bool complete = true;
                 for (const auto& kv : *defs.layer_statItems) {
 #ifdef ServerMainVers_2800
                     API_AttributeIndex layerIndex = kv.key;
@@ -117,32 +124,273 @@ void RemapReferences (API_Attribute& attribute, API_AttributeDefExt& defs, std::
                     const auto it = layers.find (GetAttributeIndex (layerIndex));
                     if (it != layers.end ()) {
                         remapped->Put (it->second, stat);
+                    } else {
+                        complete = false;
                     }
+                }
+                GS::Array<API_Attribute> projectLayers;
+                ACAPI_Attribute_GetAttributesByType (API_LayerID, projectLayers);
+                for (API_Attribute& layer : projectLayers) {
+                    if (!remapped->ContainsKey (layer.header.index)) {
+                        API_LayerStat hidden = {};
+                        hidden.lFlags = APILay_Hidden;
+                        hidden.conClassId = layer.layer.conClassId;
+                        remapped->Put (layer.header.index, hidden);
+                    }
+                    DisposeAttribute (layer);
                 }
                 delete defs.layer_statItems;
                 defs.layer_statItems = remapped;
+                attribute.layerComb.lNumb = static_cast<Int32> (remapped->GetSize ());
+                if (!complete) {
+                    return false;
+                }
             }
             break;
         default:
             break;
     }
+    return true;
+}
+
+// deslab: ACAPI_Attribute_GetAttributesFromProject returns no layers, surfaces or building materials in Archicad 27
+// (tested on three files, 07.11.2026). These types come from the standard package instead: a JSON file captured from
+// a project that holds the standard (CaptureOfficeStandard). Indices in it are the ones of that project, so the package
+// and the standard file must be the same project (or copies of it).
+bool FromPackage (API_AttrTypeID typeID)
+{
+    return typeID == API_LayerID || typeID == API_MaterialID || typeID == API_BuildingMaterialID;
+}
+
+const char* PackageKey (API_AttrTypeID typeID)
+{
+    switch (typeID) {
+        case API_LayerID:            return "layers";
+        case API_MaterialID:         return "surfaces";
+        case API_BuildingMaterialID: return "buildingMaterials";
+        default:                     return "";
+    }
+}
+
+GS::ObjectState ColorOS (const API_RGBColor& c)
+{
+    return GS::ObjectState ("red", c.f_red, "green", c.f_green, "blue", c.f_blue);
+}
+
+void ReadColor (const GS::ObjectState& os, const char* key, API_RGBColor& c)
+{
+    GS::ObjectState color;
+    if (os.Get (key, color)) {
+        color.Get ("red", c.f_red);
+        color.Get ("green", c.f_green);
+        color.Get ("blue", c.f_blue);
+    }
+}
+
+template <typename T>
+void ReadNumber (const GS::ObjectState& os, const char* key, T& target)
+{
+    double value;
+    if (os.Get (key, value)) {
+        target = static_cast<T> (value);
+    }
+}
+
+GS::ObjectState CaptureAttribute (API_AttrTypeID typeID, API_AttributeIndex index)
+{
+    GS::ObjectState os;
+    GS::UniString name, id, manufacturer, description;
+    API_Attribute a = {};
+    a.header.typeID = typeID;
+    a.header.index = index;
+    a.header.uniStringNamePtr = &name;
+    if (typeID == API_BuildingMaterialID) {
+        a.buildingMaterial.id = &id;
+        a.buildingMaterial.manufacturer = &manufacturer;
+        a.buildingMaterial.description = &description;
+    }
+    if (ACAPI_Attribute_Get (&a) != NoError) {
+        DisposeAttribute (a);
+        return os;
+    }
+    os.Add ("index", GetAttributeIndex (a.header.index));
+    os.Add ("guid", APIGuidToString (a.header.guid));
+    os.Add ("name", name);
+    os.Add ("flags", static_cast<Int32> (a.header.flags));
+    switch (typeID) {
+        case API_LayerID:
+            os.Add ("conClassId", a.layer.conClassId);
+            break;
+        case API_MaterialID: {
+            const API_MaterialType& m = a.material;
+            os.Add ("mtype", static_cast<Int32> (m.mtype));
+            os.Add ("ambientPc", static_cast<Int32> (m.ambientPc));
+            os.Add ("diffusePc", static_cast<Int32> (m.diffusePc));
+            os.Add ("specularPc", static_cast<Int32> (m.specularPc));
+            os.Add ("transpPc", static_cast<Int32> (m.transpPc));
+            os.Add ("shine", static_cast<Int32> (m.shine));
+            os.Add ("transpAtt", static_cast<Int32> (m.transpAtt));
+            os.Add ("emissionAtt", static_cast<Int32> (m.emissionAtt));
+            os.Add ("surfaceRGB", ColorOS (m.surfaceRGB));
+            os.Add ("specularRGB", ColorOS (m.specularRGB));
+            os.Add ("emissionRGB", ColorOS (m.emissionRGB));
+            os.Add ("ifill", GetAttributeIndex (m.ifill));
+            os.Add ("fillCol", static_cast<Int32> (m.fillCol));
+            GS::ObjectState texture;
+            texture.Add ("name", GS::UniString (m.texture.texName));
+            texture.Add ("status", static_cast<Int32> (m.texture.status));
+            texture.Add ("xSize", m.texture.xSize);
+            texture.Add ("ySize", m.texture.ySize);
+            texture.Add ("rotAng", m.texture.rotAng);
+            os.Add ("texture", texture);
+            break;
+        }
+        case API_BuildingMaterialID: {
+            const API_BuildingMaterialType& b = a.buildingMaterial;
+            os.Add ("id", id);
+            os.Add ("manufacturer", manufacturer);
+            os.Add ("description", description);
+            os.Add ("connPriority", b.connPriority);
+            os.Add ("cutFill", GetAttributeIndex (b.cutFill));
+            os.Add ("cutFillPen", static_cast<Int32> (b.cutFillPen));
+            os.Add ("cutFillBackgroundPen", static_cast<Int32> (b.cutFillBackgroundPen));
+            os.Add ("cutMaterial", GetAttributeIndex (b.cutMaterial));
+            os.Add ("cutFillOrientation", static_cast<Int32> (b.cutFillOrientation));
+            os.Add ("thermalConductivity", b.thermalConductivity);
+            os.Add ("density", b.density);
+            os.Add ("heatCapacity", b.heatCapacity);
+            os.Add ("embodiedEnergy", b.embodiedEnergy);
+            os.Add ("embodiedCarbon", b.embodiedCarbon);
+            os.Add ("showUncutLines", b.showUncutLines);
+            os.Add ("doNotParticipateInCollDet", b.doNotParticipateInCollDet);
+            break;
+        }
+        default:
+            break;
+    }
+    DisposeAttribute (a);
+    return os;
+}
+
+// Turns the package entries of one type into the same shape ACAPI_Attribute_GetAttributesFromProject returns.
+// The building material texts point into strings, which must outlive the creation.
+void LoadFromPackage (const GS::ObjectState& package, API_AttrTypeID typeID,
+                      GS::Array<GS::Pair<API_Attribute, API_AttributeDefExt>>& loaded, GS::Array<GS::UniString>& names,
+                      std::deque<GS::UniString>& strings)
+{
+    GS::Array<GS::ObjectState> entries;
+    package.Get (PackageKey (typeID), entries);
+    for (const GS::ObjectState& os : entries) {
+        API_Attribute a = {};
+        API_AttributeDefExt defs = {};
+        a.header.typeID = typeID;
+        Int32 index = 0;
+        os.Get ("index", index);
+        a.header.index = ACAPI_CreateAttributeIndex (index);
+        GS::UniString guid;
+        if (os.Get ("guid", guid)) {
+            a.header.guid = APIGuidFromString (guid.ToCStr ());
+        }
+        GS::UniString name;
+        os.Get ("name", name);
+        names.Push (name);
+        ReadNumber (os, "flags", a.header.flags);
+        switch (typeID) {
+            case API_LayerID:
+                ReadNumber (os, "conClassId", a.layer.conClassId);
+                break;
+            case API_MaterialID: {
+                API_MaterialType& m = a.material;
+                Int32 mtype = 0;
+                os.Get ("mtype", mtype);
+                m.mtype = static_cast<API_MaterTypeID> (mtype);
+                ReadNumber (os, "ambientPc", m.ambientPc);
+                ReadNumber (os, "diffusePc", m.diffusePc);
+                ReadNumber (os, "specularPc", m.specularPc);
+                ReadNumber (os, "transpPc", m.transpPc);
+                ReadNumber (os, "shine", m.shine);
+                ReadNumber (os, "transpAtt", m.transpAtt);
+                ReadNumber (os, "emissionAtt", m.emissionAtt);
+                ReadColor (os, "surfaceRGB", m.surfaceRGB);
+                ReadColor (os, "specularRGB", m.specularRGB);
+                ReadColor (os, "emissionRGB", m.emissionRGB);
+                Int32 ifill = 0;
+                os.Get ("ifill", ifill);
+                m.ifill = ACAPI_CreateAttributeIndex (ifill);
+                ReadNumber (os, "fillCol", m.fillCol);
+                GS::ObjectState texture;
+                if (os.Get ("texture", texture)) {
+                    SetUCharProperty (&texture, "name", m.texture.texName);
+                    ReadNumber (texture, "status", m.texture.status);
+                    texture.Get ("xSize", m.texture.xSize);
+                    texture.Get ("ySize", m.texture.ySize);
+                    texture.Get ("rotAng", m.texture.rotAng);
+                }
+                break;
+            }
+            case API_BuildingMaterialID: {
+                API_BuildingMaterialType& b = a.buildingMaterial;
+                strings.emplace_back ();
+                os.Get ("id", strings.back ());
+                b.id = &strings.back ();
+                strings.emplace_back ();
+                os.Get ("manufacturer", strings.back ());
+                b.manufacturer = &strings.back ();
+                strings.emplace_back ();
+                os.Get ("description", strings.back ());
+                b.description = &strings.back ();
+                ReadNumber (os, "connPriority", b.connPriority);
+                Int32 cutFill = 0, cutMaterial = 0, orientation = 0;
+                os.Get ("cutFill", cutFill);
+                os.Get ("cutMaterial", cutMaterial);
+                os.Get ("cutFillOrientation", orientation);
+                b.cutFill = ACAPI_CreateAttributeIndex (cutFill);
+                b.cutMaterial = ACAPI_CreateAttributeIndex (cutMaterial);
+                b.cutFillOrientation = static_cast<API_FillOrientationID> (orientation);
+                ReadNumber (os, "cutFillPen", b.cutFillPen);
+                ReadNumber (os, "cutFillBackgroundPen", b.cutFillBackgroundPen);
+                os.Get ("thermalConductivity", b.thermalConductivity);
+                os.Get ("density", b.density);
+                os.Get ("heatCapacity", b.heatCapacity);
+                os.Get ("embodiedEnergy", b.embodiedEnergy);
+                os.Get ("embodiedCarbon", b.embodiedCarbon);
+                os.Get ("showUncutLines", b.showUncutLines);
+                os.Get ("doNotParticipateInCollDet", b.doNotParticipateInCollDet);
+                break;
+            }
+            default:
+                break;
+        }
+        loaded.Push (GS::Pair<API_Attribute, API_AttributeDefExt> (a, defs));
+    }
 }
 
 struct TypeResult { Int32 created = 0; Int32 existing = 0; Int32 failed = 0; GS::Array<GS::UniString> failures; GSErrCode readError = NoError; };
 
-TypeResult ApplyType (const IO::Location& source, API_AttrTypeID typeID, std::map<API_AttrTypeID, IndexMap>& maps)
+TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package, API_AttrTypeID typeID,
+                      std::map<API_AttrTypeID, IndexMap>& maps)
 {
     TypeResult result;
     GS::Array<GS::Pair<API_Attribute, API_AttributeDefExt>> loaded;
-    result.readError = ACAPI_Attribute_GetAttributesFromProject (source, typeID, &loaded);
+    std::deque<GS::UniString> strings;
+    GS::Array<GS::UniString> packageNames;
+    if (FromPackage (typeID) && package != nullptr) {
+        LoadFromPackage (*package, typeID, loaded, packageNames, strings);
+    } else {
+        result.readError = ACAPI_Attribute_GetAttributesFromProject (source, typeID, &loaded);
+    }
     std::map<GS::UniString, API_AttributeIndex> names = ProjectNames (typeID);
     IndexMap& map = maps[typeID];
 
-    for (GS::Pair<API_Attribute, API_AttributeDefExt>& item : loaded) {
+    for (UIndex i = 0; i < loaded.GetSize (); ++i) {
+        GS::Pair<API_Attribute, API_AttributeDefExt>& item = loaded[i];
         API_Attribute& attribute = item.first;
         API_AttributeDefExt& defs = item.second;
         const Int32 sourceIndex = GetAttributeIndex (attribute.header.index);
         GS::UniString name = LoadedName (attribute.header);
+        if (i < packageNames.GetSize ()) {
+            name = packageNames[i];   // the legacy 8-bit name cannot hold every character
+        }
 
         // An attribute that is already there (same guid, as in copies of the template, or same name) is kept as it is.
         API_AttributeIndex existingIndex = APIInvalidAttributeIndex;
@@ -154,7 +402,16 @@ TypeResult ApplyType (const IO::Location& source, API_AttrTypeID typeID, std::ma
             map[sourceIndex] = byName->second;
             ++result.existing;
         } else {
-            RemapReferences (attribute, defs, maps);
+            if (!RemapReferences (attribute, defs, maps)) {
+                ++result.failed;
+                if (result.failures.GetSize () < 5) {
+                    result.failures.Push (name + " (layers missing)");
+                }
+                attribute.header.uniStringNamePtr = nullptr;
+                ACAPI_DisposeAttrDefsHdlsExt (&defs);
+                DisposeAttribute (attribute);
+                continue;
+            }
             attribute.header.index = APIInvalidAttributeIndex;
             attribute.header.uniStringNamePtr = &name;
             // The source guid is kept, so a second run finds the attribute again whatever its name looks like.
@@ -175,6 +432,17 @@ TypeResult ApplyType (const IO::Location& source, API_AttrTypeID typeID, std::ma
         DisposeAttribute (attribute);
     }
     return result;
+}
+
+bool ReadPackage (const GS::UniString& path, GS::ObjectState& package)
+{
+    IO::File file (IO::Location (path));
+    if (file.Open (IO::File::OpenMode::ReadMode) != NoError) {
+        return false;
+    }
+    const GSErrCode err = JSON::ConvertToObjectState (file, package);
+    file.Close ();
+    return err == NoError && !package.IsEmpty ();
 }
 
 #endif
@@ -200,6 +468,11 @@ GS::Optional<GS::UniString> ApplyOfficeStandardCommand::GetInputParametersSchema
                 "type": "string",
                 "description": "The project or template file (.pln, .tpl) that holds the office standard. It is only read.",
                 "minLength": 1
+            },
+            "packagePath": {
+                "type": "string",
+                "description": "The standard package (.json) written by CaptureOfficeStandard from the same project. Layers, surfaces and building materials come from it, because Archicad does not read them from a file.",
+                "minLength": 1
             }
         },
         "additionalProperties": false,
@@ -222,7 +495,8 @@ GS::Optional<GS::UniString> ApplyOfficeStandardCommand::GetRawResponseSchema () 
     })";
 }
 
-GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sourceProjectPath, GS::Array<GS::UniString>& reportLines)
+GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sourceProjectPath, const GS::UniString& packagePath,
+                                                       GS::Array<GS::UniString>& reportLines)
 {
 #ifdef ServerMainVers_2700
     const IO::Location source (sourceProjectPath);
@@ -231,10 +505,19 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         reportLines.Push ("The standard file does not exist: " + sourceProjectPath);
         return APIERR_BADPARS;
     }
+    GS::ObjectState package;
+    const bool hasPackage = !packagePath.IsEmpty ();
+    if (hasPackage && !ReadPackage (packagePath, package)) {
+        reportLines.Push ("The standard package cannot be read: " + packagePath);
+        return APIERR_BADPARS;
+    }
+    if (!hasPackage) {
+        reportLines.Push ("No standard package: layers, surfaces and building materials are skipped.");
+    }
     return ACAPI_CallUndoableCommand ("Apply office standard", [&] () -> GSErrCode {
         std::map<API_AttrTypeID, IndexMap> maps;
         for (const StandardType& type : standardTypes) {
-            const TypeResult result = ApplyType (source, type.typeID, maps);
+            const TypeResult result = ApplyType (source, hasPackage ? &package : nullptr, type.typeID, maps);
             GS::UniString line = GS::UniString::Printf ("%s: created %d, already there %d, failed %d",
                 type.name, static_cast<int> (result.created), static_cast<int> (result.existing), static_cast<int> (result.failed));
             if (result.readError != NoError) {
@@ -249,6 +532,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     });
 #else
     UNUSED_PARAMETER (sourceProjectPath);
+    UNUSED_PARAMETER (packagePath);
     reportLines.Push ("ApplyOfficeStandard needs Archicad 27 or later.");
     return APIERR_GENERAL;
 #endif
@@ -260,8 +544,10 @@ GS::ObjectState ApplyOfficeStandardCommand::Execute (const GS::ObjectState& para
     if (!parameters.Get ("sourceProjectPath", sourceProjectPath) || sourceProjectPath.IsEmpty ()) {
         return CreateErrorResponse (APIERR_BADPARS, "sourceProjectPath is missing.");
     }
+    GS::UniString packagePath;
+    parameters.Get ("packagePath", packagePath);
     GS::Array<GS::UniString> reportLines;
-    const GSErrCode err = ApplyAttributes (sourceProjectPath, reportLines);
+    const GSErrCode err = ApplyAttributes (sourceProjectPath, packagePath, reportLines);
     if (err != NoError && reportLines.IsEmpty ()) {
         return CreateErrorResponse (err, "Failed to apply the office standard.");
     }
@@ -274,4 +560,94 @@ GS::ObjectState ApplyOfficeStandardCommand::Execute (const GS::ObjectState& para
         response.Add ("errorCode", static_cast<Int32> (err));
     }
     return response;
+}
+
+CaptureOfficeStandardCommand::CaptureOfficeStandardCommand () :
+    CommandBase (CommonSchema::NotUsed)
+{
+}
+
+GS::String CaptureOfficeStandardCommand::GetName () const
+{
+    return "CaptureOfficeStandard";
+}
+
+GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetInputParametersSchema () const
+{
+    return R"({
+        "type": "object",
+        "properties": {
+            "packagePath": {
+                "type": "string",
+                "description": "The .json file to write the standard package to. It is overwritten.",
+                "minLength": 1
+            }
+        },
+        "additionalProperties": false,
+        "required": ["packagePath"]
+    })";
+}
+
+GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema () const
+{
+    return R"({
+        "type": "object",
+        "properties": {
+            "layers": { "type": "integer" },
+            "surfaces": { "type": "integer" },
+            "buildingMaterials": { "type": "integer" }
+        },
+        "additionalProperties": false,
+        "required": ["layers", "surfaces", "buildingMaterials"]
+    })";
+}
+
+GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePath, GS::ObjectState& counts)
+{
+#ifdef ServerMainVers_2700
+    GS::ObjectState package;
+    package.Add ("format", GS::UniString ("deslab-office-standard"));
+    package.Add ("version", 1);
+    const API_AttrTypeID types[] = { API_LayerID, API_MaterialID, API_BuildingMaterialID };
+    for (API_AttrTypeID typeID : types) {
+        const auto& list = package.AddList<GS::ObjectState> (PackageKey (typeID));
+        GS::Array<API_Attribute> attributes;
+        ACAPI_Attribute_GetAttributesByType (typeID, attributes);
+        Int32 count = 0;
+        for (API_Attribute& attribute : attributes) {
+            const GS::ObjectState os = CaptureAttribute (typeID, attribute.header.index);
+            if (!os.IsEmpty ()) {
+                list (os);
+                ++count;
+            }
+            DisposeAttribute (attribute);
+        }
+        counts.Add (PackageKey (typeID), count);
+    }
+    IO::File file (IO::Location (packagePath), IO::File::OnNotFound::Create);
+    GSErrCode err = file.Open (IO::File::OpenMode::WriteEmptyMode);
+    if (err == NoError) {
+        err = JSON::CreateFromObjectState (package, file, true);
+        file.Close ();
+    }
+    return err;
+#else
+    UNUSED_PARAMETER (packagePath);
+    UNUSED_PARAMETER (counts);
+    return APIERR_GENERAL;
+#endif
+}
+
+GS::ObjectState CaptureOfficeStandardCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
+{
+    GS::UniString packagePath;
+    if (!parameters.Get ("packagePath", packagePath) || packagePath.IsEmpty ()) {
+        return CreateErrorResponse (APIERR_BADPARS, "packagePath is missing.");
+    }
+    GS::ObjectState counts;
+    const GSErrCode err = Capture (packagePath, counts);
+    if (err != NoError) {
+        return CreateErrorResponse (err, "Failed to write the standard package.");
+    }
+    return counts;
 }
