@@ -36,6 +36,8 @@ class AIError(RuntimeError):
 def settings(profile=None):
     out = dict(DEFAULTS)
     out.update((profile or {}).get("ai", {}))
+    if os.environ.get("POLZA_MAX_TOKENS"):  # deslab: reasoning models spend the whole 16000 on thinking (DeepSeek V4.1 Flash)
+        out["maxTokens"] = int(os.environ["POLZA_MAX_TOKENS"])
     if os.environ.get("POLZA_MODEL"):  # deslab: Игорь 06.11.2026, cheaper models (Kimi, DeepSeek) for tests without editing the profile
         out["model"] = os.environ["POLZA_MODEL"]
     return out
