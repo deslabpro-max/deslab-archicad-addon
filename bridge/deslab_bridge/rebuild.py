@@ -133,7 +133,12 @@ def connect():
 def flat_bbox(ac, guids):
     """The bounding box (model metres) of the built elements, 2D dimensions and labels included."""
     boxes = ac.tapir("Get3DBoundingBoxes", {"elements": [{"elementId": {"guid": g}} for g in guids]})["boundingBoxes3D"]
-    boxes = [b.get("boundingBox3D", b) for b in boxes]
+    boxes = [b.get("boundingBox3D", b) for b in boxes if isinstance(b, dict)]
+    # deslab: elements without a 3D body (some 2D items, failed entries) come back without the box: skip them
+    # (Игорь 07.11.2026, the first palette build of Nagornaya_7 stopped on KeyError 'xMin')
+    boxes = [b for b in boxes if all(k in b for k in ("xMin", "xMax", "yMin", "yMax"))]
+    if not boxes:
+        raise ValueError("Нет габаритов построенных элементов: поставить на листы нечего.")
     return {k: (min if k.endswith("Min") else max)(b[k] for b in boxes) for k in ("xMin", "xMax", "yMin", "yMax")}
 
 
