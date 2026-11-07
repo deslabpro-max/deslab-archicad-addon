@@ -16,6 +16,12 @@
 /* [  1] */        "Tapir Palette^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
+/* deslab: the deslab Obmer palette (DeslabObmerPalette); its Russian texts are set in code, ResConv keeps only code page 1252 */
+'STR#' ID_ADDON_MENU_FOR_OBMER "Add-On Menu" {
+/* [   ] */        "deslab"
+/* [  1] */        "deslab Obmer^E3^ES^EE^EI^ED^EL^EW^ET^EM"
+}
+
 'STR#' ID_ADDON_MENU_FOR_UPDATE "Add-On Menu" {
 /* [   ] */        "Tapir"
 /* [  1] */        "Check for Updates...^E3^ES^EE^EI^ED^EL^EW^ET^EM^32510"
@@ -112,6 +118,49 @@
 
 'DLGH' ID_SCRIPTUI_PALETTE Tapir_ScriptUI_Palette {
 1    ""        BrowserItem
+}
+
+/* deslab: items 1-18 here, the two MultiLineEdits (log, chat) are created in code at y 190-410 and 436-556 */
+'GDLG' ID_DESLAB_OBMER_PALETTE Palette | leftCaption | close | grow   0   0  400  592  "deslab Obmer"  {
+/* [  1] */ LeftText       8    8  384   16    SmallPlain  vCenter  "File"
+/* [  2] */ TextEdit       8   26  300   22    SmallPlain  1024
+/* [  3] */ Button       312   25   80   24    SmallPlain  "Browse"
+/* [  4] */ LeftText       8   56  230   16    SmallPlain  vCenter  "PDF"
+/* [  5] */ TextEdit       8   74  230   22    SmallPlain  1024
+/* [  6] */ Button       242   73   60   24    SmallPlain  "PDF"
+/* [  7] */ LeftText     306   77   32   16    SmallPlain  vCenter  "page"
+/* [  8] */ TextEdit     340   74   52   22    SmallPlain  8
+/* [  9] */ LeftText       8  106   60   16    SmallPlain  vCenter  "Model"
+/* [ 10] */ PopupControl  70  103  322   22    160  0
+/* [ 11] */ Button         8  134  120   26    LargePlain  "Build"
+/* [ 12] */ Button       134  134  100   26    LargePlain  "Stop"
+/* [ 13] */ LeftText     240  139  152   16    SmallPlain  vCenter  "Status"
+/* [ 14] */ Separator      8  166  384    2
+/* [ 15] */ LeftText       8  172  384   16    SmallPlain  vCenter  "Log"
+/* [ 16] */ LeftText       8  418  384   16    SmallPlain  vCenter  "Chat"
+/* [ 17] */ TextEdit       8  562  300   22    SmallPlain  2000
+/* [ 18] */ Button       312  561   80   24    SmallPlain  "Send"
+}
+
+'DLGH' ID_DESLAB_OBMER_PALETTE Deslab_Obmer_Palette {
+1    ""        FileLabel
+2    ""        FileEdit
+3    ""        BrowseButton
+4    ""        PdfLabel
+5    ""        PdfEdit
+6    ""        PdfButton
+7    ""        PageLabel
+8    ""        PageEdit
+9    ""        ModelLabel
+10   ""        ModelPopUp
+11   ""        BuildButton
+12   ""        StopButton
+13   ""        StatusText
+14   ""        Separator
+15   ""        LogLabel
+16   ""        ChatLabel
+17   ""        MessageEdit
+18   ""        SendButton
 }
 
 'GDLG' ID_SHORTCUTS_DIALOG Modal | noGrow    80   80  500  270  "Script Shortcuts" {

@@ -175,3 +175,6 @@ claude mcp add deslab -- uv --directory <репозиторий>\bridge run desl
   `wetBathroom` / `wetKitchen` появятся после разбора шаблона (шаг 1.1 плана).
 - Штамп (данные проекта), условные обозначения и экспликация на листе: живут в шаблоне .tpl (шаг 1.1).
 - Проверка листа `CheckDrawing` и снимок листа: шаг 1.7.
+
+
+Чат о последней сборке (deslab: Игорь 06.11.2026, палитра «deslab Обмер» в Archicad): `python -m deslab_bridge.chat <имя сборки> "<сообщение>" [--model id]`. Модель получает разбор `captures/ai-review-<имя>.json` и историю `captures/chat-<имя>.json`, отвечает текстом и ничего не меняет сама.
