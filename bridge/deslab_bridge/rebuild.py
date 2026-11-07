@@ -149,11 +149,13 @@ def place(ac, guids):
     return layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
 
 
-def clear_area(ac, scene, origin, margin=3.0):
+def clear_area(ac, scene, origin, margin=3.0, delete=True, ignore=()):
     """deslab: everything left in the flat's area from earlier runs goes before the build (Игорь
     06.11.2026, kv94ai: a second zone, old labels «Щиток электрический» and «Вытяжка, шахта …» that
     no state file listed). The area is the scene's rooms moved to the origin, plus a margin for the
-    dimensions and labels; only elements lying wholly inside it are deleted."""
+    dimensions and labels; only elements lying wholly inside it are deleted.
+    deslab: with delete=False (a scan from the palette, Игорь 07.11.2026: «первый раз он построил поверх существующих») nothing
+    is deleted: the elements that touch the area are counted, and the build stops if there are any."""
     pts = [obmer._pt(p) for r in scene.get("rooms", []) for p in r["polygon"]] + \
           [obmer._pt(p) for w in scene.get("walls", []) for p in (w["start"], w["end"])]
     if not pts:
@@ -161,7 +163,7 @@ def clear_area(ac, scene, origin, margin=3.0):
     ox, oy = (origin or {}).get("x", 0.0), (origin or {}).get("y", 0.0)
     x0, x1 = min(p[0] for p in pts) + ox - margin, max(p[0] for p in pts) + ox + margin
     y0, y1 = min(p[1] for p in pts) + oy - margin, max(p[1] for p in pts) + oy + margin
-    guids = sorted(_all_guids(ac))
+    guids = sorted(set(_all_guids(ac)) - set(ignore))
     doomed = []
     touching = []  # deslab: everything that touches the area, to tell afterwards what was NOT removed (Игорь 07.11.2026: the first
     #                palette build of Nagornaya_7 went on top of a hand-drawn flat that clear_area did not take)
@@ -173,10 +175,12 @@ def clear_area(ac, scene, origin, margin=3.0):
             continue
         for g, b in zip(part, boxes):
             b = b.get("boundingBox3D", b) if isinstance(b, dict) else None
-            if b and "xMin" in b and b["xMax"] >= x0 and b["xMin"] <= x1 and b["yMax"] >= y0 and b["yMin"] <= y1:
+            if b and "xMin" in b and b["xMax"] > x0 and b["xMin"] < x1 and b["yMax"] > y0 and b["yMin"] < y1:
                 touching.append(g)
                 if x0 <= b["xMin"] and b["xMax"] <= x1 and y0 <= b["yMin"] and b["yMax"] <= y1:
                     doomed.append(g)
+    if not delete:
+        return len(touching)
     deleted = 0
     if doomed:
         closed = obmer.open_layers(ac, None, obmer.Report())
@@ -225,6 +229,13 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         if "error" in found:
             raise SystemExit(f"Облако не разобрано: {found['error']}")
     scene = load_scene(preset, root)
+    if not keep and not preset.get("clearArea", True):
+        # deslab: checked before the paid AI call; the previous build of the same name does not count, it is replaced
+        previous = _load(state_path).get("guids", []) if state_path.exists() else []
+        busy = clear_area(ac, scene, preset.get("origin"), delete=False, ignore=previous)
+        if busy:
+            raise SystemExit(f"Место под план занято: в зоне постройки уже есть {busy} элементов (чужой чертёж?). "
+                             "Строить поверх не буду. Откройте новый файл из шаблона «deslab Обмер» или уберите их.")
     ai_report = None
     if preset.get("ai"):
         # deslab: Игорь 06.11.2026, the AI analyses the scene while building: the review is asked for (one paid call), saved, applied
@@ -248,8 +259,9 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     for other in preset.get("replaces", []):  # deslab: «kv94ai» takes the place of «kv94» at the same origin
         deleted += 0 if keep else delete_previous(ac, out_dir / f"rebuild-{other}.json")
     clear_area.left = 0
-    if not keep:
+    if not keep and preset.get("clearArea", True):
         deleted += clear_area(ac, scene, preset.get("origin"))
+
     before = _all_guids(ac)
     # deslab: the planned texts and lines of each plan, for the check below
     planned = []
@@ -308,7 +320,7 @@ def main(argv=None):
             # a scan: built at the origin of the open file (one flat per file, from the template)
             e57 = Path(a.name).resolve()
             r = rebuild(e57.stem.split(".")[0], a.root, a.keep, not a.no_pictures, not a.no_layouts,
-                        preset={"e57": str(e57), "origin": {"x": 0, "y": 0}, "ai": not a.no_ai,
+                        preset={"e57": str(e57), "origin": {"x": 0, "y": 0}, "ai": not a.no_ai, "clearArea": False,
                                 "aiPdf": a.pdf, "aiImages": a.images, "aiModel": a.model})
         else:
             presets = _load(PRESETS)
