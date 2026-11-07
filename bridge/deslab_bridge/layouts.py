@@ -104,8 +104,14 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
         # a probe tells whether the view holds only the flat (plus dimensions); otherwise the crop is the only way
         # to keep the template's own flat and old leftovers off the sheet, and the frame stays manual.
         s = 1 / denominator
-        probe = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position={"x": tx, "y": ty}, scale=ratio)]})["elements"][0]
+        probe = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position={"x": tx, "y": ty}, scale=1)]})["elements"][0]
         content = ac.tapir("GetDrawingContentBoxes", {"elements": [{"elementId": probe["elementId"]}]})["contentBoxes"][0]["contentBox"]
+        # deslab: the view's REAL scale is what the probe came out with (Archicad takes the drawing's scale from the view; the
+        # «Квартира 94 м2» copy has the view at 1:60 and the fixed 45 gave a 1:60 drawing reported as 1:45)
+        real = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": probe["elementId"]}]})["detailsOfElements"][0]["details"]
+        view_scale = round(1 / real["drawingScale"]) if real.get("drawingScale") else view_scale
+        source["drawingScale"] = 1 / view_scale
+        ratio = view_scale / denominator
         ac.tapir("DeleteElements", {"elements": [{"elementId": probe["elementId"]}]})
         tolerance = float(cfg.get("onlyFlatTolerance", 1.0))
         only_flat = (content["xMin"] >= bbox["xMin"] - tolerance and content["xMax"] <= bbox["xMax"] + tolerance and
