@@ -163,6 +163,8 @@ def clear_area(ac, scene, origin, margin=3.0):
     y0, y1 = min(p[1] for p in pts) + oy - margin, max(p[1] for p in pts) + oy + margin
     guids = sorted(_all_guids(ac))
     doomed = []
+    touching = []  # deslab: everything that touches the area, to tell afterwards what was NOT removed (Игорь 07.11.2026: the first
+    #                palette build of Nagornaya_7 went on top of a hand-drawn flat that clear_area did not take)
     for k in range(0, len(guids), 500):
         part = guids[k:k + 500]
         try:
@@ -171,15 +173,25 @@ def clear_area(ac, scene, origin, margin=3.0):
             continue
         for g, b in zip(part, boxes):
             b = b.get("boundingBox3D", b) if isinstance(b, dict) else None
-            if b and "xMin" in b and x0 <= b["xMin"] and b["xMax"] <= x1 and y0 <= b["yMin"] and b["yMax"] <= y1:
-                doomed.append(g)
+            if b and "xMin" in b and b["xMax"] >= x0 and b["xMin"] <= x1 and b["yMax"] >= y0 and b["yMin"] <= y1:
+                touching.append(g)
+                if x0 <= b["xMin"] and b["xMax"] <= x1 and y0 <= b["yMin"] and b["yMax"] <= y1:
+                    doomed.append(g)
+    deleted = 0
     if doomed:
         closed = obmer.open_layers(ac, None, obmer.Report())
         try:
-            ac.tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in doomed]})
+            for k in range(0, len(doomed), 200):
+                res = ac.tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in doomed[k:k + 200]]}).get("executionResults", [])
+                deleted += sum(1 for r in res if r.get("success"))
         finally:
             obmer.restore_layers(ac, closed)
-    return len(doomed)
+    left = len(touching) - deleted
+    if left > 0:
+        print(f"ВНИМАНИЕ: в зоне плана остались {left} чужих элементов (не из сборки; удалить их мост не смог или они выходят за зону). "
+              "Новый план встанет поверх них: стройте в чистом файле из шаблона или удалите их вручную.")
+    clear_area.left = left
+    return deleted
 
 
 def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=None):
@@ -235,6 +247,7 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     deleted = 0 if keep else delete_previous(ac, state_path)
     for other in preset.get("replaces", []):  # deslab: «kv94ai» takes the place of «kv94» at the same origin
         deleted += 0 if keep else delete_previous(ac, out_dir / f"rebuild-{other}.json")
+    clear_area.left = 0
     if not keep:
         deleted += clear_area(ac, scene, preset.get("origin"))
     before = _all_guids(ac)
@@ -257,6 +270,8 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
             json.dump({"preset": name, "guids": new}, f)
     if ai_report is not None:
         report["ai"] = ai_report
+    if getattr(clear_area, "left", 0):
+        report.setdefault("errors", []).append(f"В зоне плана остались {clear_area.left} чужих элементов, план построен поверх них")
     report["deleted"] = deleted
     report["created"] = len(new)
     shifted = obmer.shift_scene(json.loads(json.dumps(scene)), preset.get("origin"))
