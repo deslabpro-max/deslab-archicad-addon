@@ -194,6 +194,13 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     state_path = out_dir / f"rebuild-{name}.json"
 
     ac = connect()
+    if on_layouts:
+        lacking = layouts.missing_template_items(ac, _load(Path(__file__).resolve().parent.parent / "office-profile.json"))
+        if lacking:
+            # deslab: warn first and still build the plan, rather than fail at the end
+            print("ВНИМАНИЕ: открыт файл не из шаблона «deslab Обмер» (нет: " + ", ".join(lacking) + "). "
+                  "План построю, на листы не поставлю. Для листов откройте файл из «deslab Обмер.tpl».")
+            on_layouts = False
     # deslab: walls were refused ("Failed to create new Wall") on a run right after a layouts step; build in the floor plan window
     layouts.show_plan_view(ac, _load(Path(__file__).resolve().parent.parent / "office-profile.json")["layouts"]["items"][0]["view"])
     if preset.get("e57"):

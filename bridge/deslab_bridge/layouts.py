@@ -48,6 +48,21 @@ def choose_scale(width, height, avail, scales, prefer, overflow):
     return fit
 
 
+def missing_template_items(ac, profile):
+    """deslab: the layouts and views of the office template that the open file lacks (Игорь 07.11.2026: a palette build in
+    «Тест студия», a file not made from the template, failed only at the layouts step)."""
+    cfg = profile.get("layouts") or {}
+    views = [(i.get("prefix", "") + " " + i["name"]).strip() for i in _tree(ac, "ViewMap") if i.get("type") != "FolderItem"]
+    layouts = [(i.get("prefix", "") + " " + i["name"]).strip() for i in _tree(ac, "LayoutBook") if i.get("type") == "LayoutItem"]
+    out = []
+    for entry in cfg.get("items", []):
+        if not any(entry["layout"] in k for k in layouts):
+            out.append("лист «" + entry["layout"] + "»")
+        if not any(k == entry["view"] or entry["view"] in k for k in views):
+            out.append("вид «" + entry["view"] + "»")
+    return out
+
+
 def place_on_layouts(ac, bbox, profile, view_scale=45):
     """bbox = {"xMin", "xMax", "yMin", "yMax"} of the flat in model metres (dimensions and labels included).
     Returns one line per layout for the report."""
