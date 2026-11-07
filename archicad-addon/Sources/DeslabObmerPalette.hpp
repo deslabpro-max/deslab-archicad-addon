@@ -56,6 +56,7 @@ private:
     DG::LeftText   chatLabel;
     DG::TextEdit   messageEdit;
     DG::Button     sendButton;
+    DG::Button     newButton;   // deslab: "New survey", a new project from the office template
     DG::MultiLineEdit logEdit;
     DG::MultiLineEdit chatEdit;
 
@@ -74,9 +75,11 @@ private:
 
     void   Build ();
     void   SendChatMessage ();
+    void   NewObmer ();
     bool   ChooseFile (const char* typeName, const char* extension, DG::TextEdit& target);
 
     static GS::UniString BridgeFolder ();
+    static GS::UniString ArkhikadFolder ();
     static GS::UniString BuildName (const GS::UniString& fileOrPreset);
 
     virtual void PanelCloseRequested (const DG::PanelCloseRequestEvent& ev, bool* accepted) override;

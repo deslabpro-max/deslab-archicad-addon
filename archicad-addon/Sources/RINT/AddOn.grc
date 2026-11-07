@@ -134,12 +134,13 @@
 /* [ 10] */ PopupControl  70  103  322   22    160  0
 /* [ 11] */ Button         8  134  120   26    LargePlain  "Build"
 /* [ 12] */ Button       134  134  100   26    LargePlain  "Stop"
-/* [ 13] */ LeftText     240  139  152   16    SmallPlain  vCenter  "Status"
+/* [ 13] */ LeftText     190  172  202   16    SmallPlain  vCenter  "Status"
 /* [ 14] */ Separator      8  166  384    2
-/* [ 15] */ LeftText       8  172  384   16    SmallPlain  vCenter  "Log"
+/* [ 15] */ LeftText       8  172  180   16    SmallPlain  vCenter  "Log"
 /* [ 16] */ LeftText       8  418  384   16    SmallPlain  vCenter  "Chat"
 /* [ 17] */ TextEdit       8  562  300   22    SmallPlain  2000
 /* [ 18] */ Button       312  561   80   24    SmallPlain  "Send"
+/* [ 19] */ Button       240  134  152   26    LargePlain  "New"
 }
 
 'DLGH' ID_DESLAB_OBMER_PALETTE Deslab_Obmer_Palette {
@@ -161,6 +162,7 @@
 16   ""        ChatLabel
 17   ""        MessageEdit
 18   ""        SendButton
+19   ""        NewButton
 }
 
 'GDLG' ID_SHORTCUTS_DIALOG Modal | noGrow    80   80  500  270  "Script Shortcuts" {

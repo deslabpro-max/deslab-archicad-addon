@@ -6,6 +6,7 @@
 #include "IBinaryChannelUtilities.hpp"
 #include "MessageLoopExecutor.hpp"
 #include "OnExit.hpp"
+#include "FileSystem.hpp"
 
 #include <memory>
 
@@ -118,6 +119,7 @@ DeslabObmerPalette::DeslabObmerPalette ()
     , chatLabel (GetReference (), 16)
     , messageEdit (GetReference (), 17)
     , sendButton (GetReference (), 18)
+    , newButton (GetReference (), 19)
     , logEdit (GetReference (), DG::Rect (8, 190, 392, 410), DG::MultiLineEdit::VScroll, DG::EditControl::Frame,
                DG::EditControl::Update, DG::EditControl::ReadOnly)
     , chatEdit (GetReference (), DG::Rect (8, 436, 392, 556), DG::MultiLineEdit::VScroll, DG::EditControl::Frame,
@@ -129,6 +131,7 @@ DeslabObmerPalette::DeslabObmerPalette ()
     buildButton.Attach (*this);
     stopButton.Attach (*this);
     sendButton.Attach (*this);
+    newButton.Attach (*this);
     InitTexts ();
     logEdit.Show ();
     chatEdit.Show ();
@@ -160,6 +163,7 @@ void DeslabObmerPalette::InitTexts ()
     stopButton.SetText (U ("\xD0\x9E\xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xB8\xD1\x82\xD1\x8C"));
     logLabel.SetText (U ("\xD0\xA5\xD0\xBE\xD0\xB4 \xD1\x81\xD0\xB1\xD0\xBE\xD1\x80\xD0\xBA\xD0\xB8, \xD0\xBD\xD0\xB0\xD0\xB9\xD0\xB4\xD0\xB5\xD0\xBD\xD0\xBD\xD0\xBE\xD0\xB5 \xD0\x98\xD0\x98 \xD0\xB8 \xD0\xB2\xD0\xBE\xD0\xBF\xD1\x80\xD0\xBE\xD1\x81\xD1\x8B:"));
     chatLabel.SetText (U ("\xD0\xA7\xD0\xB0\xD1\x82 \xD1\x81 \xD0\xBC\xD0\xBE\xD0\xB4\xD0\xB5\xD0\xBB\xD1\x8C\xD1\x8E \xD0\xBE \xD0\xBF\xD0\xBE\xD1\x81\xD0\xBB\xD0\xB5\xD0\xB4\xD0\xBD\xD0\xB5\xD0\xB9 \xD1\x81\xD0\xB1\xD0\xBE\xD1\x80\xD0\xBA\xD0\xB5:"));
+    newButton.SetText (U ("\xD0\x9D\xD0\xBE\xD0\xB2\xD1\x8B\xD0\xB9 \xD0\xBE\xD0\xB1\xD0\xBC\xD0\xB5\xD1\x80\xE2\x80\xA6"));
     sendButton.SetText (U ("\xD0\x9E\xD1\x82\xD0\xBF\xD1\x80\xD0\xB0\xD0\xB2\xD0\xB8\xD1\x82\xD1\x8C"));
     SetStatus (U ("\xD0\x93\xD0\xBE\xD1\x82\xD0\xBE\xD0\xB2\xD0\xBE \xD0\xBA \xD1\x80\xD0\xB0\xD0\xB1\xD0\xBE\xD1\x82\xD0\xB5"));
 }
@@ -201,6 +205,7 @@ void DeslabObmerPalette::UpdateButtons ()
 {
     const bool running = IsRunning ();
     buildButton.SetStatus (!running);
+    newButton.SetStatus (!running);
     sendButton.SetStatus (!running);
     stopButton.SetStatus (running);
 }
@@ -260,6 +265,93 @@ GS::UniString DeslabObmerPalette::BridgeFolder ()
 #else
     return GS::UniString ();
 #endif
+}
+
+// deslab: the folder "Arkhikad" (Cyrillic) on the desktop (DESLAB_ROOT overrides it, as in the bridge).
+GS::UniString DeslabObmerPalette::ArkhikadFolder ()
+{
+#if defined (WINDOWS)
+    const GS::UniString own = EnvironmentValue (L"DESLAB_ROOT");
+    if (!own.IsEmpty ()) {
+        return own;
+    }
+    const GS::UniString bridge = BridgeFolder ();
+    const GS::UniString tail ("\\deslab-bridge-src\\bridge");
+    if (bridge.EndsWith (tail)) {
+        GS::UniString root = bridge;
+        root.Truncate (bridge.GetLength () - tail.GetLength ());
+        return root;
+    }
+    return EnvironmentValue (L"USERPROFILE") + U ("\\Desktop\\\xD0\x90\xD1\x80\xD1\x85\xD0\xB8\xD0\xBA\xD0\xB0\xD0\xB4");
+#else
+    return GS::UniString ();
+#endif
+}
+
+// deslab: "New survey" (Igor 07.11.2026: a new drawing should start as the office template). The API cannot create layer
+// combinations, line types, surfaces, master layouts or styles in an empty project, so the office template file
+// "Arkhikad\deslab Obmer.pln" (Cyrillic names; DESLAB_TEMPLATE overrides it) is copied to a new file, which is then opened. The current
+// project is not saved here: Archicad asks about it itself.
+void DeslabObmerPalette::NewObmer ()
+{
+    GS::UniString master;
+#if defined (WINDOWS)
+    master = EnvironmentValue (L"DESLAB_TEMPLATE");
+#endif
+    if (master.IsEmpty ()) {
+        master = ArkhikadFolder () + U ("\\deslab \xD0\x9E\xD0\xB1\xD0\xBC\xD0\xB5\xD1\x80.pln");
+    }
+    if (!FileExists (master)) {
+        AppendOutput (Job::Build, U ("\xD0\x9D\xD0\xB5\xD1\x82 \xD1\x84\xD0\xB0\xD0\xB9\xD0\xBB\xD0\xB0 \xD1\x88\xD0\xB0\xD0\xB1\xD0\xBB\xD0\xBE\xD0\xBD\xD0\xB0: ") + master + "\n" +
+            U ("\xD0\xA1\xD0\xBE\xD1\x85\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB8\xD1\x82\xD0\xB5 \xD1\x87\xD0\xB8\xD1\x81\xD1\x82\xD1\x83\xD1\x8E \xD0\xBA\xD0\xBE\xD0\xBF\xD0\xB8\xD1\x8E \xD1\x88\xD0\xB0\xD0\xB1\xD0\xBB\xD0\xBE\xD0\xBD\xD0\xB0 \xD0\xBF\xD0\xBE\xD0\xB4 \xD1\x8D\xD1\x82\xD0\xB8\xD0\xBC \xD0\xB8\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB5\xD0\xBC (\xC2\xAB\xD0\xA4\xD0\xB0\xD0\xB9\xD0\xBB \xE2\x86\x92 \xD0\xA1\xD0\xBE\xD1\x85\xD1\x80\xD0\xB0\xD0\xBD\xD0\xB8\xD1\x82\xD1\x8C \xD0\xBA\xD0\xB0\xD0\xBA\xE2\x80\xA6\xC2\xBB), \xD0\xB8 \xD0\xBA\xD0\xBD\xD0\xBE\xD0\xBF\xD0\xBA\xD0\xB0 \xD0\xB7\xD0\xB0\xD1\x80\xD0\xB0\xD0\xB1\xD0\xBE\xD1\x82\xD0\xB0\xD0\xB5\xD1\x82.\n"));
+        SetStatus (U ("\xD0\x9D\xD0\xB5\xD1\x82 \xD1\x84\xD0\xB0\xD0\xB9\xD0\xBB\xD0\xB0 \xD1\x88\xD0\xB0\xD0\xB1\xD0\xBB\xD0\xBE\xD0\xBD\xD0\xB0"));
+        return;
+    }
+
+    FTM::FileTypeManager ftMan ("Archicad");
+    FTM::GroupID gid = ftMan.AddGroup ("Archicad");
+    ftMan.AddType (FTM::FileType ("Archicad Project", "pln", '    ', '    ', 0), gid);
+    DG::FileDialog dialog (DG::FileDialog::Save);
+    dialog.AddFilter (gid);
+    dialog.SetFolder (IO::Location (ArkhikadFolder ()));
+    if (!dialog.Invoke ()) {
+        return;
+    }
+    GS::UniString target;
+    dialog.GetSelectedFile ().ToPath (&target);
+    if (!target.ToLowerCase ().EndsWith (".pln")) {
+        target += ".pln";
+    }
+    if (FileExists (target)) {
+        AppendOutput (Job::Build, U ("\xD0\xA4\xD0\xB0\xD0\xB9\xD0\xBB \xD1\x83\xD0\xB6\xD0\xB5 \xD0\xB5\xD1\x81\xD1\x82\xD1\x8C, \xD0\xB2\xD1\x8B\xD0\xB1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD0\xB5 \xD0\xB4\xD1\x80\xD1\x83\xD0\xB3\xD0\xBE\xD0\xB5 \xD0\xB8\xD0\xBC\xD1\x8F: ") + target + "\n");
+        SetStatus (U ("\xD0\xA4\xD0\xB0\xD0\xB9\xD0\xBB \xD1\x83\xD0\xB6\xD0\xB5 \xD0\xB5\xD1\x81\xD1\x82\xD1\x8C"));
+        return;
+    }
+    const IO::Location targetLocation (target);
+    if (IO::fileSystem.Copy (IO::Location (master), targetLocation) != NoError) {
+        AppendOutput (Job::Build, U ("\xD0\x9D\xD0\xB5 \xD1\x83\xD0\xB4\xD0\xB0\xD0\xBB\xD0\xBE\xD1\x81\xD1\x8C \xD1\x81\xD0\xBA\xD0\xBE\xD0\xBF\xD0\xB8\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB0\xD1\x82\xD1\x8C \xD1\x88\xD0\xB0\xD0\xB1\xD0\xBB\xD0\xBE\xD0\xBD \xD0\xB2 ") + target + "\n");
+        SetStatus (U ("\xD0\x9E\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 \xD0\xBA\xD0\xBE\xD0\xBF\xD0\xB8\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB0\xD0\xBD\xD0\xB8\xD1\x8F"));
+        return;
+    }
+
+    IO::Location openLocation (targetLocation);
+    API_FileOpenPars openPars = {};
+    openPars.fileTypeID = APIFType_PlanFile;
+    openPars.libGiven = false;
+    openPars.useStoredLib = true;
+#ifndef ServerMainVers_2900
+    openPars.enableSaveAlert = true;   // Archicad asks about the current project; the add-on never saves it
+#endif
+    openPars.file = &openLocation;
+    const GSErrCode err = ACAPI_ProjectOperation_Open (&openPars);
+    if (err != NoError) {
+        AppendOutput (Job::Build, U ("\xD0\xA8\xD0\xB0\xD0\xB1\xD0\xBB\xD0\xBE\xD0\xBD \xD1\x81\xD0\xBA\xD0\xBE\xD0\xBF\xD0\xB8\xD1\x80\xD0\xBE\xD0\xB2\xD0\xB0\xD0\xBD, \xD0\xBD\xD0\xBE \xD0\xBE\xD1\x82\xD0\xBA\xD1\x80\xD1\x8B\xD1\x82\xD1\x8C \xD0\xBD\xD0\xB5 \xD1\x83\xD0\xB4\xD0\xB0\xD0\xBB\xD0\xBE\xD1\x81\xD1\x8C: ") + target + "\n");
+        SetStatus (U ("\xD0\x9E\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 \xD0\xBE\xD1\x82\xD0\xBA\xD1\x80\xD1\x8B\xD1\x82\xD0\xB8\xD1\x8F"));
+        return;
+    }
+    lastBuildName = GS::UniString ();
+    logEdit.SetText (U ("\xD0\x9D\xD0\xBE\xD0\xB2\xD1\x8B\xD0\xB9 \xD0\xBE\xD0\xB1\xD0\xBC\xD0\xB5\xD1\x80: ") + target + "\n" + U ("\xD0\x92\xD1\x8B\xD0\xB1\xD0\xB5\xD1\x80\xD0\xB8\xD1\x82\xD0\xB5 \xD1\x81\xD0\xBA\xD0\xB0\xD0\xBD E57 \xD0\xB8 \xD0\xBD\xD0\xB0\xD0\xB6\xD0\xBC\xD0\xB8\xD1\x82\xD0\xB5 \xC2\xAB\xD0\x9F\xD0\xBE\xD1\x81\xD1\x82\xD1\x80\xD0\xBE\xD0\xB8\xD1\x82\xD1\x8C\xC2\xBB.\n"));
+    SetStatus (U ("\xD0\x9D\xD0\xBE\xD0\xB2\xD1\x8B\xD0\xB9 \xD0\xBE\xD0\xB1\xD0\xBC\xD0\xB5\xD1\x80 \xD0\xBE\xD1\x82\xD0\xBA\xD1\x80\xD1\x8B\xD1\x82"));
 }
 
 // The name rebuild.py gives a build: the scan file's name up to its first dot, or the preset itself.
@@ -497,6 +589,8 @@ void DeslabObmerPalette::ButtonClicked (const DG::ButtonClickEvent& ev)
         }
     } else if (ev.GetSource () == &sendButton) {
         SendChatMessage ();
+    } else if (ev.GetSource () == &newButton) {
+        NewObmer ();
     }
 }
 
@@ -522,7 +616,6 @@ void DeslabObmerPalette::PanelResized (const DG::PanelResizeEvent& ev)
     modelPopUp.Resize (dx, 0);
     statusText.Resize (dx, 0);
     separator.Resize (dx, 0);
-    logLabel.Resize (dx, 0);
     logEdit.Resize (dx, dy);               // the log takes the extra height
     chatLabel.MoveAndResize (0, dy, dx, 0);
     chatEdit.MoveAndResize (0, dy, dx, 0);
