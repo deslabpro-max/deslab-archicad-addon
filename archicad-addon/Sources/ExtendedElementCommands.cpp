@@ -651,6 +651,17 @@ GS::Optional<GS::ObjectState> DimensionDefaults::Read (const GS::ObjectState& da
         element.dimension.defNote.notePen = static_cast<short> (textPen);
     }
 
+    // deslab: 08.11.2026, in a new project the Dimension tool defaults carry Archicad's own font, and the favorite does
+    // not set the text: the measured plan's dimensions came out in a sans-serif font instead of the template's GOST one
+    GS::UniString textFontName;
+    if (data.Get ("textFontName", textFontName) && !textFontName.IsEmpty ()) {
+        const GS::Optional<short> fontIndex = GetFontIndexFromName (textFontName);
+        if (!fontIndex.HasValue ()) {
+            return CreateErrorResponse (APIERR_BADNAME, "No loaded font is named '" + textFontName + "'.");
+        }
+        element.dimension.defNote.noteFont = *fontIndex;
+    }
+
     return {};
 }
 
@@ -6360,6 +6371,10 @@ GS::Optional<GS::UniString> CreateAssociativeDimensionsCommand::GetInputParamete
                             "type": "integer",
                             "description": "Optional pen index of the dimension texts, applied to every witness point after favoriteName."
                         },
+                        "textFontName": {
+                            "type": "string",
+                            "description": "Optional name of the font of the dimension texts (as GetDetailsOfElements reports fontName), applied after favoriteName."
+                        },
                         "referencePoint": { "$ref": "#/Coordinate2D" },
                         "direction": { "$ref": "#/Coordinate2D" },
                         "floorIndex": { "type": "number" },
@@ -6577,6 +6592,10 @@ GS::Optional<GS::UniString> CreateAssociativeDimensionsOnSectionCommand::GetInpu
                             "type": "integer",
                             "description": "Optional pen index of the dimension texts, applied to every witness point after favoriteName."
                         },
+                        "textFontName": {
+                            "type": "string",
+                            "description": "Optional name of the font of the dimension texts (as GetDetailsOfElements reports fontName), applied after favoriteName."
+                        },
                         "sectionElementId": {
                             "$ref": "#/ElementId",
                             "description": "The identifier of a single section element. Only one of sectionElementId and sectionElementIds can be given."
@@ -6748,6 +6767,10 @@ GS::Optional<GS::UniString> CreateWallThicknessDimensionsCommand::GetInputParame
                         "textPen": {
                             "type": "integer",
                             "description": "Optional pen index of the dimension texts, applied to every witness point after favoriteName."
+                        },
+                        "textFontName": {
+                            "type": "string",
+                            "description": "Optional name of the font of the dimension texts (as GetDetailsOfElements reports fontName), applied after favoriteName."
                         },
                         "wallId": { "$ref": "#/ElementId" },
                         "referencePoint": { "$ref": "#/Coordinate2D" },

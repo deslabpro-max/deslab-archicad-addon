@@ -53,6 +53,7 @@
     "splitViews": true,
     "shaftMaterial": "Штукатурка - Гипсовая"
   },
+  "dimensionText": {"font": "GOST Type BU Кириллический", "size": 2.5, "pen": 120},
   "favoritesFile": "C:\\Users\\user\\Desktop\\Архикад\\obmer_fav.prefs",
   "favorites": {
     "zone": "ОБМЕР шаблон Зона",

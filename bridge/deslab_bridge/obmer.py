@@ -1834,6 +1834,10 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
                                    for j, g in enumerate(ids)]}
             if F.get("dimension"):
                 d["favoriteName"] = F["dimension"]
+            # deslab: 08.11.2026, the favorite does not set the dimension text, and a new project's tool defaults are not
+            # the template's: font, size and pen of the texts are sent (profile "dimensionText")
+            for key, value in (profile.get("dimensionText") or {}).items():
+                d[{"font": "textFontName", "size": "textHeight", "pen": "textPen"}[key]] = value
             dims.append(d)
         made = _created(ac.tapir("CreateAssociativeDimensions", {"dimensionsData": dims}), "elements", report, "Размер")
         dim_guids = [g for g in made if g]
