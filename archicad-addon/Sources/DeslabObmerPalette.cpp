@@ -7,6 +7,8 @@
 #include "MessageLoopExecutor.hpp"
 #include "OnExit.hpp"
 #include "FileSystem.hpp"
+#include "OfficeStandardCommands.hpp"
+#include "GSProcessControl.hpp"
 
 #include <memory>
 
@@ -421,6 +423,36 @@ void DeslabObmerPalette::Build ()
     }
     lastBuildName = BuildName (file);
     logEdit.SetText (GS::UniString ());
+    // deslab: Igor 08.11.2026: a build in a new file came out without the office layers, pens, views and scale. The open
+    // project is set up by the office standard first (ApplyOfficeStandard: what it already has is kept, so a second
+    // build adds nothing); the package and the standard's file are "Arkhikad\deslab-standard\standard.json" and the
+    // office template, DESLAB_STANDARD and DESLAB_STANDARD_SOURCE override them.
+    {
+        GS::UniString package, source;
+#if defined (WINDOWS)
+        package = EnvironmentValue (L"DESLAB_STANDARD");
+        source = EnvironmentValue (L"DESLAB_STANDARD_SOURCE");
+#endif
+        if (package.IsEmpty ()) {
+            package = ArkhikadFolder () + "\\deslab-standard\\standard.json";
+        }
+        if (source.IsEmpty ()) {
+            source = ArkhikadFolder () + U ("\\\xD0\x90\xD0\xBD\xD1\x82\xD0\xBE\xD0\xBD \xD0\x9A\xD1\x80\xD1\x8E\xD1\x87\xD0\xBA\xD0\xBE\xD0\xB2.pln");
+        }
+        if (!FileExists (package) || !FileExists (source)) {
+            AppendOutput (Job::Build, U ("\xD0\x9D\xD0\xB5\xD1\x82 \xD0\xBF\xD0\xB0\xD0\xBA\xD0\xB5\xD1\x82\xD0\xB0 \xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xB4\xD0\xB0\xD1\x80\xD1\x82\xD0\xB0: ") + package + "\n");
+        } else {
+            SetStatus (U ("\xD0\x9E\xD1\x84\xD0\xBE\xD1\x80\xD0\xBC\xD0\xBB\xD1\x8F\xD1\x8E \xD0\xBF\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBA\xD1\x82 \xD0\xBF\xD0\xBE \xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xB4\xD0\xB0\xD1\x80\xD1\x82\xD1\x83 \xD0\xBE\xD1\x84\xD0\xB8\xD1\x81\xD0\xB0\xE2\x80\xA6"));
+            GS::NonInterruptibleProcessControl processControl;
+            GS::Array<GS::UniString> reportLines;
+            const GSErrCode err = ApplyOfficeStandardCommand::ApplyAttributes (source, package, processControl, reportLines);
+            for (const GS::UniString& line : reportLines) {
+                AppendOutput (Job::Build, line + "\n");
+            }
+            AppendOutput (Job::Build, err == NoError ? U ("\xD0\x9F\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBA\xD1\x82 \xD0\xBE\xD1\x84\xD0\xBE\xD1\x80\xD0\xBC\xD0\xBB\xD0\xB5\xD0\xBD \xD0\xBF\xD0\xBE \xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xB4\xD0\xB0\xD1\x80\xD1\x82\xD1\x83.\n")
+                                                     : U ("\xD0\x9E\xD1\x84\xD0\xBE\xD1\x80\xD0\xBC\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xBF\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBA\xD1\x82\xD0\xB0: \xD0\xBE\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 ") + GS::UniString::Printf ("%d\n", static_cast<int> (err)));
+        }
+    }
     StartJob (Job::Build, args);
     if (IsRunning ()) {
         SetStatus (modelId == "-" ? U ("\xD0\xA1\xD1\x82\xD1\x80\xD0\xBE\xD1\x8E \xD0\xB1\xD0\xB5\xD0\xB7 \xD0\x98\xD0\x98\xE2\x80\xA6") : U ("\xD0\xA1\xD1\x82\xD1\x80\xD0\xBE\xD1\x8E, \xD0\x98\xD0\x98 \xD1\x80\xD0\xB0\xD0\xB7\xD0\xB1\xD0\xB8\xD1\x80\xD0\xB0\xD0\xB5\xD1\x82 (1\xE2\x80\x93" "3 \xD0\xBC\xD0\xB8\xD0\xBD)\xE2\x80\xA6"));
