@@ -3,6 +3,7 @@
 #include "OfficeStandardCommands.hpp"
 #include "MigrationHelper.hpp"
 #include "GraphicOverrideCommands.hpp"
+#include "ElementCreationCommands.hpp"
 #include "FileSystem.hpp"
 #include "File.hpp"
 #include "ObjectStateJSONConversion.hpp"
@@ -1241,19 +1242,183 @@ bool DatabaseInfo (API_DatabaseUnId id, API_DatabaseInfo& info)
     return ACAPI_Window_GetDatabaseInfo (&info, &id) == NoError;
 }
 
+// deslab: the drawing content of a master layout (the title block): its lines and texts, written per master into the
+// package and drawn into the open project's master of that name. Other element types are counted and left out.
+GS::UniString LayerName (API_AttributeIndex index)
+{
+    GS::UniString name;
+    API_Attribute attribute = {};
+    attribute.header.typeID = API_LayerID;
+    attribute.header.index = index;
+    attribute.header.uniStringNamePtr = &name;
+    ACAPI_Attribute_Get (&attribute);
+    DisposeAttribute (attribute);
+    return name;
+}
+
+GS::ObjectState Coordinate (const API_Coord& c)
+{
+    return GS::ObjectState ("x", c.x, "y", c.y);
+}
+
+// Runs an action with the given database current, then goes back to the one that was.
+GSErrCode InDatabase (API_DatabaseUnId id, const std::function<void ()>& action)
+{
+    API_DatabaseInfo start = {};
+    GSErrCode err = ACAPI_Database_GetCurrentDatabase (&start);
+    if (err != NoError) {
+        return err;
+    }
+    API_DatabaseInfo target;
+    if (!DatabaseInfo (id, target)) {
+        return APIERR_BADDATABASE;
+    }
+    err = ACAPI_Database_ChangeCurrentDatabase (&target);
+    if (err != NoError) {
+        return err;
+    }
+    action ();
+    return ACAPI_Database_ChangeCurrentDatabase (&start);
+}
+
+GS::Array<GS::ObjectState> CaptureMasterContent (API_DatabaseUnId id, Int32& skipped)
+{
+    GS::Array<GS::ObjectState> out;
+    InDatabase (id, [&] () {
+        bool savedAutoText = true;
+        ACAPI_AutoText_GetAutoTextFlag (&savedAutoText);
+        bool keys = false;   // autotexts are read as their keys, not as the text they show here
+        ACAPI_AutoText_ChangeAutoTextFlag (&keys);
+        GS::Array<API_Guid> guids;
+        ACAPI_Element_GetElemList (API_ZombieElemID, &guids);
+        for (const API_Guid& guid : guids) {
+            API_Element element = {};
+            element.header.guid = guid;
+            if (ACAPI_Element_Get (&element) != NoError) {
+                ++skipped;
+                continue;
+            }
+            const API_ElemTypeID type = GetElemTypeId (element.header);
+            if (type == API_LineID) {
+                GS::ObjectState os ("type", GS::UniString ("Line"), "layer", LayerName (element.header.layer),
+                    "beg", Coordinate (element.line.begC), "end", Coordinate (element.line.endC),
+                    "pen", static_cast<Int32> (element.line.linePen.penIndex));
+                os.Add ("lineType", APIGuidToString (GetAttributeGuidFromIndex (API_LinetypeID, element.line.ltypeInd)));
+                out.Push (os);
+            } else if (type == API_TextID) {
+                GS::ObjectState style;
+                TextLabelDetails::AddTextStyleDetails (style, element.text, false);
+                GS::ObjectState os ("type", GS::UniString ("Text"), "layer", LayerName (element.header.layer),
+                    "loc", Coordinate (element.text.loc), "style", style);
+                if (TextLabelDetails::AddTextContent (os, guid) != NoError) {
+                    ++skipped;
+                    continue;
+                }
+                out.Push (os);
+            } else {
+                ++skipped;
+            }
+        }
+        ACAPI_AutoText_ChangeAutoTextFlag (&savedAutoText);
+    });
+    return out;
+}
+
+// Draws the captured content into a master; nothing is drawn into a master that already has elements.
+void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& content, const GuidMap& attributeGuids,
+                         GS::ProcessControl& processControl, Int32& drawn, Int32& failed, bool& skippedFilled)
+{
+    if (content.IsEmpty ()) {
+        return;
+    }
+    const std::map<GS::UniString, API_AttributeIndex> layers = ProjectNames (API_LayerID);
+    InDatabase (id, [&] () {
+        GS::Array<API_Guid> present;
+        ACAPI_Element_GetElemList (API_ZombieElemID, &present);
+        if (!present.IsEmpty ()) {
+            skippedFilled = true;
+            return;
+        }
+        GS::Array<GS::ObjectState> lines, texts;
+        for (const GS::ObjectState& item : content) {
+            GS::UniString type, layer;
+            item.Get ("type", type);
+            item.Get ("layer", layer);
+            const auto found = layers.find (layer);
+            const Int32 layerIndex = found != layers.end () ? GetAttributeIndex (found->second) : 1;
+            if (type == "Line") {
+                GS::ObjectState beg, end;
+                Int32 pen = 1;
+                GS::UniString lineType;
+                item.Get ("beg", beg);
+                item.Get ("end", end);
+                item.Get ("pen", pen);
+                item.Get ("lineType", lineType);
+                const auto mapped = attributeGuids.find (lineType.ToUpperCase ());
+                if (mapped != attributeGuids.end ()) {
+                    lineType = mapped->second;
+                }
+                GS::ObjectState line ("begCoordinate", beg, "endCoordinate", end, "linePenIndex", pen, "layerIndex", layerIndex,
+                    "floorInd", 0);
+                line.Add ("lineTypeId", GS::ObjectState ("guid", lineType));
+                lines.Push (line);
+            } else if (type == "Text") {
+                GS::ObjectState loc, style;
+                double x = 0.0, y = 0.0;
+                item.Get ("loc", loc);
+                loc.Get ("x", x);
+                loc.Get ("y", y);
+                item.Get ("style", style);
+                GS::ObjectState text ("coordinate", GS::ObjectState ("x", x, "y", y, "z", 0.0), "style", style,
+                    "floorIndex", 0, "layerIndex", layerIndex);
+                GS::Array<GS::ObjectState> runs;
+                GS::UniString plain;
+                if (item.Get ("runs", runs) && !runs.IsEmpty ()) {
+                    text.Add ("runs", runs);
+                } else {
+                    item.Get ("text", plain);
+                    text.Add ("text", plain);
+                }
+                texts.Push (text);
+            }
+        }
+        const auto count = [&] (const GS::ObjectState& response) {
+            GS::Array<GS::ObjectState> elements;
+            response.Get ("elements", elements);
+            for (const GS::ObjectState& element : elements) {
+                if (element.Contains ("elementId")) {
+                    ++drawn;
+                } else {
+                    ++failed;
+                }
+            }
+        };
+        if (!lines.IsEmpty ()) {
+            count (CreateLineElementsCommand ().Execute (GS::ObjectState ("linesData", lines), processControl));
+        }
+        if (!texts.IsEmpty ()) {
+            count (CreateTextsCommand ().Execute (GS::ObjectState ("textsData", texts), processControl));
+        }
+    });
+}
+
 void CaptureLayouts (GS::ObjectState& package, GS::ObjectState& counts)
 {
     const auto& masters = package.AddList<GS::ObjectState> ("masterLayouts");
-    Int32 masterCount = 0;
+    Int32 masterCount = 0, contentCount = 0, contentSkipped = 0;
     for (API_DatabaseUnId id : Databases (true)) {
         API_DatabaseInfo info;
         API_LayoutInfo layout = {};
         if (!DatabaseInfo (id, info) || ACAPI_Navigator_GetLayoutSets (&layout, &id) != NoError) {
             continue;
         }
-        masters (GS::ObjectState ("name", GS::UniString (info.name), "ref", GS::UniString (info.ref),
+        GS::ObjectState master ("name", GS::UniString (info.name), "ref", GS::UniString (info.ref),
             "sizeX", layout.sizeX, "sizeY", layout.sizeY, "leftMargin", layout.leftMargin, "topMargin", layout.topMargin,
-            "rightMargin", layout.rightMargin, "bottomMargin", layout.bottomMargin));
+            "rightMargin", layout.rightMargin, "bottomMargin", layout.bottomMargin);
+        const GS::Array<GS::ObjectState> content = CaptureMasterContent (id, contentSkipped);
+        contentCount += static_cast<Int32> (content.GetSize ());
+        master.Add ("content", content);
+        masters (master);
         delete layout.customData;
         ++masterCount;
     }
@@ -1273,10 +1438,13 @@ void CaptureLayouts (GS::ObjectState& package, GS::ObjectState& counts)
         ++layoutCount;
     }
     counts.Add ("masterLayouts", masterCount);
+    counts.Add ("masterLayoutElements", contentCount);
+    counts.Add ("masterLayoutElementsSkipped", contentSkipped);
     counts.Add ("layouts", layoutCount);
 }
 
-void ApplyLayouts (const GS::ObjectState& package, GS::Array<GS::UniString>& reportLines)
+void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids, GS::ProcessControl& processControl,
+                   GS::Array<GS::UniString>& reportLines)
 {
     GS::Array<GS::ObjectState> masters, layouts;
     if (!package.Get ("masterLayouts", masters)) {
@@ -1343,8 +1511,28 @@ void ApplyLayouts (const GS::ObjectState& package, GS::Array<GS::UniString>& rep
         masterIds[name] = info.databaseUnId;
         ++created;
     }
-    reportLines.Push (GS::UniString::Printf ("MasterLayout: created %d, already there %d (resized %d), failed %d (drawing content not copied)",
+    reportLines.Push (GS::UniString::Printf ("MasterLayout: created %d, already there %d (resized %d), failed %d",
         static_cast<int> (created), static_cast<int> (existing), static_cast<int> (resized), static_cast<int> (failed)));
+
+    Int32 drawn = 0, drawFailed = 0;
+    GS::UniString filled;
+    for (const GS::ObjectState& os : masters) {
+        GS::UniString name;
+        GS::Array<GS::ObjectState> content;
+        os.Get ("name", name);
+        os.Get ("content", content);
+        const auto found = masterIds.find (name);
+        if (found == masterIds.end () || content.IsEmpty ()) {
+            continue;
+        }
+        bool skippedFilled = false;
+        ApplyMasterContent (found->second, content, attributeGuids, processControl, drawn, drawFailed, skippedFilled);
+        if (skippedFilled) {
+            filled += "; " + name + " already has content";
+        }
+    }
+    reportLines.Push (GS::UniString::Printf ("MasterLayoutContent: drawn %d, failed %d",
+        static_cast<int> (drawn), static_cast<int> (drawFailed)) + filled);
 
     std::map<GS::UniString, bool> layoutNames;
     for (API_DatabaseUnId id : Databases (false)) {
@@ -1515,7 +1703,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         ApplyGraphicOverrides (package, guids, maps[API_LayerID], processControl, reportLines);
         ApplyViews (package, reportLines);
         ApplyFavorites (packagePath, reportLines);
-        ApplyLayouts (package, reportLines);
+        ApplyLayouts (package, guids, processControl, reportLines);
     }
     return err;
 #else
