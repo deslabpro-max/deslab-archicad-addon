@@ -7,6 +7,7 @@
 #include "File.hpp"
 #include "ObjectStateJSONConversion.hpp"
 
+#include <cstdlib>
 #include <deque>
 #include <functional>
 #include <string>
@@ -569,7 +570,39 @@ GS::UniString CreatedGuid (const GS::ObjectState& response, const char* listKey,
     return GS::EmptyUniString;
 }
 
-void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attributeGuids, GS::ProcessControl& processControl,
+// deslab: a criterion on the Layer property keeps the layer's index ("Property::AttributeIndexValue"), not its guid:
+// the indices of the standard's layers are moved to the ones in the open project.
+GS::UniString RemapLayerIndices (const GS::UniString& xml, const IndexMap& layers)
+{
+    static const std::string layerProperty = "0F43553E-58E7-4661-8CEB-8B4E5D2ED50A";
+    std::string text (xml.ToCStr (0, MaxUSize, CC_UTF8).Get ());
+    size_t pos = 0;
+    while ((pos = text.find ("<PropertyCriterion", pos)) != std::string::npos) {
+        const size_t end = text.find ("</PropertyCriterion>", pos);
+        if (end == std::string::npos) {
+            break;
+        }
+        const size_t guid = text.find (layerProperty, pos);
+        const size_t variant = text.find ("Property::AttributeIndexValue", pos);
+        if (guid != std::string::npos && guid < end && variant != std::string::npos && variant < end) {
+            const size_t open = text.find ("<Value>", variant);
+            const size_t close = open == std::string::npos ? std::string::npos : text.find ("</Value>", open);
+            if (close != std::string::npos && close < end) {
+                const size_t from = open + 7;
+                const Int32 index = static_cast<Int32> (std::atoi (text.substr (from, close - from).c_str ()));
+                const auto it = layers.find (index);
+                if (it != layers.end ()) {
+                    const std::string mapped = std::to_string (GetAttributeIndex (it->second));
+                    text.replace (from, close - from, mapped);
+                }
+            }
+        }
+        pos = text.find ("</PropertyCriterion>", pos) + 1;
+    }
+    return GS::UniString (text.c_str (), CC_UTF8);
+}
+
+void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attributeGuids, const IndexMap& layers, GS::ProcessControl& processControl,
                             GS::Array<GS::UniString>& reportLines)
 {
     GS::Array<GS::ObjectState> rules, combinations;
@@ -597,6 +630,25 @@ void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attri
             continue;
         }
         rule = WithGuidsReplaced (rule, attributeGuids);
+        {
+            // Rebuilt with the fields CreateGraphicOverrideRules reads, the criterion's layer indices moved.
+            GS::ObjectState rebuilt;
+            GS::UniString text;
+            if (rule.Get ("name", text)) {
+                rebuilt.Add ("name", text);
+            }
+            if (rule.Get ("ruleGroupName", text)) {
+                rebuilt.Add ("ruleGroupName", text);
+            }
+            if (rule.Get ("criterionXML", text)) {
+                rebuilt.Add ("criterionXML", RemapLayerIndices (text, layers));
+            }
+            GS::ObjectState style;
+            if (rule.Get ("style", style)) {
+                rebuilt.Add ("style", style);
+            }
+            rule = rebuilt;
+        }
         if (!rule.Contains ("ruleGroupName")) {
             rule.Add ("ruleGroupName", GS::UniString ("deslab"));
         }
@@ -1184,8 +1236,8 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         reportLines.Push ("No standard package: layers, surfaces and building materials are skipped.");
     }
     GuidMap guids;
+    std::map<API_AttrTypeID, IndexMap> maps;
     const GSErrCode err = ACAPI_CallUndoableCommand ("Apply office standard", [&] () -> GSErrCode {
-        std::map<API_AttrTypeID, IndexMap> maps;
         for (const StandardType& type : standardTypes) {
             const TypeResult result = ApplyType (source, hasPackage ? &package : nullptr, type.typeID, maps, guids);
             GS::UniString line = GS::UniString::Printf ("%s: created %d, already there %d, failed %d",
@@ -1202,7 +1254,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     });
     if (err == NoError && hasPackage) {
         // Separate undo steps: the override commands open their own.
-        ApplyGraphicOverrides (package, guids, processControl, reportLines);
+        ApplyGraphicOverrides (package, guids, maps[API_LayerID], processControl, reportLines);
         ApplyViews (package, reportLines);
         ApplyFavorites (packagePath, reportLines);
     }
