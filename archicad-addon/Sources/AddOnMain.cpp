@@ -1130,7 +1130,7 @@ GSErrCode Initialize (void)
         );
         err |= RegisterCommand<CaptureOfficeStandardCommand> (   // deslab
             attributeCommands, "1.7.4",
-            "deslab: writes the layers, surfaces, building materials and layer combinations (with their layer statuses) of the open project (the office standard's project or a copy of it) to a JSON standard package for ApplyOfficeStandard. Available from Archicad 27."
+            "deslab: writes the layers, surfaces, building materials and layer combinations (with their layer statuses) and the graphic override rules and combinations of the open project (the office standard's project or a copy of it) to a JSON standard package for ApplyOfficeStandard. Available from Archicad 27."
         );
         err |= RegisterCommand<DeleteAttributesCommand> (
             attributeCommands, "1.5.4",

@@ -2,6 +2,7 @@
 
 #include "OfficeStandardCommands.hpp"
 #include "MigrationHelper.hpp"
+#include "GraphicOverrideCommands.hpp"
 #include "FileSystem.hpp"
 #include "File.hpp"
 #include "ObjectStateJSONConversion.hpp"
@@ -28,6 +29,7 @@ const StandardType standardTypes[] = {
 };
 
 using IndexMap = std::map<Int32, API_AttributeIndex>;   // source index -> index in the open project
+using GuidMap = std::map<GS::UniString, GS::UniString>;  // source guid -> guid in the open project, where they differ
 
 GS::UniString LoadedName (const API_Attr_Head& header)
 {
@@ -403,8 +405,16 @@ void LoadFromPackage (const GS::ObjectState& package, API_AttrTypeID typeID,
 
 struct TypeResult { Int32 created = 0; Int32 existing = 0; Int32 failed = 0; GS::Array<GS::UniString> failures; GSErrCode readError = NoError; };
 
+void NoteGuid (GuidMap& guids, const API_Guid& sourceGuid, API_AttrTypeID typeID, API_AttributeIndex index)
+{
+    const API_Guid target = GetAttributeGuidFromIndex (typeID, index);
+    if (sourceGuid != APINULLGuid && target != APINULLGuid && sourceGuid != target) {
+        guids[APIGuidToString (sourceGuid).ToUpperCase ()] = APIGuidToString (target).ToUpperCase ();
+    }
+}
+
 TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package, API_AttrTypeID typeID,
-                      std::map<API_AttrTypeID, IndexMap>& maps)
+                      std::map<API_AttrTypeID, IndexMap>& maps, GuidMap& guids)
 {
     TypeResult result;
     GS::Array<GS::Pair<API_Attribute, API_AttributeDefExt>> loaded;
@@ -433,8 +443,10 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
         // held by another name gets the new attribute a fresh guid instead.
         API_AttributeIndex existingIndex = APIInvalidAttributeIndex;
         const auto byName = names.find (name);
+        const API_Guid sourceGuid = attribute.header.guid;
         if (byName != names.end ()) {
             map[sourceIndex] = byName->second;
+            NoteGuid (guids, sourceGuid, typeID, byName->second);
             ++result.existing;
         } else {
             if (FindByGuid (typeID, attribute.header.guid, existingIndex)) {
@@ -456,6 +468,7 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
             if (err == NoError) {
                 map[sourceIndex] = attribute.header.index;
                 names[name] = attribute.header.index;
+                NoteGuid (guids, sourceGuid, typeID, attribute.header.index);
                 ++result.created;
             } else {
                 ++result.failed;
@@ -469,6 +482,189 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
         DisposeAttribute (attribute);
     }
     return result;
+}
+
+// deslab: graphic override rules and combinations. They refer to attributes (layers, fills, surfaces, building
+// materials...) by guid, in the criterion XML and in the style, so the guids that changed on the way are replaced.
+GS::UniString ReplaceGuids (GS::UniString text, const GuidMap& guids)
+{
+    for (const auto& kv : guids) {
+        text.ReplaceAll (kv.first, kv.second);
+        text.ReplaceAll (kv.first.ToLowerCase (), kv.second.ToLowerCase ());
+    }
+    return text;
+}
+
+// The rule as JSON text with the changed guids replaced (in the criterion XML and in the style alike).
+GS::ObjectState WithGuidsReplaced (const GS::ObjectState& rule, const GuidMap& guids)
+{
+    GS::UniString json;
+    GS::ObjectState out;
+    if (JSON::CreateFromObjectState (rule, json) != NoError || JSON::ConvertToObjectState (ReplaceGuids (json, guids), out) != NoError) {
+        return rule;
+    }
+    return out;
+}
+
+std::map<GS::UniString, API_Guid> RuleNames ()
+{
+    std::map<GS::UniString, API_Guid> out;
+    GS::Array<API_Guid> ids;
+    ACAPI_GraphicalOverride_GetOverrideRuleList (ids);
+    for (const API_Guid& id : ids) {
+        API_OverrideRule rule = {};
+        rule.guid = id;
+        if (ACAPI_GraphicalOverride_GetOverrideRuleById (rule) == NoError) {
+            out[rule.name] = id;
+        }
+    }
+    return out;
+}
+
+std::map<GS::UniString, API_Guid> CombinationNames ()
+{
+    std::map<GS::UniString, API_Guid> out;
+    GS::Array<API_Guid> ids;
+    ACAPI_GraphicalOverride_GetOverrideCombinationList (ids);
+    for (const API_Guid& id : ids) {
+        API_OverrideCombination combination = {};
+        combination.guid = id;
+        if (ACAPI_GraphicalOverride_GetOverrideCombination (combination, nullptr) == NoError) {
+            out[combination.name] = id;
+        }
+    }
+    return out;
+}
+
+GS::UniString FirstError (const GS::ObjectState& response, const char* listKey)
+{
+    GS::Array<GS::ObjectState> items;
+    response.Get (listKey, items);
+    for (const GS::ObjectState& item : items) {
+        GS::ObjectState error;
+        GS::UniString message;
+        if (item.Get ("error", error) && error.Get ("message", message)) {
+            return message;
+        }
+    }
+    GS::ObjectState error;
+    GS::UniString message;
+    if (response.Get ("error", error) && error.Get ("message", message)) {
+        return message;
+    }
+    return GS::EmptyUniString;
+}
+
+GS::UniString CreatedGuid (const GS::ObjectState& response, const char* listKey, const char* idKey)
+{
+    GS::Array<GS::ObjectState> items;
+    response.Get (listKey, items);
+    GS::ObjectState idOs;
+    GS::UniString guid;
+    if (items.GetSize () == 1 && items[0].Get (idKey, idOs) && idOs.Get ("guid", guid)) {
+        return guid.ToUpperCase ();
+    }
+    return GS::EmptyUniString;
+}
+
+void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attributeGuids, GS::ProcessControl& processControl,
+                            GS::Array<GS::UniString>& reportLines)
+{
+    GS::Array<GS::ObjectState> rules, combinations;
+    if (!package.Get ("graphicOverrideRules", rules)) {
+        return;
+    }
+    package.Get ("graphicOverrideCombinations", combinations);
+
+    GuidMap ruleGuids;   // source rule guid -> rule guid in the open project
+    std::map<GS::UniString, API_Guid> existingRules = RuleNames ();
+    Int32 created = 0, existing = 0, failed = 0;
+    GS::UniString failures;
+    for (GS::ObjectState rule : rules) {
+        GS::UniString name, sourceGuid;
+        GS::ObjectState idOs;
+        rule.Get ("name", name);
+        if (rule.Get ("graphicOverrideRuleId", idOs)) {
+            idOs.Get ("guid", sourceGuid);
+            sourceGuid = sourceGuid.ToUpperCase ();
+        }
+        const auto it = existingRules.find (name);
+        if (it != existingRules.end ()) {
+            ruleGuids[sourceGuid] = APIGuidToString (it->second).ToUpperCase ();
+            ++existing;
+            continue;
+        }
+        rule = WithGuidsReplaced (rule, attributeGuids);
+        if (!rule.Contains ("ruleGroupName")) {
+            rule.Add ("ruleGroupName", GS::UniString ("deslab"));
+        }
+        GS::ObjectState parameters;
+        parameters.Add ("graphicOverrideRules", GS::Array<GS::ObjectState> { rule });
+        const GS::ObjectState response = CreateGraphicOverrideRulesCommand ().Execute (parameters, processControl);
+        const GS::UniString newGuid = CreatedGuid (response, "graphicOverrideRuleIds", "graphicOverrideRuleId");
+        if (!newGuid.IsEmpty ()) {
+            ruleGuids[sourceGuid] = newGuid;
+            ++created;
+        } else {
+            ++failed;
+            if (failed <= 3) {
+                failures += "; " + name + " (" + FirstError (response, "graphicOverrideRuleIds") + ")";
+            }
+        }
+    }
+    reportLines.Push (GS::UniString::Printf ("GraphicOverrideRule: created %d, already there %d, failed %d",
+        static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
+
+    std::map<GS::UniString, API_Guid> existingCombinations = CombinationNames ();
+    created = existing = failed = 0;
+    failures.Clear ();
+    for (const GS::ObjectState& combination : combinations) {
+        GS::UniString name;
+        combination.Get ("name", name);
+        if (existingCombinations.find (name) != existingCombinations.end ()) {
+            ++existing;
+            continue;
+        }
+        GS::Array<GS::ObjectState> sourceIds;
+        combination.Get ("graphicOverrideRuleIds", sourceIds);
+        GS::Array<GS::ObjectState> ruleIds;
+        bool complete = true;
+        for (const GS::ObjectState& item : sourceIds) {
+            GS::ObjectState idOs;
+            GS::UniString guid;
+            if (item.Get ("graphicOverrideRuleId", idOs) && idOs.Get ("guid", guid)) {
+                const auto it = ruleGuids.find (guid.ToUpperCase ());
+                if (it != ruleGuids.end ()) {
+                    ruleIds.Push (GS::ObjectState ("graphicOverrideRuleId", GS::ObjectState ("guid", it->second)));
+                    continue;
+                }
+            }
+            complete = false;
+        }
+        if (!complete) {
+            ++failed;
+            if (failed <= 3) {
+                failures += "; " + name + " (rules missing)";
+            }
+            continue;
+        }
+        GS::ObjectState item;
+        item.Add ("name", name);
+        item.Add ("graphicOverrideRuleIds", ruleIds);
+        GS::ObjectState parameters;
+        parameters.Add ("graphicOverrideCombinations", GS::Array<GS::ObjectState> { item });
+        const GS::ObjectState response = CreateGraphicOverrideCombinationsCommand ().Execute (parameters, processControl);
+        if (!CreatedGuid (response, "graphicOverrideCombinationIds", "graphicOverrideCombinationId").IsEmpty ()) {
+            ++created;
+        } else {
+            ++failed;
+            if (failed <= 3) {
+                failures += "; " + name + " (" + FirstError (response, "graphicOverrideCombinationIds") + ")";
+            }
+        }
+    }
+    reportLines.Push (GS::UniString::Printf ("GraphicOverrideCombination: created %d, already there %d, failed %d",
+        static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
 }
 
 bool ReadPackage (const GS::UniString& path, GS::ObjectState& package)
@@ -534,7 +730,7 @@ GS::Optional<GS::UniString> ApplyOfficeStandardCommand::GetRawResponseSchema () 
 }
 
 GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sourceProjectPath, const GS::UniString& packagePath,
-                                                       GS::Array<GS::UniString>& reportLines)
+                                                       GS::ProcessControl& processControl, GS::Array<GS::UniString>& reportLines)
 {
 #ifdef ServerMainVers_2700
     const IO::Location source (sourceProjectPath);
@@ -552,10 +748,11 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     if (!hasPackage) {
         reportLines.Push ("No standard package: layers, surfaces and building materials are skipped.");
     }
-    return ACAPI_CallUndoableCommand ("Apply office standard", [&] () -> GSErrCode {
+    GuidMap guids;
+    const GSErrCode err = ACAPI_CallUndoableCommand ("Apply office standard", [&] () -> GSErrCode {
         std::map<API_AttrTypeID, IndexMap> maps;
         for (const StandardType& type : standardTypes) {
-            const TypeResult result = ApplyType (source, hasPackage ? &package : nullptr, type.typeID, maps);
+            const TypeResult result = ApplyType (source, hasPackage ? &package : nullptr, type.typeID, maps, guids);
             GS::UniString line = GS::UniString::Printf ("%s: created %d, already there %d, failed %d",
                 type.name, static_cast<int> (result.created), static_cast<int> (result.existing), static_cast<int> (result.failed));
             if (result.readError != NoError) {
@@ -568,15 +765,21 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         }
         return NoError;
     });
+    if (err == NoError && hasPackage) {
+        // Separate undo steps: the override commands open their own.
+        ApplyGraphicOverrides (package, guids, processControl, reportLines);
+    }
+    return err;
 #else
     UNUSED_PARAMETER (sourceProjectPath);
     UNUSED_PARAMETER (packagePath);
+    UNUSED_PARAMETER (processControl);
     reportLines.Push ("ApplyOfficeStandard needs Archicad 27 or later.");
     return APIERR_GENERAL;
 #endif
 }
 
-GS::ObjectState ApplyOfficeStandardCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
+GS::ObjectState ApplyOfficeStandardCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const
 {
     GS::UniString sourceProjectPath;
     if (!parameters.Get ("sourceProjectPath", sourceProjectPath) || sourceProjectPath.IsEmpty ()) {
@@ -585,7 +788,7 @@ GS::ObjectState ApplyOfficeStandardCommand::Execute (const GS::ObjectState& para
     GS::UniString packagePath;
     parameters.Get ("packagePath", packagePath);
     GS::Array<GS::UniString> reportLines;
-    const GSErrCode err = ApplyAttributes (sourceProjectPath, packagePath, reportLines);
+    const GSErrCode err = ApplyAttributes (sourceProjectPath, packagePath, processControl, reportLines);
     if (err != NoError && reportLines.IsEmpty ()) {
         return CreateErrorResponse (err, "Failed to apply the office standard.");
     }
@@ -634,14 +837,16 @@ GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema (
             "layers": { "type": "integer" },
             "surfaces": { "type": "integer" },
             "buildingMaterials": { "type": "integer" },
-            "layerCombinations": { "type": "integer" }
+            "layerCombinations": { "type": "integer" },
+            "graphicOverrideRules": { "type": "integer" },
+            "graphicOverrideCombinations": { "type": "integer" }
         },
         "additionalProperties": false,
         "required": ["layers", "surfaces", "buildingMaterials", "layerCombinations"]
     })";
 }
 
-GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePath, GS::ObjectState& counts)
+GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePath, GS::ProcessControl& processControl, GS::ObjectState& counts)
 {
 #ifdef ServerMainVers_2700
     GS::ObjectState package;
@@ -663,6 +868,14 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
         }
         counts.Add (PackageKey (typeID), count);
     }
+    // deslab: the graphic override rules and combinations, as GetGraphicOverrideRules/Combinations return them.
+    GS::Array<GS::ObjectState> rules, combinations;
+    GetGraphicOverrideRulesCommand ().Execute (GS::ObjectState (), processControl).Get ("graphicOverrideRules", rules);
+    GetGraphicOverrideCombinationsCommand ().Execute (GS::ObjectState (), processControl).Get ("graphicOverrideCombinations", combinations);
+    package.Add ("graphicOverrideRules", rules);
+    package.Add ("graphicOverrideCombinations", combinations);
+    counts.Add ("graphicOverrideRules", static_cast<Int32> (rules.GetSize ()));
+    counts.Add ("graphicOverrideCombinations", static_cast<Int32> (combinations.GetSize ()));
     const IO::Location location (packagePath);
     IO::File file (location, IO::File::OnNotFound::Create);
     GSErrCode err = file.Open (IO::File::OpenMode::WriteEmptyMode);
@@ -673,19 +886,20 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
     return err;
 #else
     UNUSED_PARAMETER (packagePath);
+    UNUSED_PARAMETER (processControl);
     UNUSED_PARAMETER (counts);
     return APIERR_GENERAL;
 #endif
 }
 
-GS::ObjectState CaptureOfficeStandardCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
+GS::ObjectState CaptureOfficeStandardCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& processControl) const
 {
     GS::UniString packagePath;
     if (!parameters.Get ("packagePath", packagePath) || packagePath.IsEmpty ()) {
         return CreateErrorResponse (APIERR_BADPARS, "packagePath is missing.");
     }
     GS::ObjectState counts;
-    const GSErrCode err = Capture (packagePath, counts);
+    const GSErrCode err = Capture (packagePath, processControl, counts);
     if (err != NoError) {
         return CreateErrorResponse (err, "Failed to write the standard package.");
     }
