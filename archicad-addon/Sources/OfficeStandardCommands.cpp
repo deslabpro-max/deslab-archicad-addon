@@ -428,16 +428,18 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
             name = packageNames[i];   // the legacy 8-bit name cannot hold every character
         }
 
-        // An attribute that is already there (same guid, as in copies of the template, or same name) is kept as it is.
+        // An attribute that is already there under the same name is kept as it is. deslab: the guid alone is not
+        // enough: Archicad's own default surfaces share guids with differently named template surfaces, so a guid
+        // held by another name gets the new attribute a fresh guid instead.
         API_AttributeIndex existingIndex = APIInvalidAttributeIndex;
         const auto byName = names.find (name);
-        if (FindByGuid (typeID, attribute.header.guid, existingIndex)) {
-            map[sourceIndex] = existingIndex;
-            ++result.existing;
-        } else if (byName != names.end ()) {
+        if (byName != names.end ()) {
             map[sourceIndex] = byName->second;
             ++result.existing;
         } else {
+            if (FindByGuid (typeID, attribute.header.guid, existingIndex)) {
+                attribute.header.guid = APINULLGuid;
+            }
             if (!RemapReferences (attribute, defs, maps)) {
                 ++result.failed;
                 if (result.failures.GetSize () < 5) {
@@ -450,7 +452,6 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
             }
             attribute.header.index = APIInvalidAttributeIndex;
             attribute.header.uniStringNamePtr = &name;
-            // The source guid is kept, so a second run finds the attribute again whatever its name looks like.
             const GSErrCode err = ACAPI_Attribute_CreateExt (&attribute, &defs);
             if (err == NoError) {
                 map[sourceIndex] = attribute.header.index;
