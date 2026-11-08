@@ -8,6 +8,8 @@
 #include "ObjectStateJSONConversion.hpp"
 
 #include <deque>
+#include <functional>
+#include <string>
 #include <map>
 
 namespace {
@@ -667,6 +669,395 @@ void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attri
         static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
 }
 
+// deslab: views of the View Map (story views only for now). Model view options and dimension standards cannot be
+// created through the API, so each view keeps their names and, for a project without them, a copy of the settings as
+// custom view settings (the raw Archicad 27 structures, hex encoded; the GDL part of the model view options is left out).
+template <typename T>
+GS::UniString ToHex (const T& value)
+{
+    static const char digits[] = "0123456789abcdef";
+    const unsigned char* bytes = reinterpret_cast<const unsigned char*> (&value);
+    std::string out;
+    for (size_t i = 0; i < sizeof (T); ++i) {
+        out += digits[bytes[i] >> 4];
+        out += digits[bytes[i] & 0xF];
+    }
+    return GS::UniString (out.c_str ());
+}
+
+template <typename T>
+bool FromHex (const GS::UniString& hex, T& value)
+{
+    const std::string text (hex.ToCStr ().Get ());
+    if (text.size () != sizeof (T) * 2) {
+        return false;
+    }
+    unsigned char* bytes = reinterpret_cast<unsigned char*> (&value);
+    for (size_t i = 0; i < sizeof (T); ++i) {
+        unsigned int byte = 0;
+        for (size_t j = 0; j < 2; ++j) {
+            const char c = text[i * 2 + j];
+            byte = byte * 16 + ((c >= '0' && c <= '9') ? static_cast<unsigned int> (c - '0') : static_cast<unsigned int> (c - 'a' + 10));
+        }
+        bytes[i] = static_cast<unsigned char> (byte);
+    }
+    return true;
+}
+
+bool FindModelViewOptions (const GS::UniString& name, API_ModelViewOptions* options)
+{
+    if (name.IsEmpty ()) {
+        return false;
+    }
+    API_ModelViewOptionsType mvo = {};
+    GS::UniString searchName = name;
+    mvo.head.guid = APINULLGuid;
+    mvo.head.uniStringNamePtr = &searchName;
+    if (ACAPI_Navigator_ModelViewOptions_Search (&mvo.head) != NoError) {
+        return false;
+    }
+    if (options != nullptr) {
+        if (ACAPI_Navigator_ModelViewOptions_Get (&mvo) != NoError) {
+            return false;
+        }
+        *options = mvo.modelViewOpt;
+        if (mvo.modelViewOpt.gdlOptions != nullptr) {
+            ACAPI_FreeGDLModelViewOptionsPtr (&mvo.modelViewOpt.gdlOptions);
+        }
+        options->gdlOptions = nullptr;
+    }
+    return true;
+}
+
+bool FindDimensionStandard (const GS::UniString& name, API_DimensionPrefs* prefs)
+{
+    if (name.IsEmpty ()) {
+        return false;
+    }
+    API_DimensionStandardsType dim = {};
+    GS::UniString searchName = name;
+    dim.head.guid = APINULLGuid;
+    dim.head.uniStringNamePtr = &searchName;
+    if (ACAPI_Navigator_DimStand_Search (&dim.head) != NoError) {
+        return false;
+    }
+    if (prefs != nullptr) {
+        if (ACAPI_Navigator_DimStand_Get (dim) != NoError) {
+            return false;
+        }
+        *prefs = dim.dim;
+    }
+    return true;
+}
+
+void FreeView (API_NavigatorView& view)
+{
+    if (view.modelViewOpt != nullptr) {
+        if (view.modelViewOpt->gdlOptions != nullptr) {
+            ACAPI_FreeGDLModelViewOptionsPtr (&view.modelViewOpt->gdlOptions);
+        }
+        delete view.modelViewOpt;
+        view.modelViewOpt = nullptr;
+    }
+    delete view.dimPrefs;
+    view.dimPrefs = nullptr;
+    delete view.layerStats;
+    view.layerStats = nullptr;
+    delete view.pens;
+    view.pens = nullptr;
+}
+
+API_NavigatorItem MapRoot (API_NavigatorMapID mapId)
+{
+    API_NavigatorItem root = {};
+    API_NavigatorSet set = {};
+    set.mapId = mapId;
+    Int32 index = 0;
+    if (ACAPI_Navigator_GetNavigatorSet (&set, &index) == NoError) {
+        ACAPI_Navigator_GetNavigatorItem (&set.rootGuid, &root);
+    }
+    root.mapId = mapId;
+    return root;
+}
+
+GS::Array<API_NavigatorItem> Children (API_NavigatorItem item, API_NavigatorMapID mapId)
+{
+    item.mapId = mapId;
+    GS::Array<API_NavigatorItem> children;
+    ACAPI_Navigator_GetNavigatorChildrenItems (&item, &children);
+    for (API_NavigatorItem& child : children) {
+        child.mapId = mapId;
+    }
+    return children;
+}
+
+GS::UniString ViewKey (const GS::Array<GS::UniString>& path, const GS::UniString& name)
+{
+    GS::UniString key;
+    for (const GS::UniString& folder : path) {
+        key += folder + "/";
+    }
+    return key + name;
+}
+
+void CaptureViewItems (const API_NavigatorItem& item, GS::Array<GS::UniString> path, const std::function<void (const GS::ObjectState&)>& add, Int32& count, Int32& skipped)
+{
+    for (const API_NavigatorItem& child : Children (item, API_PublicViewMap)) {
+        const GS::UniString name (child.uName);
+        if (child.itemType == API_FolderNavItem) {
+            GS::Array<GS::UniString> childPath = path;
+            childPath.Push (name);
+            CaptureViewItems (child, childPath, add, count, skipped);
+            continue;
+        }
+        if (child.itemType != API_StoryNavItem) {
+            ++skipped;
+            continue;
+        }
+        API_NavigatorItem viewItem = child;
+        API_NavigatorView view = {};
+        if (ACAPI_Navigator_GetNavigatorView (&viewItem, &view) != NoError) {
+            ++skipped;
+            continue;
+        }
+        GS::ObjectState os;
+        const auto& pathList = os.AddList<GS::UniString> ("path");
+        for (const GS::UniString& folder : path) {
+            pathList (folder);
+        }
+        os.Add ("name", name);
+        os.Add ("customName", child.customName);
+        os.Add ("uiId", GS::UniString (child.uiId));
+        os.Add ("customUiId", child.customUiId);
+        os.Add ("floorNum", static_cast<Int32> (child.floorNum));
+        os.Add ("layerCombination", GS::UniString (view.layerCombination));
+        os.Add ("saveLaySet", view.saveLaySet);
+        os.Add ("drawingScale", view.drawingScale);
+        os.Add ("saveDScale", view.saveDScale);
+        os.Add ("penSetName", GS::UniString (view.penSetName));
+        os.Add ("savePenSet", view.savePenSet);
+        os.Add ("graphicOverrideCombination", GS::UniString (view.overrideCombination));
+        os.Add ("structureDisplay", static_cast<Int32> (view.structureDisplay));
+        os.Add ("saveStructureDisplay", view.saveStructureDisplay);
+        os.Add ("renovationFilterGuid", APIGuidToString (view.renovationFilterGuid));
+        const GS::UniString mvoName (view.modelViewOptName);
+        os.Add ("modelViewOptName", mvoName);
+        os.Add ("saveDispOpt", view.saveDispOpt);
+        API_ModelViewOptions options = {};
+        if (view.modelViewOpt != nullptr) {
+            options = *view.modelViewOpt;
+            options.gdlOptions = nullptr;
+            os.Add ("modelViewOptions", ToHex (options));
+        } else if (FindModelViewOptions (mvoName, &options)) {
+            os.Add ("modelViewOptions", ToHex (options));
+        }
+        const GS::UniString dimName (view.dimName);
+        os.Add ("dimName", dimName);
+        os.Add ("saveDim", view.saveDim);
+        API_DimensionPrefs prefs = {};
+        if (view.dimPrefs != nullptr) {
+            os.Add ("dimensionPrefs", ToHex (*view.dimPrefs));
+        } else if (FindDimensionStandard (dimName, &prefs)) {
+            os.Add ("dimensionPrefs", ToHex (prefs));
+        }
+        FreeView (view);
+        add (os);
+        ++count;
+    }
+}
+
+bool FindStory (const API_NavigatorItem& item, short floorNum, API_Guid& guid)
+{
+    for (const API_NavigatorItem& child : Children (item, API_ProjectMap)) {
+        if (child.itemType == API_StoryNavItem && child.floorNum == floorNum) {
+            guid = child.guid;
+            return true;
+        }
+        if (FindStory (child, floorNum, guid)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void CollectViewKeys (const API_NavigatorItem& item, GS::Array<GS::UniString> path, std::map<GS::UniString, bool>& keys)
+{
+    for (const API_NavigatorItem& child : Children (item, API_PublicViewMap)) {
+        const GS::UniString name (child.uName);
+        if (child.itemType == API_FolderNavItem) {
+            GS::Array<GS::UniString> childPath = path;
+            childPath.Push (name);
+            CollectViewKeys (child, childPath, keys);
+        } else {
+            keys[ViewKey (path, name)] = true;
+        }
+    }
+}
+
+// The folder of the path, created where missing. The View Map root itself is never returned: Archicad leaves
+// items made directly under it impossible to delete or move.
+bool EnsureFolder (const GS::Array<GS::UniString>& path, API_Guid& folderGuid)
+{
+    GS::Array<GS::UniString> folders = path;
+    if (folders.IsEmpty ()) {
+        folders.Push ("deslab");
+    }
+    API_NavigatorItem current = MapRoot (API_PublicViewMap);
+    bool atRoot = true;
+    for (const GS::UniString& folder : folders) {
+        bool found = false;
+        for (const API_NavigatorItem& child : Children (current, API_PublicViewMap)) {
+            if (child.itemType == API_FolderNavItem && GS::UniString (child.uName) == folder) {
+                current = child;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            API_NavigatorItem folderItem = {};
+            folderItem.itemType = API_FolderNavItem;
+            folderItem.mapId = API_PublicViewMap;
+            folderItem.customName = true;
+            GS::ucsncpy (folderItem.uName, folder.ToUStr (), API_UniLongNameLen - 1);
+            GS::Guid parent = APIGuid2GSGuid (current.guid);
+            if (ACAPI_Navigator_NewNavigatorView (&folderItem, nullptr, atRoot ? nullptr : &parent, nullptr) != NoError) {
+                return false;
+            }
+            folderItem.mapId = API_PublicViewMap;
+            current = folderItem;
+        }
+        atRoot = false;
+    }
+    folderGuid = current.guid;
+    return true;
+}
+
+GS::UniString CreateView (const GS::ObjectState& os)
+{
+    GS::Array<GS::UniString> path;
+    os.Get ("path", path);
+    Int32 floorNum = 0;
+    os.Get ("floorNum", floorNum);
+    API_Guid story = APINULLGuid;
+    if (!FindStory (MapRoot (API_ProjectMap), static_cast<short> (floorNum), story)) {
+        return GS::UniString::Printf ("no story %d", static_cast<int> (floorNum));
+    }
+    API_Guid folder = APINULLGuid;
+    if (!EnsureFolder (path, folder)) {
+        return "folder not created";
+    }
+    API_Guid created = APINULLGuid;
+    GSErrCode err = ACAPI_Navigator_CloneProjectMapItemToViewMap (&story, &folder, &created);
+    if (err != NoError) {
+        return GS::UniString::Printf ("clone %d", static_cast<int> (err));
+    }
+    API_NavigatorItem item = {};
+    ACAPI_Navigator_GetNavigatorItem (&created, &item);
+    item.mapId = API_PublicViewMap;
+    item.isIndependent = true;
+    bool customName = true;
+    os.Get ("customName", customName);
+    GS::UniString name;
+    if (customName && os.Get ("name", name)) {
+        GS::ucsncpy (item.uName, name.ToUStr (), API_UniLongNameLen - 1);
+        item.customName = true;
+    }
+    bool customUiId = false;
+    if (os.Get ("customUiId", customUiId) && customUiId) {
+        SetCharProperty (&os, "uiId", item.uiId);
+        item.customUiId = true;
+    }
+    ACAPI_Navigator_ChangeNavigatorItem (&item);
+
+    API_NavigatorView view = {};
+    err = ACAPI_Navigator_GetNavigatorView (&item, &view);
+    if (err != NoError) {
+        return GS::UniString::Printf ("view %d", static_cast<int> (err));
+    }
+    FreeView (view);
+    os.Get ("saveLaySet", view.saveLaySet);
+    SetCharProperty (&os, "layerCombination", view.layerCombination);
+    os.Get ("saveDScale", view.saveDScale);
+    os.Get ("drawingScale", view.drawingScale);
+    os.Get ("savePenSet", view.savePenSet);
+    SetCharProperty (&os, "penSetName", view.penSetName);
+    SetUCharProperty (&os, "graphicOverrideCombination", view.overrideCombination);
+    Int32 structureDisplay = 0;
+    os.Get ("structureDisplay", structureDisplay);
+    view.structureDisplay = static_cast<API_StructureDisplay> (structureDisplay);
+    os.Get ("saveStructureDisplay", view.saveStructureDisplay);
+    GS::UniString renovation;
+    if (os.Get ("renovationFilterGuid", renovation)) {
+        view.renovationFilterGuid = APIGuidFromString (renovation.ToCStr ());
+    }
+
+    GS::UniString mvoName, hex;
+    os.Get ("modelViewOptName", mvoName);
+    os.Get ("saveDispOpt", view.saveDispOpt);
+    if (FindModelViewOptions (mvoName, nullptr)) {
+        SetCharProperty (&os, "modelViewOptName", view.modelViewOptName);
+    } else if (os.Get ("modelViewOptions", hex)) {
+        auto* options = new API_ModelViewOptions ();
+        if (FromHex (hex, *options)) {
+            options->gdlOptions = nullptr;
+            view.modelViewOpt = options;
+            view.modelViewOptName[0] = '\0';
+        } else {
+            delete options;
+        }
+    }
+    GS::UniString dimName;
+    os.Get ("dimName", dimName);
+    os.Get ("saveDim", view.saveDim);
+    if (FindDimensionStandard (dimName, nullptr)) {
+        SetCharProperty (&os, "dimName", view.dimName);
+    } else if (os.Get ("dimensionPrefs", hex)) {
+        auto* prefs = new API_DimensionPrefs ();
+        if (FromHex (hex, *prefs)) {
+            view.dimPrefs = prefs;
+            view.dimName[0] = '\0';
+        } else {
+            delete prefs;
+        }
+    }
+    err = ACAPI_Navigator_ChangeNavigatorView (&item, &view);
+    FreeView (view);
+    return err == NoError ? GS::EmptyUniString : GS::UniString::Printf ("settings %d", static_cast<int> (err));
+}
+
+void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& reportLines)
+{
+    GS::Array<GS::ObjectState> views;
+    if (!package.Get ("views", views)) {
+        return;
+    }
+    std::map<GS::UniString, bool> keys;
+    CollectViewKeys (MapRoot (API_PublicViewMap), {}, keys);
+    Int32 created = 0, existing = 0, failed = 0;
+    GS::UniString failures;
+    for (const GS::ObjectState& os : views) {
+        GS::Array<GS::UniString> path;
+        GS::UniString name;
+        os.Get ("path", path);
+        os.Get ("name", name);
+        if (keys.find (ViewKey (path, name)) != keys.end ()) {
+            ++existing;
+            continue;
+        }
+        const GS::UniString problem = CreateView (os);
+        if (problem.IsEmpty ()) {
+            ++created;
+        } else {
+            ++failed;
+            if (failed <= 3) {
+                failures += "; " + name + " (" + problem + ")";
+            }
+        }
+    }
+    reportLines.Push (GS::UniString::Printf ("View: created %d, already there %d, failed %d",
+        static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
+}
+
 bool ReadPackage (const GS::UniString& path, GS::ObjectState& package)
 {
     const IO::Location location (path);
@@ -768,6 +1159,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     if (err == NoError && hasPackage) {
         // Separate undo steps: the override commands open their own.
         ApplyGraphicOverrides (package, guids, processControl, reportLines);
+        ApplyViews (package, reportLines);
     }
     return err;
 #else
@@ -839,7 +1231,9 @@ GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema (
             "buildingMaterials": { "type": "integer" },
             "layerCombinations": { "type": "integer" },
             "graphicOverrideRules": { "type": "integer" },
-            "graphicOverrideCombinations": { "type": "integer" }
+            "graphicOverrideCombinations": { "type": "integer" },
+            "views": { "type": "integer" },
+            "viewsSkipped": { "type": "integer", "description": "Views that are not story views (not captured yet)." }
         },
         "additionalProperties": false,
         "required": ["layers", "surfaces", "buildingMaterials", "layerCombinations"]
@@ -876,6 +1270,11 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
     package.Add ("graphicOverrideCombinations", combinations);
     counts.Add ("graphicOverrideRules", static_cast<Int32> (rules.GetSize ()));
     counts.Add ("graphicOverrideCombinations", static_cast<Int32> (combinations.GetSize ()));
+    Int32 viewCount = 0, skippedViews = 0;
+    const auto& viewList = package.AddList<GS::ObjectState> ("views");
+    CaptureViewItems (MapRoot (API_PublicViewMap), {}, [&] (const GS::ObjectState& os) { viewList (os); }, viewCount, skippedViews);
+    counts.Add ("views", viewCount);
+    counts.Add ("viewsSkipped", skippedViews);
     const IO::Location location (packagePath);
     IO::File file (location, IO::File::OnNotFound::Create);
     GSErrCode err = file.Open (IO::File::OpenMode::WriteEmptyMode);
