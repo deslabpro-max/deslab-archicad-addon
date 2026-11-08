@@ -99,9 +99,75 @@ def pdf_page_png(pdf, page, out, width=2000):
     return str(out)
 
 
+# deslab: Игорь 08.11.2026 (the Polza balance ran out): the model may also be Claude Code on this PC, under Игорь's own
+# subscription. Model "claude-code" (or "claude-code:opus", "claude-code:sonnet") runs `claude -p` headless; pictures are
+# written to a temp folder and read by Claude Code itself. No key is involved.
+CLAUDE_CODE = "claude-code"
+
+
+def _claude_executable():
+    import shutil
+    for name in ("claude", "claude.cmd", "claude.exe"):
+        found = shutil.which(name)
+        if found:
+            return found
+    home = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or "~").expanduser()
+    for candidate in (home / ".local" / "bin" / "claude.exe", home / ".local" / "bin" / "claude",
+                      home / "AppData" / "Roaming" / "npm" / "claude.cmd"):
+        if candidate.exists():
+            return str(candidate)
+    raise AIError("Не найден Claude Code (команда claude) на этом ПК.")
+
+
+def _chat_claude_code(messages, profile, model, json_mode):
+    import subprocess
+    import tempfile
+    cfg = settings(profile)
+    variant = model.split(":", 1)[1] if ":" in model else "sonnet"
+    with tempfile.TemporaryDirectory(prefix="deslab-ai-") as folder:
+        parts, pictures = [], 0
+        for message in messages:
+            content = message["content"]
+            items = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            block = []
+            for item in items:
+                if item.get("type") == "text":
+                    block.append(item["text"])
+                elif item.get("type") == "image_url":
+                    url = item["image_url"]["url"]
+                    head, data = url.split(",", 1)
+                    pictures += 1
+                    path = Path(folder) / f"picture{pictures}.{'png' if 'png' in head else 'jpg'}"
+                    path.write_bytes(base64.b64decode(data))
+                    block.append(f"[Картинка: {path} — открой её инструментом Read.]")
+            title = {"system": "ИНСТРУКЦИЯ", "user": "ЗАПРОС", "assistant": "ТВОЙ ПРОШЛЫЙ ОТВЕТ"}.get(message["role"], message["role"])
+            parts.append(f"===== {title} =====\n" + "\n".join(block))
+        if json_mode:
+            parts.append("Ответь ТОЛЬКО одним JSON-объектом, без пояснений и без ```.")
+        prompt = "\n\n".join(parts)
+        command = [_claude_executable(), "-p", "--output-format", "json", "--model", variant,
+                   "--allowedTools", "Read", "--add-dir", folder]
+        try:
+            done = subprocess.run(command, input=prompt.encode("utf-8"), capture_output=True, cwd=folder,
+                                  timeout=max(int(cfg["timeout"]), 600))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AIError("Claude Code не ответил: " + str(error)) from None
+        out = done.stdout.decode("utf-8", "replace")
+        try:
+            data = json.loads(out)
+        except ValueError:
+            raise AIError("Claude Code: " + (out or done.stderr.decode("utf-8", "replace"))[:400]) from None
+        if data.get("is_error"):
+            raise AIError("Claude Code: " + str(data.get("result"))[:400])
+        usage = dict(data.get("usage") or {}, cost=data.get("total_cost_usd"), provider=CLAUDE_CODE)
+        return data.get("result", ""), usage
+
+
 def chat(messages, profile=None, model=None, json_mode=True):
     """One chat-completions call with a timeout and one retry. Returns (text, usage)."""
     cfg = settings(profile)
+    if (model or cfg["model"]).startswith(CLAUDE_CODE):
+        return _chat_claude_code(messages, profile, model or cfg["model"], json_mode)
     key = api_key()
     body = {"model": model or cfg["model"], "messages": messages, "max_tokens": cfg["maxTokens"], "temperature": 0.1}
     if json_mode:
