@@ -1154,6 +1154,155 @@ void ApplyFavorites (const GS::UniString& packagePath, GS::Array<GS::UniString>&
     reportLines.Push (line);
 }
 
+// deslab: master layouts (size and margins; their drawing content is not copied yet) and the layouts of the Layout
+// Book (name, numbering, master), made where the open project has none of that name.
+GS::Array<API_DatabaseUnId> Databases (bool masters)
+{
+    GS::Array<API_DatabaseUnId> ids;
+    if (masters) {
+        ACAPI_Database_GetMasterLayoutDatabases (nullptr, &ids);
+    } else {
+        ACAPI_Database_GetLayoutDatabases (nullptr, &ids);
+    }
+    return ids;
+}
+
+bool DatabaseInfo (API_DatabaseUnId id, API_DatabaseInfo& info)
+{
+    info = {};
+    return ACAPI_Window_GetDatabaseInfo (&info, &id) == NoError;
+}
+
+void CaptureLayouts (GS::ObjectState& package, GS::ObjectState& counts)
+{
+    const auto& masters = package.AddList<GS::ObjectState> ("masterLayouts");
+    Int32 masterCount = 0;
+    for (API_DatabaseUnId id : Databases (true)) {
+        API_DatabaseInfo info;
+        API_LayoutInfo layout = {};
+        if (!DatabaseInfo (id, info) || ACAPI_Navigator_GetLayoutSets (&layout, &id) != NoError) {
+            continue;
+        }
+        masters (GS::ObjectState ("name", GS::UniString (info.name), "ref", GS::UniString (info.ref),
+            "sizeX", layout.sizeX, "sizeY", layout.sizeY, "leftMargin", layout.leftMargin, "topMargin", layout.topMargin,
+            "rightMargin", layout.rightMargin, "bottomMargin", layout.bottomMargin));
+        delete layout.customData;
+        ++masterCount;
+    }
+    const auto& layouts = package.AddList<GS::ObjectState> ("layouts");
+    Int32 layoutCount = 0;
+    for (API_DatabaseUnId id : Databases (false)) {
+        API_DatabaseInfo info, master;
+        API_LayoutInfo layout = {};
+        if (!DatabaseInfo (id, info) || !DatabaseInfo (info.masterLayoutUnId, master) || ACAPI_Navigator_GetLayoutSets (&layout, &id) != NoError) {
+            continue;
+        }
+        layouts (GS::ObjectState ("name", GS::UniString (info.name), "ref", GS::UniString (info.ref),
+            "master", GS::UniString (master.name), "customLayoutNumber", GS::UniString (layout.customLayoutNumber),
+            "customLayoutNumbering", layout.customLayoutNumbering, "doNotIncludeInNumbering", layout.doNotIncludeInNumbering,
+            "showMasterBelow", layout.showMasterBelow));
+        delete layout.customData;
+        ++layoutCount;
+    }
+    counts.Add ("masterLayouts", masterCount);
+    counts.Add ("layouts", layoutCount);
+}
+
+void ApplyLayouts (const GS::ObjectState& package, GS::Array<GS::UniString>& reportLines)
+{
+    GS::Array<GS::ObjectState> masters, layouts;
+    if (!package.Get ("masterLayouts", masters)) {
+        return;
+    }
+    package.Get ("layouts", layouts);
+
+    std::map<GS::UniString, API_DatabaseUnId> masterIds;
+    for (API_DatabaseUnId id : Databases (true)) {
+        API_DatabaseInfo info;
+        if (DatabaseInfo (id, info)) {
+            masterIds[GS::UniString (info.name)] = id;
+        }
+    }
+    Int32 created = 0, existing = 0, failed = 0;
+    for (const GS::ObjectState& os : masters) {
+        GS::UniString name, ref;
+        os.Get ("name", name);
+        os.Get ("ref", ref);
+        if (masterIds.find (name) != masterIds.end ()) {
+            ++existing;
+            continue;
+        }
+        API_DatabaseInfo info = {};
+        info.typeID = APIWind_MasterLayoutID;
+        GS::ucsncpy (info.name, name.ToUStr (), API_UniLongNameLen - 1);
+        GS::ucsncpy (info.ref, ref.ToUStr (), API_UniLongNameLen - 1);
+        if (ACAPI_Database_NewDatabase (&info) != NoError) {
+            ++failed;
+            continue;
+        }
+        API_LayoutInfo layout = {};
+        if (ACAPI_Navigator_GetLayoutSets (&layout, &info.databaseUnId) == NoError) {
+            delete layout.customData;
+            layout.customData = nullptr;
+            os.Get ("sizeX", layout.sizeX);
+            os.Get ("sizeY", layout.sizeY);
+            os.Get ("leftMargin", layout.leftMargin);
+            os.Get ("topMargin", layout.topMargin);
+            os.Get ("rightMargin", layout.rightMargin);
+            os.Get ("bottomMargin", layout.bottomMargin);
+            ACAPI_Navigator_ChangeLayoutSets (&layout, &info.databaseUnId);
+        }
+        masterIds[name] = info.databaseUnId;
+        ++created;
+    }
+    reportLines.Push (GS::UniString::Printf ("MasterLayout: created %d, already there %d, failed %d (drawing content not copied)",
+        static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)));
+
+    std::map<GS::UniString, bool> layoutNames;
+    for (API_DatabaseUnId id : Databases (false)) {
+        API_DatabaseInfo info;
+        if (DatabaseInfo (id, info)) {
+            layoutNames[GS::UniString (info.name)] = true;
+        }
+    }
+    created = existing = failed = 0;
+    GS::UniString failures;
+    for (const GS::ObjectState& os : layouts) {
+        GS::UniString name, masterName;
+        os.Get ("name", name);
+        os.Get ("master", masterName);
+        if (layoutNames.find (name) != layoutNames.end ()) {
+            ++existing;
+            continue;
+        }
+        const auto master = masterIds.find (masterName);
+        if (master == masterIds.end ()) {
+            ++failed;
+            failures += "; " + name + " (no master)";
+            continue;
+        }
+        API_DatabaseUnId masterId = master->second;
+        API_LayoutInfo layout = {};
+        ACAPI_Navigator_GetLayoutSets (&layout, &masterId);
+        delete layout.customData;
+        layout.customData = nullptr;
+        GS::ucsncpy (layout.layoutName, name.ToUStr (), API_UniLongNameLen - 1);
+        SetCharProperty (&os, "customLayoutNumber", layout.customLayoutNumber);
+        os.Get ("customLayoutNumbering", layout.customLayoutNumbering);
+        os.Get ("doNotIncludeInNumbering", layout.doNotIncludeInNumbering);
+        os.Get ("showMasterBelow", layout.showMasterBelow);
+        const GSErrCode err = ACAPI_Navigator_CreateLayout (&layout, &masterId);
+        if (err == NoError) {
+            ++created;
+        } else {
+            ++failed;
+            failures += "; " + name + GS::UniString::Printf (" (%d)", static_cast<int> (err));
+        }
+    }
+    reportLines.Push (GS::UniString::Printf ("Layout: created %d, already there %d, failed %d",
+        static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
+}
+
 bool ReadPackage (const GS::UniString& path, GS::ObjectState& package)
 {
     const IO::Location location (path);
@@ -1278,6 +1427,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         ApplyGraphicOverrides (package, guids, maps[API_LayerID], processControl, reportLines);
         ApplyViews (package, reportLines);
         ApplyFavorites (packagePath, reportLines);
+        ApplyLayouts (package, reportLines);
     }
     return err;
 #else
@@ -1352,7 +1502,9 @@ GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema (
             "graphicOverrideCombinations": { "type": "integer" },
             "views": { "type": "integer" },
             "viewsSkipped": { "type": "integer", "description": "Views that are not story views (not captured yet)." },
-            "favoritesExported": { "type": "boolean", "description": "The favorites were written next to the package (<name>-favorites.prf)." }
+            "favoritesExported": { "type": "boolean", "description": "The favorites were written next to the package (<name>-favorites.prf)." },
+            "masterLayouts": { "type": "integer" },
+            "layouts": { "type": "integer" }
         },
         "additionalProperties": false,
         "required": ["layers", "surfaces", "buildingMaterials", "layerCombinations"]
@@ -1406,6 +1558,7 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
     CaptureViewItems (MapRoot (API_PublicViewMap), {}, [&] (const GS::ObjectState& os) { viewList (os); }, viewCount, skippedViews);
     counts.Add ("views", viewCount);
     counts.Add ("viewsSkipped", skippedViews);
+    CaptureLayouts (package, counts);
     const IO::Location favorites (FavoritesPath (packagePath));
     counts.Add ("favoritesExported", ACAPI_Favorite_Export (favorites, nullptr) == NoError);
     const IO::Location location (packagePath);
