@@ -78,6 +78,27 @@ def delete_previous(ac, state_path):
     return len(guids)
 
 
+def plan_window(ac, view="Обмерный план"):
+    """deslab: 08.11.2026, a build started while a layout was the open window: every associative dimension was refused
+    («Failed to create associative dimension»). The measured-plan view (or the first storey) is opened before building."""
+    tree = ac.api("API.GetNavigatorItemTree", {"navigatorTreeId": {"type": "ViewMap"}})
+
+    def walk(i):
+        i = i.get("navigatorItem", i)
+        yield i
+        for c in i.get("children", []):
+            yield from walk(c)
+    hit = [i for i in walk(tree["navigatorTree"]["rootItem"]) if view in (i.get("name") or "") and i.get("type") != "FolderItem"]
+    if not hit:
+        tree = ac.api("API.GetNavigatorItemTree", {"navigatorTreeId": {"type": "ProjectMap"}})
+        hit = [i for i in walk(tree["navigatorTree"]["rootItem"]) if i.get("type") == "StoryItem"]
+    if hit:
+        try:
+            ac.tapir("ChangeWindow", {"navigatorItemId": hit[0]["navigatorItemId"]})
+        except ArchicadError:
+            pass
+
+
 def snapshots(ac, guids, out_dir, name, views=(("view1", "Обмерный план"), ("view2", "Инженерные узлы"))):
     """deslab: a picture of each view, fitted to the new walls (one call each, no Claude needed)."""
     tree = ac.api("API.GetNavigatorItemTree", {"navigatorTreeId": {"type": "ViewMap"}})
@@ -265,6 +286,7 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     if not keep and preset.get("clearArea", True):
         deleted += clear_area(ac, scene, preset.get("origin"))
 
+    plan_window(ac)
     before = _all_guids(ac)
     # deslab: the planned texts and lines of each plan, for the check below
     planned = []
