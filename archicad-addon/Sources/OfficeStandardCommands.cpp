@@ -1579,6 +1579,123 @@ void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids
         static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
 }
 
+// deslab: the pen sets in effect for the model and for the layouts (by name) and the filled project info fields.
+// Layouts drew in the open project's own layout pen set (pen 1 red), and the empty project status showed its
+// placeholder in the title block.
+void CapturePenSetsAndProjectInfo (GS::ObjectState& package, GS::ObjectState& counts)
+{
+    GS::Array<API_Attribute> tables;
+    ACAPI_Attribute_GetAttributesByType (API_PenTableID, tables);
+    for (API_Attribute& table : tables) {
+        GS::UniString name;
+        API_Attribute full = {};
+        full.header.typeID = API_PenTableID;
+        full.header.index = table.header.index;
+        full.header.uniStringNamePtr = &name;
+        if (ACAPI_Attribute_Get (&full) == NoError) {
+            if (full.penTable.inEffectForModel) {
+                package.Add ("penSetForModel", name);
+            }
+            if (full.penTable.inEffectForLayout) {
+                package.Add ("penSetForLayout", name);
+            }
+        }
+        DisposeAttribute (full);
+        DisposeAttribute (table);
+    }
+    GS::Array<GS::ArrayFB<GS::UniString, 3>> autoTexts;
+    const auto& fields = package.AddList<GS::ObjectState> ("projectInfo");
+    Int32 count = 0;
+    if (ACAPI_AutoText_GetAutoTexts (&autoTexts, APIAutoText_All) == NoError) {
+        for (const auto& autoText : autoTexts) {
+            if (!autoText[2].IsEmpty ()) {
+                fields (GS::ObjectState ("title", autoText[0], "key", autoText[1], "value", autoText[2]));
+                ++count;
+            }
+        }
+    }
+    counts.Add ("projectInfoFields", count);
+}
+
+void ApplyPenSetsAndProjectInfo (const GS::ObjectState& package, GS::Array<GS::UniString>& reportLines)
+{
+    GS::UniString report = "PenSet:";
+    for (const char* key : { "penSetForModel", "penSetForLayout" }) {
+        GS::UniString wanted;
+        if (!package.Get (key, wanted)) {
+            continue;
+        }
+        const bool forModel = GS::String (key) == "penSetForModel";
+        const std::map<GS::UniString, API_AttributeIndex> names = ProjectNames (API_PenTableID);
+        const auto found = names.find (wanted);
+        if (found == names.end ()) {
+            report += " " + GS::UniString (forModel ? "model" : "layout") + " '" + wanted + "' missing;";
+            continue;
+        }
+        const GSErrCode err = ACAPI_CallUndoableCommand ("deslab: pen set", [&] () -> GSErrCode {
+            API_Attribute attribute = {};
+            attribute.header.typeID = API_PenTableID;
+            attribute.header.index = found->second;
+            GSErrCode e = ACAPI_Attribute_Get (&attribute);
+            if (e != NoError) {
+                return e;
+            }
+            if ((forModel && attribute.penTable.inEffectForModel) || (!forModel && attribute.penTable.inEffectForLayout)) {
+                DisposeAttribute (attribute);
+                return NoError;
+            }
+            API_AttributeDefExt defs = {};
+            e = ACAPI_Attribute_GetDefExt (API_PenTableID, found->second, &defs);
+            if (e == NoError) {
+                if (forModel) {
+                    attribute.penTable.inEffectForModel = true;
+                } else {
+                    attribute.penTable.inEffectForLayout = true;
+                }
+                e = ACAPI_Attribute_Modify (&attribute, &defs);
+            }
+            ACAPI_DisposeAttrDefsHdlsExt (&defs);
+            DisposeAttribute (attribute);
+            return e;
+        });
+        report += GS::UniString::Printf (" %s '", forModel ? "model" : "layout") + wanted + GS::UniString::Printf ("' (%d);", static_cast<int> (err));
+    }
+    reportLines.Push (report);
+
+    GS::Array<GS::ObjectState> fields;
+    if (!package.Get ("projectInfo", fields)) {
+        return;
+    }
+    std::map<GS::UniString, GS::UniString> current;
+    GS::Array<GS::ArrayFB<GS::UniString, 3>> autoTexts;
+    if (ACAPI_AutoText_GetAutoTexts (&autoTexts, APIAutoText_All) == NoError) {
+        for (const auto& autoText : autoTexts) {
+            current[autoText[1]] = autoText[2];
+        }
+    }
+    Int32 set = 0, kept = 0, failed = 0;
+    for (const GS::ObjectState& field : fields) {
+        GS::UniString key, value;
+        field.Get ("key", key);
+        field.Get ("value", value);
+        const auto it = current.find (key);
+        if (it == current.end ()) {
+            continue;   // a field this project does not have (a custom one) is left out
+        }
+        if (!it->second.IsEmpty ()) {
+            ++kept;     // a field the project has filled in is kept
+            continue;
+        }
+        if (ACAPI_AutoText_SetAnAutoText (&key, &value) == NoError) {
+            ++set;
+        } else {
+            ++failed;
+        }
+    }
+    reportLines.Push (GS::UniString::Printf ("ProjectInfo: set %d, kept %d, failed %d",
+        static_cast<int> (set), static_cast<int> (kept), static_cast<int> (failed)));
+}
+
 bool ReadPackage (const GS::UniString& path, GS::ObjectState& package)
 {
     const IO::Location location (path);
@@ -1704,6 +1821,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         ApplyViews (package, reportLines);
         ApplyFavorites (packagePath, reportLines);
         ApplyLayouts (package, guids, processControl, reportLines);
+        ApplyPenSetsAndProjectInfo (package, reportLines);
     }
     return err;
 #else
@@ -1835,6 +1953,7 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
     counts.Add ("views", viewCount);
     counts.Add ("viewsSkipped", skippedViews);
     CaptureLayouts (package, counts);
+    CapturePenSetsAndProjectInfo (package, counts);
     const IO::Location favorites (FavoritesPath (packagePath));
     counts.Add ("favoritesExported", ACAPI_Favorite_Export (favorites, nullptr) == NoError);
     const IO::Location location (packagePath);
