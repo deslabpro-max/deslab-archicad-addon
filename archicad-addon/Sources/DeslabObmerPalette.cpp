@@ -20,6 +20,7 @@
 #pragma warning (pop)
 #pragma comment (lib, "shell32.lib")
 #pragma comment (lib, "ole32.lib")
+#pragma comment (lib, "advapi32.lib")
 #endif
 
 const GS::Guid                      DeslabObmerPalette::paletteGuid ("{8C1F4E52-3B7D-4A61-9E2C-5D0A7B9F1E34}");
@@ -86,10 +87,39 @@ bool FileExists (const GS::UniString& path)
     const DWORD attributes = GetFileAttributesW (reinterpret_cast<const wchar_t*> (path.ToUStr ().Get ()));
     return attributes != INVALID_FILE_ATTRIBUTES;
 }
+
+// deslab: 08.11.2026, the model picked in the palette is remembered (HKCU\Software\deslab\Obmer, value "model"): after
+// a restart the palette went back to the Polza default and a build failed on its empty balance
+GS::UniString RememberedModel ()
+{
+    wchar_t buffer[256];
+    DWORD size = sizeof (buffer);
+    if (RegGetValueW (HKEY_CURRENT_USER, L"Software\\deslab\\Obmer", L"model", RRF_RT_REG_SZ, nullptr, buffer, &size) != ERROR_SUCCESS) {
+        return GS::UniString ();
+    }
+    return FromWide (buffer);
+}
+
+void RememberModel (const GS::UniString& id)
+{
+    const GS::UniString value = id.IsEmpty () ? GS::UniString ("default") : id;
+    const wchar_t* chars = reinterpret_cast<const wchar_t*> (value.ToUStr ().Get ());
+    RegSetKeyValueW (HKEY_CURRENT_USER, L"Software\\deslab\\Obmer", L"model", REG_SZ, chars,
+                     static_cast<DWORD> ((wcslen (chars) + 1) * sizeof (wchar_t)));
+}
 #else
 bool FileExists (const GS::UniString&)
 {
     return false;
+}
+
+GS::UniString RememberedModel ()
+{
+    return GS::UniString ();
+}
+
+void RememberModel (const GS::UniString&)
+{
 }
 #endif
 
@@ -164,6 +194,13 @@ void DeslabObmerPalette::InitTexts ()
         modelPopUp.SetItemText (DG::PopUp::BottomItem, U (choice.label));
     }
     modelPopUp.SelectItem (1);
+    const GS::UniString remembered = RememberedModel ();
+    for (short i = 0; i < static_cast<short> (sizeof (modelChoices) / sizeof (modelChoices[0])); ++i) {
+        const GS::UniString id (modelChoices[i].id);
+        if (!remembered.IsEmpty () && (id == remembered || (id.IsEmpty () && remembered == "default"))) {
+            modelPopUp.SelectItem (i + 1);
+        }
+    }
     buildButton.SetText (U ("\xD0\x9F\xD0\xBE\xD1\x81\xD1\x82\xD1\x80\xD0\xBE\xD0\xB8\xD1\x82\xD1\x8C"));
     stopButton.SetText (U ("\xD0\x9E\xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xB2\xD0\xB8\xD1\x82\xD1\x8C"));
     logLabel.SetText (U ("\xD0\xA5\xD0\xBE\xD0\xB4 \xD1\x81\xD0\xB1\xD0\xBE\xD1\x80\xD0\xBA\xD0\xB8, \xD0\xBD\xD0\xB0\xD0\xB9\xD0\xB4\xD0\xB5\xD0\xBD\xD0\xBD\xD0\xBE\xD0\xB5 \xD0\x98\xD0\x98 \xD0\xB8 \xD0\xB2\xD0\xBE\xD0\xBF\xD1\x80\xD0\xBE\xD1\x81\xD1\x8B:"));
@@ -401,6 +438,7 @@ void DeslabObmerPalette::Build ()
     const bool isScan = file.ToLowerCase ().EndsWith (".e57");
     const ModelChoice& choice = modelChoices[modelPopUp.GetSelectedItem () - 1];
     const GS::UniString modelId = choice.id;
+    RememberModel (modelId);
 
     GS::Array<GS::UniString> args = { "-m", "deslab_bridge.rebuild", file, "--no-pictures" };
     if (modelId == "-") {
