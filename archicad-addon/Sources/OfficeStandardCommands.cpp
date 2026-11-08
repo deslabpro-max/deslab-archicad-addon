@@ -1582,6 +1582,18 @@ void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids
 // deslab: the pen sets in effect for the model and for the layouts (by name) and the filled project info fields.
 // Layouts drew in the open project's own layout pen set (pen 1 red), and the empty project status showed its
 // placeholder in the title block.
+// deslab: only the project info fields the user fills in (the same prefixes as GetProjectInfoFields); dates, file
+// names and layout autotexts are worked out by Archicad and are not copied.
+bool IsProjectInfoKey (const GS::UniString& key)
+{
+    for (const char* prefix : { "PROJECT", "KEYWORD", "NOTES", "SITE", "BUILDING", "CONTACT", "CAD_TECHNICIAN", "CLIENT" }) {
+        if (key.BeginsWith (prefix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void CapturePenSetsAndProjectInfo (GS::ObjectState& package, GS::ObjectState& counts)
 {
     GS::Array<API_Attribute> tables;
@@ -1608,7 +1620,7 @@ void CapturePenSetsAndProjectInfo (GS::ObjectState& package, GS::ObjectState& co
     Int32 count = 0;
     if (ACAPI_AutoText_GetAutoTexts (&autoTexts, APIAutoText_All) == NoError) {
         for (const auto& autoText : autoTexts) {
-            if (!autoText[2].IsEmpty ()) {
+            if (!autoText[2].IsEmpty () && IsProjectInfoKey (autoText[1])) {
                 fields (GS::ObjectState ("title", autoText[0], "key", autoText[1], "value", autoText[2]));
                 ++count;
             }
@@ -1679,7 +1691,7 @@ void ApplyPenSetsAndProjectInfo (const GS::ObjectState& package, GS::Array<GS::U
         field.Get ("key", key);
         field.Get ("value", value);
         const auto it = current.find (key);
-        if (it == current.end ()) {
+        if (it == current.end () || !IsProjectInfoKey (key)) {
             continue;   // a field this project does not have (a custom one) is left out
         }
         if (!it->second.IsEmpty ()) {
