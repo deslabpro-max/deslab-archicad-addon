@@ -609,9 +609,13 @@ void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attri
             ++created;
         } else {
             ++failed;
-            if (failed <= 3) {
-                failures += "; " + name + " (" + FirstError (response, "graphicOverrideRuleIds") + ")";
+            Int32 code = 0;
+            GS::Array<GS::ObjectState> items;
+            GS::ObjectState error;
+            if (response.Get ("graphicOverrideRuleIds", items) && !items.IsEmpty () && items[0].Get ("error", error)) {
+                error.Get ("code", code);
             }
+            failures += "; " + name + GS::UniString::Printf (" (%d)", static_cast<int> (code));
         }
     }
     reportLines.Push (GS::UniString::Printf ("GraphicOverrideRule: created %d, already there %d, failed %d",
@@ -630,7 +634,7 @@ void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attri
         GS::Array<GS::ObjectState> sourceIds;
         combination.Get ("graphicOverrideRuleIds", sourceIds);
         GS::Array<GS::ObjectState> ruleIds;
-        bool complete = true;
+        Int32 missing = 0;
         for (const GS::ObjectState& item : sourceIds) {
             GS::ObjectState idOs;
             GS::UniString guid;
@@ -641,14 +645,11 @@ void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attri
                     continue;
                 }
             }
-            complete = false;
+            ++missing;
         }
-        if (!complete) {
-            ++failed;
-            if (failed <= 3) {
-                failures += "; " + name + " (rules missing)";
-            }
-            continue;
+        if (missing > 0) {
+            // deslab: made with the rules that came over, so the views still find their combination.
+            failures += GS::UniString::Printf ("; %T without %d rules", name.ToPrintf (), static_cast<int> (missing));
         }
         GS::ObjectState item;
         item.Add ("name", name);
@@ -902,7 +903,9 @@ void CollectViewKeys (const API_NavigatorItem& item, GS::Array<GS::UniString> pa
 
 // The folder of the path, created where missing. The View Map root itself is never returned: Archicad leaves
 // items made directly under it impossible to delete or move.
-bool EnsureFolder (const GS::Array<GS::UniString>& path, API_Guid& folderGuid)
+// deslab: the folders made in this run are remembered by path: a new folder is not found again among the children
+// right away, and Archicad then made a numbered copy for every view.
+bool EnsureFolder (const GS::Array<GS::UniString>& path, std::map<GS::UniString, API_NavigatorItem>& made, API_Guid& folderGuid)
 {
     GS::Array<GS::UniString> folders = path;
     if (folders.IsEmpty ()) {
@@ -910,7 +913,15 @@ bool EnsureFolder (const GS::Array<GS::UniString>& path, API_Guid& folderGuid)
     }
     API_NavigatorItem current = MapRoot (API_PublicViewMap);
     bool atRoot = true;
+    GS::UniString key;
     for (const GS::UniString& folder : folders) {
+        key += folder + "/";
+        const auto known = made.find (key);
+        if (known != made.end ()) {
+            current = known->second;
+            atRoot = false;
+            continue;
+        }
         bool found = false;
         for (const API_NavigatorItem& child : Children (current, API_PublicViewMap)) {
             if (child.itemType == API_FolderNavItem && GS::UniString (child.uName) == folder) {
@@ -932,13 +943,14 @@ bool EnsureFolder (const GS::Array<GS::UniString>& path, API_Guid& folderGuid)
             folderItem.mapId = API_PublicViewMap;
             current = folderItem;
         }
+        made[key] = current;
         atRoot = false;
     }
     folderGuid = current.guid;
     return true;
 }
 
-GS::UniString CreateView (const GS::ObjectState& os)
+GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API_NavigatorItem>& folders)
 {
     GS::Array<GS::UniString> path;
     os.Get ("path", path);
@@ -949,7 +961,7 @@ GS::UniString CreateView (const GS::ObjectState& os)
         return GS::UniString::Printf ("no story %d", static_cast<int> (floorNum));
     }
     API_Guid folder = APINULLGuid;
-    if (!EnsureFolder (path, folder)) {
+    if (!EnsureFolder (path, folders, folder)) {
         return "folder not created";
     }
     API_Guid created = APINULLGuid;
@@ -1041,6 +1053,7 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
     CollectViewKeys (MapRoot (API_PublicViewMap), {}, keys);
     Int32 created = 0, existing = 0, failed = 0;
     GS::UniString failures;
+    std::map<GS::UniString, API_NavigatorItem> folders;
     for (const GS::ObjectState& os : views) {
         GS::Array<GS::UniString> path;
         GS::UniString name;
@@ -1050,7 +1063,7 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
             ++existing;
             continue;
         }
-        const GS::UniString problem = CreateView (os);
+        const GS::UniString problem = CreateView (os, folders);
         if (problem.IsEmpty ()) {
             ++created;
         } else {
