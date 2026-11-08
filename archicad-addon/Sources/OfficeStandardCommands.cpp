@@ -1652,7 +1652,7 @@ void ApplyPenSetsAndProjectInfo (const GS::ObjectState& package, GS::Array<GS::U
                 } else {
                     attribute.penTable.inEffectForLayout = true;
                 }
-                e = ACAPI_Attribute_Modify (&attribute, &defs);
+                e = ACAPI_Attribute_ModifyExt (&attribute, &defs);
             }
             ACAPI_DisposeAttrDefsHdlsExt (&defs);
             DisposeAttribute (attribute);
