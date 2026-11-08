@@ -104,6 +104,14 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
         # a probe tells whether the view holds only the flat (plus dimensions); otherwise the crop is the only way
         # to keep the template's own flat and old leftovers off the sheet, and the frame stays manual.
         s = 1 / denominator
+        # deslab: 08.11.2026, in a project set up by ApplyOfficeStandard the view keeps the zoom it was made with (77 x 38 m)
+        # and Archicad sizes a «по размеру чертежа» frame by it: the frame came out 1715 x 850 mm, off the sheet. The
+        # view's saved zoom is set to the flat (with the margin) first.
+        try:
+            ac.tapir("SetViewSettings", {"navigatorItemIdsWithViewSettings": [{"navigatorItemId": view["navigatorItemId"], "viewSettings": {
+                "zoom": {"xMin": bbox["xMin"] - margin, "yMin": bbox["yMin"] - margin, "xMax": bbox["xMax"] + margin, "yMax": bbox["yMax"] + margin}}}]})
+        except ArchicadError:  # an older add-on without zoom in SetViewSettings: the frame is checked below anyway
+            pass
         probe = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position={"x": tx, "y": ty}, scale=1)]})["elements"][0]
         content = ac.tapir("GetDrawingContentBoxes", {"elements": [{"elementId": probe["elementId"]}]})["contentBoxes"][0]["contentBox"]
         # deslab: the view's REAL scale is what the probe came out with (Archicad takes the drawing's scale from the view; the
