@@ -370,3 +370,19 @@ if __name__ == "__main__":
         if name.startswith("test_"):
             fn()
             print("ok", name)
+
+
+def test_fit_walls_to_rooms_scan_misses():
+    """deslab: JK 08.11.2026, a wall end 46 mm short of the outline and a 0.11 m nook are fitted, a wall a thickness off is not."""
+    def wall(i, a, b, t):
+        return {"id": i, "start": {"x": a[0], "y": a[1]}, "end": {"x": b[0], "y": b[1]}, "thickness": t, "height": 3, "openings": []}
+    room = [(0.1, 0.1), (2.0, 0.1), (2.0, 0.3), (4.9, 0.3), (4.9, 3.9), (0.1, 3.9)]
+    scene = {"format": obmer.SCENE_FORMAT, "rooms": [{"id": "R1", "polygon": [{"x": x, "y": y} for x, y in room]}], "walls": [
+        wall("S1", (0, 0), (2.0, 0), 0.2), wall("S2", (2.046, 0), (5, 0), 0.6), wall("E", (5, 0), (5, 4), 0.2),
+        wall("N", (5, 4), (0, 4), 0.2), wall("W", (0, 4), (0, 0), 0.2)]}
+    assert obmer.check_room_faces(scene)
+    fitted, notes = obmer.fit_walls_to_rooms(scene)
+    assert not obmer.check_room_faces(fitted), notes
+    assert any("S2" in n for n in notes)
+    scene["walls"][3] = wall("N", (5, 4.2), (0, 4.2), 0.2)  # a whole thickness off: stays an error
+    assert obmer.check_room_faces(obmer.fit_walls_to_rooms(scene)[0])

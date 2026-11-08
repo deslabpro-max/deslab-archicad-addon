@@ -252,7 +252,10 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         scene, ai_report = ai.apply_review(scene_in, review)
         with open(out_dir / f"ai-review-{name}.json", "w", encoding="utf-8") as f:
             json.dump({"review": review, "report": ai_report, "usage": usage}, f, ensure_ascii=False, indent=1)
-        print(f"ИИ: применено {len(ai_report['applied'])}, отклонено {len(ai_report['rejected'])}, токены {usage.get('prompt_tokens')}+{usage.get('completion_tokens')}, {usage.get('cost_rub', '?')} ₽")
+        # deslab: Claude Code reports input/output tokens and a cost in dollars (the subscription), Polza prompt/completion and roubles
+        tokens = f"{usage.get('prompt_tokens', usage.get('input_tokens'))}+{usage.get('completion_tokens', usage.get('output_tokens'))}"
+        cost = f"{usage['cost_rub']} ₽" if "cost_rub" in usage else (f"${usage['cost']:.2f} (подписка)" if usage.get("cost") is not None else "? ₽")
+        print(f"ИИ: применено {len(ai_report['applied'])}, отклонено {len(ai_report['rejected'])}, токены {tokens}, {cost}")
         for q in ai_report["doubts"]:
             print("Вопрос Игорю:", q)
     deleted = 0 if keep else delete_previous(ac, state_path)
@@ -280,6 +283,9 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         new = sorted(_all_guids(ac) - before)
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"preset": name, "guids": new}, f)
+    for step in report.get("steps", []):
+        for note in step.get("notes", []) if step.get("step", "").startswith("Стены подогнаны") else []:
+            print("Подгонка:", note)
     if ai_report is not None:
         report["ai"] = ai_report
     if getattr(clear_area, "left", 0):

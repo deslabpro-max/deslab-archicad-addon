@@ -197,18 +197,20 @@ def _opening_points(wall):
         yield o, c, _sub(c, _mul(u, half)), _add(c, _mul(u, half)), u, _left(u)
 
 
-def check_room_faces(scene, tol=0.005):
+def check_room_faces(scene, tol=0.005, where=None):
     """deslab: every edge of a room outline must lie on a wall face (Игорь, 04.11.2026: in kv94
     a bottom wall stood a wall thickness off its place, so the plan's outline dimensions were
     wrong). Returns the errors: an edge with no wall face on it within tol, with the nearest one."""
     errors = []
+    # deslab: where (a list) gets (room index, edge index) of each error, for fit_walls_to_rooms
+    where = where if where is not None else []
     walls = []
     for w in scene.get("walls", []):
         a, b = _pt(w["start"]), _pt(w["end"])
         if _len(_sub(b, a)) < 1e-6:
             continue
         walls.append((w, a, b, _unit(_sub(b, a)), float(w.get("thickness", 0.2)) / 2))
-    for room in scene.get("rooms", []):
+    for ri, room in enumerate(scene.get("rooms", [])):
         poly = [_pt(p) for p in room["polygon"]]
         ccw = polygon_area(poly) > 0
         for i, p in enumerate(poly):
@@ -241,16 +243,128 @@ def check_room_faces(scene, tol=0.005):
             if (best is None or best[0] > tol) and _on_wall_end(walls, p, q, mid, e, tol):
                 continue  # a step of the outline on a wall's end face
             if best is None and inside:
-                errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}): "
+                where.append((ri, i)) or errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}): "
                               f"стена {inside} стоит внутри помещения, а должна снаружи (ось не в ту сторону)")
             elif best is None:
-                errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}) "
+                where.append((ri, i)) or errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}) "
                               f"без стены вдоль него")
             elif best[0] > tol:
-                errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}) "
+                where.append((ri, i)) or errors.append(f"{room.get('id', '?')}: ребро {i + 1} ({p[0]:.3f}; {p[1]:.3f}) → ({q[0]:.3f}; {q[1]:.3f}) "
                               f"не на грани стены {best[1]}: ось в {best[2] * 1000:.0f} мм, половина толщины "
                               f"{best[3] * 1000:.0f} мм, промах {best[0] * 1000:.0f} мм")
     return errors
+
+
+
+def _orthogonal_outline(poly, tol=0.02):
+    """deslab: a scanned outline straightened: a vertex off its neighbour by less than tol across an axis takes
+    the neighbour's coordinate, then repeated and collinear vertices are dropped (JK 08.11: a 6 cm slanted edge)."""
+    out = [list(poly[0])]
+    for x, y in poly[1:]:
+        px, py = out[-1]
+        if abs(x - px) < tol <= abs(y - py):
+            x = px
+        elif abs(y - py) < tol <= abs(x - px):
+            y = py
+        out.append([x, y])
+    pts = [tuple(v) for v in out]
+    changed = True
+    while changed and len(pts) > 3:
+        changed = False
+        for i in range(len(pts)):
+            a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
+            cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+            if _len(_sub(b, a)) < 1e-4 or abs(cross) < 1e-7:
+                del pts[i]
+                changed = True
+                break
+    return pts
+
+
+def fit_walls_to_rooms(scene, snap=0.25, nook=0.4, tol=0.005):
+    """deslab (JK 08.11.2026): a scene from the scan helper whose room outline misses the wall faces by a few
+    centimetres at wall ends and small nooks. Walls are never moved across (a wall a thickness off stays an error,
+    Игорь 04.11): the outline is straightened, a wall end within snap of an outline edge square to it is moved
+    onto that edge (with the walls joined at that end), and a nook up to nook long is filled by a wall from the
+    edge to the wall face behind it. Returns (scene copy, notes)."""
+    scene = json.loads(json.dumps(scene))
+    notes = []
+    for room in scene.get("rooms", []):
+        poly = [_pt(p) for p in room["polygon"]]
+        straight = _orthogonal_outline(poly)
+        if len(straight) != len(poly) or any(_len(_sub(a, b)) > 1e-9 for a, b in zip(straight, poly)):
+            room["polygon"] = [_xy(p) for p in straight]
+            notes.append(f"{room.get('id', '?')}: контур выпрямлен ({len(poly)} → {len(straight)} вершин)")
+    filled = 0
+    for _ in range(40):
+        where = []
+        check_room_faces(scene, tol, where)
+        if not where:
+            break
+        done = False
+        for ri, i in where:
+            room = scene["rooms"][ri]
+            poly = [_pt(p) for p in room["polygon"]]
+            p, q = poly[i], poly[(i + 1) % len(poly)]
+            e, mid = _unit(_sub(q, p)), _mul(_add(p, q), 0.5)
+            ccw = polygon_area(poly) > 0
+            out = _mul(_left(e), -1.0) if ccw else _left(e)
+            best = None
+            for w in scene.get("walls", []):
+                a, b = _pt(w["start"]), _pt(w["end"])
+                if _len(_sub(b, a)) < 1e-6:
+                    continue
+                u, half = _unit(_sub(b, a)), float(w.get("thickness", 0.2)) / 2
+                if abs(_dot(e, u)) > 1e-4:
+                    continue
+                for key, end in (("start", a), ("end", b)):
+                    along = _dot(_sub(mid, end), u)
+                    across = [_dot(_sub(x, end), _left(u)) for x in (p, q)]
+                    if 1e-4 < abs(along) <= snap and min(across) >= -half - tol and max(across) <= half + tol:
+                        if best is None or abs(along) < abs(best[0]):
+                            best = (along, w, key, end, u)
+            if best:
+                along, w, key, end, u = best
+                move = _mul(u, along)
+                for other in scene["walls"]:
+                    for k in ("start", "end"):
+                        if other is w and k != key:
+                            continue
+                        if _len(_sub(_pt(other[k]), end)) < 0.002:
+                            other[k] = _xy(_add(_pt(other[k]), move))
+                notes.append(f"{w['id']}: торец ({key}) сдвинут на {along * 1000:+.0f} мм к контуру {room.get('id', '?')}")
+                done = True
+                break
+            length = _len(_sub(q, p))
+            if length > nook:
+                continue
+            depth = None
+            for w in scene.get("walls", []):
+                a, b = _pt(w["start"]), _pt(w["end"])
+                if _len(_sub(b, a)) < 1e-6:
+                    continue
+                u, half = _unit(_sub(b, a)), float(w.get("thickness", 0.2)) / 2
+                if abs(abs(_dot(e, u)) - 1) > 1e-4:
+                    continue
+                d = _dot(_sub(a, mid), out) - half
+                t = sorted([_dot(_sub(p, a), u), _dot(_sub(q, a), u)])
+                lo, hi = min(0.0, _dot(_sub(b, a), u)), max(0.0, _dot(_sub(b, a), u))
+                if tol < d <= 0.3 and t[0] >= lo - half - tol and t[1] <= hi + half + tol:
+                    if depth is None or d < depth[0]:
+                        depth = (d, w)
+            if depth:
+                d, w = depth
+                filled += 1
+                scene["walls"].append({
+                    "id": f"{w['id']}N{filled}", "start": _xy(_add(p, _mul(out, d / 2))), "end": _xy(_add(q, _mul(out, d / 2))),
+                    "thickness": round(d, 4), "height": w.get("height"), "bottom": w.get("bottom", 0.0),
+                    "measuredThickness": True, "kind": w.get("kind", "interior"), "openings": []})
+                notes.append(f"{w['id']}N{filled}: ниша {length * 1000:.0f}×{d * 1000:.0f} мм у {w['id']} заполнена стеной")
+                done = True
+                break
+        if not done:
+            break
+    return scene, notes
 
 
 def _on_wall_end(walls, p, q, mid, e, tol):
@@ -1466,6 +1580,11 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     if scene.get("format") != SCENE_FORMAT:
         raise ValueError(f"Задание не в формате {SCENE_FORMAT}")
     faults = check_room_faces(scene)
+    fitted = []
+    if faults and not scene.get("allowLooseRoomEdges"):
+        # deslab: small misses of a scanned scene are fitted first (JK 08.11.2026), what is left still stops the build
+        scene, fitted = fit_walls_to_rooms(scene)
+        faults = check_room_faces(scene)
     if faults and not scene.get("allowLooseRoomEdges"):
         raise ValueError("Контур помещения не лежит на гранях стен, план не строю (размеры по контуру "
                          "были бы неверны):\n" + "\n".join(faults))
@@ -1473,6 +1592,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     for room in scene.get("rooms", []):
         room.setdefault("name", f"{profile['zone']['defaultName']} {room.get('number', '')}".strip())
     report = Report()
+    if fitted:
+        report.step("Стены подогнаны к контуру помещения", notes=fitted)
     L, F = profile["layers"], profile["favorites"]
 
     if not ac.alive():
