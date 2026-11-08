@@ -1253,6 +1253,27 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         return NoError;
     });
     if (err == NoError && hasPackage) {
+        GS::Array<GS::ObjectState> attributeNames;
+        package.Get ("attributeNames", attributeNames);
+        std::map<API_AttrTypeID, std::map<GS::UniString, API_AttributeIndex>> projectNames;
+        for (const GS::ObjectState& entry : attributeNames) {
+            Int32 type = 0;
+            GS::UniString name, guid;
+            entry.Get ("type", type);
+            entry.Get ("name", name);
+            entry.Get ("guid", guid);
+            const API_AttrTypeID typeID = static_cast<API_AttrTypeID> (type);
+            if (projectNames.find (typeID) == projectNames.end ()) {
+                projectNames[typeID] = ProjectNames (typeID);
+            }
+            const auto it = projectNames[typeID].find (name);
+            if (it != projectNames[typeID].end ()) {
+                const GS::UniString target = APIGuidToString (GetAttributeGuidFromIndex (typeID, it->second)).ToUpperCase ();
+                if (target != guid) {
+                    guids[guid] = target;
+                }
+            }
+        }
         // Separate undo steps: the override commands open their own.
         ApplyGraphicOverrides (package, guids, maps[API_LayerID], processControl, reportLines);
         ApplyViews (package, reportLines);
@@ -1359,6 +1380,18 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
             DisposeAttribute (attribute);
         }
         counts.Add (PackageKey (typeID), count);
+    }
+    // deslab: the guids and names of the attributes a graphic override style can point at. The guids read from the
+    // standard's file are not always the ones the open project knew, so the rules' guids are resolved by name.
+    {
+        const auto& names = package.AddList<GS::ObjectState> ("attributeNames");
+        const API_AttrTypeID referenced[] = { API_LinetypeID, API_FilltypeID, API_MaterialID, API_BuildingMaterialID, API_LayerID };
+        for (API_AttrTypeID typeID : referenced) {
+            for (const auto& kv : ProjectNames (typeID)) {
+                names (GS::ObjectState ("type", static_cast<Int32> (typeID), "name", kv.first,
+                    "guid", APIGuidToString (GetAttributeGuidFromIndex (typeID, kv.second)).ToUpperCase ()));
+            }
+        }
     }
     // deslab: the graphic override rules and combinations, as GetGraphicOverrideRules/Combinations return them.
     GS::Array<GS::ObjectState> rules, combinations;
