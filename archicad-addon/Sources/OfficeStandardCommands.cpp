@@ -1035,7 +1035,11 @@ bool EnsureFolder (const GS::Array<GS::UniString>& path, std::map<GS::UniString,
     API_NavigatorItem current = MapRoot (API_PublicViewMap);
     bool atRoot = true;
     GS::UniString key;
-    for (const GS::UniString& folder : folders) {
+    // deslab: 08.11.2026, a second run nested the whole folder tree inside its own top folder: the map root
+    // can be the item that carries the first folder's name, then that name is the root itself
+    const bool rootIsFirst = folders.GetSize () > 1 && GS::UniString (current.uName) == folders[0];
+    for (UIndex i = rootIsFirst ? 1 : 0; i < folders.GetSize (); ++i) {
+        const GS::UniString& folder = folders[i];
         key += folder + "/";
         const auto known = made.find (key);
         if (known != made.end ()) {
@@ -1164,6 +1168,21 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     return err == NoError ? GS::EmptyUniString : GS::UniString::Printf ("settings %d", static_cast<int> (err));
 }
 
+// deslab: 08.11.2026, a second «Построить» made all 29 views again: the existing ones were not recognised. A view
+// counts as there when its folder path and name match the end of an existing one, or the other way round
+// (the map root may or may not carry the top folder's name).
+bool ViewExists (const std::map<GS::UniString, bool>& keys, const GS::Array<GS::UniString>& path, const GS::UniString& name)
+{
+    const GS::UniString key = ViewKey (path, name);
+    for (const auto& existing : keys) {
+        const GS::UniString& other = existing.first;
+        if (other == key || other.EndsWith ("/" + key) || key.EndsWith ("/" + other)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& reportLines)
 {
     GS::Array<GS::ObjectState> views;
@@ -1180,7 +1199,7 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
         GS::UniString name;
         os.Get ("path", path);
         os.Get ("name", name);
-        if (keys.find (ViewKey (path, name)) != keys.end ()) {
+        if (ViewExists (keys, path, name)) {
             ++existing;
             continue;
         }
