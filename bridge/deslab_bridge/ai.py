@@ -374,6 +374,13 @@ def _confident(item, minimum):
 OFFICE_LABELS = {"shaft": "Вытяжка", "radiator": None, "panel": "Щиток", "sewerRiser": "Стояк канализации", "waterRiser": "Стояк воды"}
 
 
+def _carries_outline(scene, wall):
+    """deslab: True when a room outline edge lies on this wall: without it the outline check finds more faults."""
+    from . import obmer
+    without = dict(scene, walls=[w for w in scene.get("walls", []) if w is not wall])
+    return len(obmer.check_room_faces(without)) > len(obmer.check_room_faces(scene))
+
+
 def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
     """Applies the review to a COPY of the scene. Returns (new_scene, report) with report = {"applied": [...],
     "rejected": [...], "doubts": [...]}. Rules: an opening stays on its wall and does not overlap another; points are inside
@@ -494,6 +501,10 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
             rejected.append(f"мусор {item.get('wallId')}: нет такой стены")
         elif _wall_length(wall) > 1.0 and wall.get("kind") != "tracing":
             rejected.append(f"мусор {wall['id']}: стена длиннее 1 м, выбрасывать нельзя без Игоря")
+        elif _carries_outline(new, wall):
+            # deslab: JK 08.11.2026, the model dropped the box at the entrance (W5) while the measured room outline goes
+            # round it: the outline then had no wall and the plan was refused; a wall the outline runs along stays
+            rejected.append(f"мусор {wall['id']}: контур помещения обходит эту стену (короб или шахта), без Игоря не убираю")
         else:
             new["walls"] = [w for w in new["walls"] if w["id"] != wall["id"]]
             applied.append(f"убрана стена {wall['id']} (мусор): {item.get('reason', '')}")
