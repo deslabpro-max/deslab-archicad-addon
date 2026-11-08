@@ -407,7 +407,7 @@ void LoadFromPackage (const GS::ObjectState& package, API_AttrTypeID typeID,
     }
 }
 
-struct TypeResult { Int32 created = 0; Int32 existing = 0; Int32 failed = 0; GS::Array<GS::UniString> failures; GSErrCode readError = NoError; };
+struct TypeResult { Int32 created = 0; Int32 existing = 0; Int32 updated = 0; Int32 failed = 0; GS::Array<GS::UniString> failures; GSErrCode readError = NoError; };
 
 void NoteGuid (GuidMap& guids, const API_Guid& sourceGuid, API_AttrTypeID typeID, API_AttributeIndex index)
 {
@@ -418,7 +418,7 @@ void NoteGuid (GuidMap& guids, const API_Guid& sourceGuid, API_AttrTypeID typeID
 }
 
 TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package, API_AttrTypeID typeID,
-                      std::map<API_AttrTypeID, IndexMap>& maps, GuidMap& guids)
+                      std::map<API_AttrTypeID, IndexMap>& maps, GuidMap& guids, bool updateExisting)
 {
     TypeResult result;
     GS::Array<GS::Pair<API_Attribute, API_AttributeDefExt>> loaded;
@@ -452,6 +452,20 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
             map[sourceIndex] = byName->second;
             NoteGuid (guids, sourceGuid, typeID, byName->second);
             ++result.existing;
+            // deslab: 08.11.2026, in a new file Archicad's own «Бетон - Конструкционный» kept its green cut fill pen
+            // (169) instead of the template's black one: in a new (untitled) project the same-named attributes take the
+            // standard's settings, keeping their own index and guid
+            if (updateExisting && RemapReferences (attribute, defs, maps)) {
+                attribute.header.index = byName->second;
+                attribute.header.guid = GetAttributeGuidFromIndex (typeID, byName->second);
+                attribute.header.uniStringNamePtr = &name;
+                const GSErrCode err = ACAPI_Attribute_ModifyExt (&attribute, &defs);
+                if (err == NoError) {
+                    ++result.updated;
+                } else if (result.failures.GetSize () < 5) {
+                    result.failures.Push (name + GS::UniString::Printf (" (not updated %d)", static_cast<int> (err)));
+                }
+            }
         } else {
             if (FindByGuid (typeID, attribute.header.guid, existingIndex)) {
                 attribute.header.guid = APINULLGuid;
@@ -1767,6 +1781,10 @@ GS::Optional<GS::UniString> ApplyOfficeStandardCommand::GetInputParametersSchema
                 "type": "string",
                 "description": "The standard package (.json) written by CaptureOfficeStandard from the same project. Layers, surfaces and building materials come from it, because Archicad does not read them from a file.",
                 "minLength": 1
+            },
+            "updateExisting": {
+                "type": "boolean",
+                "description": "Optional, default false. Attributes already in the project under the same name take the standard's settings (for a new project, whose Archicad defaults differ from the office template)."
             }
         },
         "additionalProperties": false,
@@ -1790,7 +1808,8 @@ GS::Optional<GS::UniString> ApplyOfficeStandardCommand::GetRawResponseSchema () 
 }
 
 GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sourceProjectPath, const GS::UniString& packagePath,
-                                                       GS::ProcessControl& processControl, GS::Array<GS::UniString>& reportLines)
+                                                       GS::ProcessControl& processControl, GS::Array<GS::UniString>& reportLines,
+                                                       bool updateExisting)
 {
 #ifdef ServerMainVers_2700
     const IO::Location source (sourceProjectPath);
@@ -1812,9 +1831,10 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     std::map<API_AttrTypeID, IndexMap> maps;
     const GSErrCode err = ACAPI_CallUndoableCommand ("Apply office standard", [&] () -> GSErrCode {
         for (const StandardType& type : standardTypes) {
-            const TypeResult result = ApplyType (source, hasPackage ? &package : nullptr, type.typeID, maps, guids);
-            GS::UniString line = GS::UniString::Printf ("%s: created %d, already there %d, failed %d",
-                type.name, static_cast<int> (result.created), static_cast<int> (result.existing), static_cast<int> (result.failed));
+            const TypeResult result = ApplyType (source, hasPackage ? &package : nullptr, type.typeID, maps, guids, updateExisting);
+            GS::UniString line = GS::UniString::Printf ("%s: created %d, already there %d (updated %d), failed %d",
+                type.name, static_cast<int> (result.created), static_cast<int> (result.existing), static_cast<int> (result.updated),
+                static_cast<int> (result.failed));
             if (result.readError != NoError) {
                 line += GS::UniString::Printf (", read error %d", static_cast<int> (result.readError));
             }
@@ -1859,6 +1879,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     UNUSED_PARAMETER (sourceProjectPath);
     UNUSED_PARAMETER (packagePath);
     UNUSED_PARAMETER (processControl);
+    UNUSED_PARAMETER (updateExisting);
     reportLines.Push ("ApplyOfficeStandard needs Archicad 27 or later.");
     return APIERR_GENERAL;
 #endif
@@ -1872,8 +1893,10 @@ GS::ObjectState ApplyOfficeStandardCommand::Execute (const GS::ObjectState& para
     }
     GS::UniString packagePath;
     parameters.Get ("packagePath", packagePath);
+    bool updateExisting = false;
+    parameters.Get ("updateExisting", updateExisting);
     GS::Array<GS::UniString> reportLines;
-    const GSErrCode err = ApplyAttributes (sourceProjectPath, packagePath, processControl, reportLines);
+    const GSErrCode err = ApplyAttributes (sourceProjectPath, packagePath, processControl, reportLines, updateExisting);
     if (err != NoError && reportLines.IsEmpty ()) {
         return CreateErrorResponse (err, "Failed to apply the office standard.");
     }

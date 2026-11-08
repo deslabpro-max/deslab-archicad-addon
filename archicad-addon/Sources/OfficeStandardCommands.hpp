@@ -19,7 +19,8 @@ public:
     // The same work for the palette: returns one report line per attribute type.
     // packagePath may be empty: then layers, surfaces and building materials are skipped.
     static GSErrCode ApplyAttributes (const GS::UniString& sourceProjectPath, const GS::UniString& packagePath,
-                                      GS::ProcessControl& processControl, GS::Array<GS::UniString>& reportLines);
+                                      GS::ProcessControl& processControl, GS::Array<GS::UniString>& reportLines,
+                                      bool updateExisting = false);
 };
 
 // deslab: "Snyat standart". Archicad 27 does not read layers, surfaces and building materials from a file, so they are

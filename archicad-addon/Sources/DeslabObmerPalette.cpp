@@ -8,6 +8,7 @@
 #include "OnExit.hpp"
 #include "FileSystem.hpp"
 #include "OfficeStandardCommands.hpp"
+#include "MigrationHelper.hpp"
 #include "GSProcessControl.hpp"
 
 #include <memory>
@@ -447,7 +448,10 @@ void DeslabObmerPalette::Build ()
             SetStatus (U ("\xD0\x9E\xD1\x84\xD0\xBE\xD1\x80\xD0\xBC\xD0\xBB\xD1\x8F\xD1\x8E \xD0\xBF\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBA\xD1\x82 \xD0\xBF\xD0\xBE \xD1\x81\xD1\x82\xD0\xB0\xD0\xBD\xD0\xB4\xD0\xB0\xD1\x80\xD1\x82\xD1\x83 \xD0\xBE\xD1\x84\xD0\xB8\xD1\x81\xD0\xB0\xE2\x80\xA6"));
             GS::NonInterruptibleProcessControl processControl;
             GS::Array<GS::UniString> reportLines;
-            const GSErrCode err = ApplyOfficeStandardCommand::ApplyAttributes (source, package, processControl, reportLines);
+            // deslab: a new (untitled) project takes the standard's settings also for the attributes it already has
+            API_ProjectInfo projectInfo = {};
+            const bool untitled = ACAPI_ProjectOperation_Project (&projectInfo) == NoError && projectInfo.untitled;
+            const GSErrCode err = ApplyOfficeStandardCommand::ApplyAttributes (source, package, processControl, reportLines, untitled);
             for (const GS::UniString& line : reportLines) {
                 AppendOutput (Job::Build, line + "\n");
             }
