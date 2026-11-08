@@ -1562,6 +1562,10 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
         raise RuntimeError("Archicad не отвечает. Откройте проект (копию шаблона) и закройте открытые диалоги.")
     opened = Report()
     names = set(profile["layers"].values())
+    # deslab: 08.11.2026, in a project set up by ApplyOfficeStandard the favorites put dimensions and labels on the
+    # template's layer indices (hidden «2D - Узловая Точка», «MEP - …ВК»), so their leaders and the layer change were
+    # refused: all layers are opened for every build
+    names = None
     if scene.get("mep") or scene.get("tracing"):
         # deslab: shaft and tracing walls and the objects are made on the tool's default layer
         # first, which may be hidden («009 …ПЛИТКА», run kv94i): then no layer change takes; all
