@@ -1058,6 +1058,31 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
         static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
 }
 
+// deslab: favorites, exported next to the package as a .prf file and imported with their folders; favorites that the
+// open project already has under the same name are kept.
+GS::UniString FavoritesPath (const GS::UniString& packagePath)
+{
+    GS::UniString path = packagePath;
+    const UIndex dot = path.FindLast (GS::UniChar ('.'));
+    if (dot != MaxUIndex) {
+        path.Delete (dot, path.GetLength () - dot);
+    }
+    return path + "-favorites.prf";
+}
+
+void ApplyFavorites (const GS::UniString& packagePath, GS::Array<GS::UniString>& reportLines)
+{
+    const IO::Location location (FavoritesPath (packagePath));
+    bool exists = false;
+    if (IO::fileSystem.Contains (location, &exists) != NoError || !exists) {
+        return;
+    }
+    const GSErrCode err = ACAPI_Favorite_Import (location, API_FavoriteFolderHierarchy (), true, API_FavoriteSkip);
+    const GS::UniString line = err == NoError ? GS::UniString ("Favorite: imported (existing names kept)")
+                                              : GS::UniString::Printf ("Favorite: import error %d", static_cast<int> (err));
+    reportLines.Push (line);
+}
+
 bool ReadPackage (const GS::UniString& path, GS::ObjectState& package)
 {
     const IO::Location location (path);
@@ -1160,6 +1185,7 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
         // Separate undo steps: the override commands open their own.
         ApplyGraphicOverrides (package, guids, processControl, reportLines);
         ApplyViews (package, reportLines);
+        ApplyFavorites (packagePath, reportLines);
     }
     return err;
 #else
@@ -1233,7 +1259,8 @@ GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema (
             "graphicOverrideRules": { "type": "integer" },
             "graphicOverrideCombinations": { "type": "integer" },
             "views": { "type": "integer" },
-            "viewsSkipped": { "type": "integer", "description": "Views that are not story views (not captured yet)." }
+            "viewsSkipped": { "type": "integer", "description": "Views that are not story views (not captured yet)." },
+            "favoritesExported": { "type": "boolean", "description": "The favorites were written next to the package (<name>-favorites.prf)." }
         },
         "additionalProperties": false,
         "required": ["layers", "surfaces", "buildingMaterials", "layerCombinations"]
@@ -1275,6 +1302,8 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
     CaptureViewItems (MapRoot (API_PublicViewMap), {}, [&] (const GS::ObjectState& os) { viewList (os); }, viewCount, skippedViews);
     counts.Add ("views", viewCount);
     counts.Add ("viewsSkipped", skippedViews);
+    const IO::Location favorites (FavoritesPath (packagePath));
+    counts.Add ("favoritesExported", ACAPI_Favorite_Export (favorites, nullptr) == NoError);
     const IO::Location location (packagePath);
     IO::File file (location, IO::File::OnNotFound::Create);
     GSErrCode err = file.Open (IO::File::OpenMode::WriteEmptyMode);
