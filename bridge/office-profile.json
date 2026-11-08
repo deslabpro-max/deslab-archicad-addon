@@ -16,7 +16,7 @@
     "frame": {"xMin": 0.034, "xMax": 0.326, "yMin": 0.04, "yMax": 0.296},
     "anchor": "topLeft",
     "inset": 0.015,
-    "preferScale": 45,
+    "preferScale": null,
     "titleLibraryPartIndex": 0,
     "overflow": 0.01,
     "margin": 0.0,

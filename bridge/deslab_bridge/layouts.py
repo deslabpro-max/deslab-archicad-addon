@@ -41,6 +41,10 @@ def choose_scale(width, height, avail, scales, prefer, overflow):
     """deslab: the template's scale (1:45) whenever the plan fits the free area from the anchor point or sticks out by
     at most `overflow` m on paper, else the largest standard scale that fits (never larger than the preferred one)."""
     fit = pick_scale(width, height, avail, scales)
+    # deslab: Игорь 08.11.2026, «масштаб должен каждый раз подгоняться под формат А3, чтобы он заполнял максимальное
+    # пространство листа»: with no preferred scale (profile "preferScale": null) the largest scale that fits is taken
+    if not prefer:
+        return fit
     if fit <= prefer:
         return prefer
     if width / prefer - avail["width"] <= overflow and height / prefer - avail["height"] <= overflow:
@@ -70,7 +74,7 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
     margin = float(cfg.get("margin", 0.25))
     frame = cfg["frame"]  # {"xMin","xMax","yMin","yMax"} on paper, metres: the plan area of the template's layouts
     inset = float(cfg.get("inset", 0.015))  # deslab: the drawing always starts 15 mm right of and below the area's top-left corner
-    prefer = int(cfg.get("preferScale", 45))
+    prefer = int(cfg.get("preferScale") or 0)
     tolerance_paper = float(cfg.get("overflow", 0.01))  # m on paper that the plan may stick out at the preferred scale
     width = bbox["xMax"] - bbox["xMin"] + 2 * margin
     height = bbox["yMax"] - bbox["yMin"] + 2 * margin
