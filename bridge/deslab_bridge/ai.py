@@ -124,7 +124,8 @@ def _chat_claude_code(messages, profile, model, json_mode):
     import tempfile
     cfg = settings(profile)
     variant = model.split(":", 1)[1] if ":" in model else "sonnet"
-    with tempfile.TemporaryDirectory(prefix="deslab-ai-") as folder:
+    # deslab: on Windows the finished claude process can still hold the folder; never lose the answer over cleanup.
+    with tempfile.TemporaryDirectory(prefix="deslab-ai-", ignore_cleanup_errors=True) as folder:
         parts, pictures = [], 0
         for message in messages:
             content = message["content"]
@@ -148,7 +149,7 @@ def _chat_claude_code(messages, profile, model, json_mode):
         command = [_claude_executable(), "-p", "--output-format", "json", "--model", variant,
                    "--allowedTools", "Read", "--add-dir", folder]
         try:
-            done = subprocess.run(command, input=prompt.encode("utf-8"), capture_output=True, cwd=folder,
+            done = subprocess.run(command, input=prompt.encode("utf-8"), capture_output=True, cwd=tempfile.gettempdir(),
                                   timeout=max(int(cfg["timeout"]), 600))
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AIError("Claude Code не ответил: " + str(error)) from None
