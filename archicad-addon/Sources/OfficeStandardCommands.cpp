@@ -704,29 +704,35 @@ bool FromHex (const GS::UniString& hex, T& value)
     return true;
 }
 
+// deslab: looked up by index: the search by Unicode name does not find the template's sets.
 bool FindModelViewOptions (const GS::UniString& name, API_ModelViewOptions* options)
 {
     if (name.IsEmpty ()) {
         return false;
     }
-    API_ModelViewOptionsType mvo = {};
-    GS::UniString searchName = name;
-    mvo.head.guid = APINULLGuid;
-    mvo.head.uniStringNamePtr = &searchName;
-    if (ACAPI_Navigator_ModelViewOptions_Search (&mvo.head) != NoError) {
-        return false;
-    }
-    if (options != nullptr) {
+    UInt32 count = 0;
+    ACAPI_Navigator_ModelViewOptions_GetNum (count);
+    for (UInt32 i = 1; i <= count; ++i) {
+        API_ModelViewOptionsType mvo = {};
+        GS::UniString mvoName;
+        mvo.head.index = static_cast<Int32> (i);
+        mvo.head.uniStringNamePtr = &mvoName;
         if (ACAPI_Navigator_ModelViewOptions_Get (&mvo) != NoError) {
-            return false;
+            continue;
         }
-        *options = mvo.modelViewOpt;
+        const bool match = mvoName == name || GS::UniString (mvo.head.name) == name;
+        if (match && options != nullptr) {
+            *options = mvo.modelViewOpt;
+            options->gdlOptions = nullptr;
+        }
         if (mvo.modelViewOpt.gdlOptions != nullptr) {
             ACAPI_FreeGDLModelViewOptionsPtr (&mvo.modelViewOpt.gdlOptions);
         }
-        options->gdlOptions = nullptr;
+        if (match) {
+            return true;
+        }
     }
-    return true;
+    return false;
 }
 
 bool FindDimensionStandard (const GS::UniString& name, API_DimensionPrefs* prefs)
