@@ -396,6 +396,14 @@ GS::ObjectState GetSectionElementsCommand::Execute (const GS::ObjectState& param
 template <typename ListProxyType>
 static GSErrCode GetElementsInDrawOrderFromCurrentDatabase (const GS::ObjectState& parameters, ListProxyType& elementsListProxy)
 {
+    // deslab: walking the drawing order of a layout or a master layout database brought Archicad 27 down;
+    // those databases are refused, GetAllElements lists their elements.
+    API_DatabaseInfo currentDatabase = {};
+    if (ACAPI_Database_GetCurrentDatabase (&currentDatabase) == NoError &&
+        (currentDatabase.typeID == APIWind_LayoutID || currentDatabase.typeID == APIWind_MasterLayoutID)) {
+        return APIERR_NOTSUPPORTED;
+    }
+
     API_ElemTypeID elemType = API_ZombieElemID;
     GS::UniString elementTypeStr;
     if (parameters.Get ("elementType", elementTypeStr)) {

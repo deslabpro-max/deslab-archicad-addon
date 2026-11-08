@@ -602,6 +602,32 @@ GS::UniString RemapLayerIndices (const GS::UniString& xml, const IndexMap& layer
     return GS::UniString (text.c_str (), CC_UTF8);
 }
 
+// deslab: the style without its fill background pen, the other fields kept with their types.
+GS::ObjectState WithoutFillBackground (const GS::ObjectState& style)
+{
+    GS::ObjectState out;
+    for (const char* key : { "lineType", "fillType", "surface", "surfaceColor", "fillTypeAppliesTo", "fillForegroundPenAppliesTo",
+                             "fillBackgroundPenAppliesTo", "surfaceAppliesTo", "hiddenContours" }) {
+        const GS::ObjectState* child = style.Get (key);
+        if (child != nullptr) {
+            out.Add (key, *child);
+        }
+    }
+    for (const char* key : { "lineMarkerTextPen", "fillForegroundPen" }) {
+        Int32 value = 0;
+        if (style.Get (key, value)) {
+            out.Add (key, value);
+        }
+    }
+    for (const char* key : { "showSkinSeparators", "overridePenColorAndThickness", "overrideContours" }) {
+        bool value = false;
+        if (style.Get (key, value)) {
+            out.Add (key, value);
+        }
+    }
+    return out;
+}
+
 void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attributeGuids, const IndexMap& layers, GS::ProcessControl& processControl,
                             GS::Array<GS::UniString>& reportLines)
 {
@@ -654,20 +680,62 @@ void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attri
         }
         GS::ObjectState parameters;
         parameters.Add ("graphicOverrideRules", GS::Array<GS::ObjectState> { rule });
-        const GS::ObjectState response = CreateGraphicOverrideRulesCommand ().Execute (parameters, processControl);
-        const GS::UniString newGuid = CreatedGuid (response, "graphicOverrideRuleIds", "graphicOverrideRuleId");
+        GS::ObjectState response = CreateGraphicOverrideRulesCommand ().Execute (parameters, processControl);
+        GS::UniString newGuid = CreatedGuid (response, "graphicOverrideRuleIds", "graphicOverrideRuleId");
+        Int32 backgroundPen = -1;
+        GS::ObjectState style;
+        if (newGuid.IsEmpty () && rule.Get ("style", style) && style.Get ("fillBackgroundPen", backgroundPen) && backgroundPen == 0) {
+            // deslab: Archicad reads a transparent fill background as pen 0 but refuses pen 0 when a rule is made.
+            // The rule is made without it, then the background is set on the made rule; when that is refused too,
+            // the rule stays without a background override and the report says so.
+            {
+                const GS::ObjectState plain = WithoutFillBackground (style);
+                GS::ObjectState retryRule;
+                GS::UniString text;
+                if (rule.Get ("name", text)) {
+                    retryRule.Add ("name", text);
+                }
+                if (rule.Get ("ruleGroupName", text)) {
+                    retryRule.Add ("ruleGroupName", text);
+                }
+                if (rule.Get ("criterionXML", text)) {
+                    retryRule.Add ("criterionXML", text);
+                }
+                retryRule.Add ("style", plain);
+                GS::ObjectState retryParameters;
+                retryParameters.Add ("graphicOverrideRules", GS::Array<GS::ObjectState> { retryRule });
+                response = CreateGraphicOverrideRulesCommand ().Execute (retryParameters, processControl);
+                newGuid = CreatedGuid (response, "graphicOverrideRuleIds", "graphicOverrideRuleId");
+                if (!newGuid.IsEmpty ()) {
+                    GS::ObjectState modify;
+                    modify.Add ("graphicOverrideRuleId", GS::ObjectState ("guid", newGuid));
+                    modify.Add ("style", style);
+                    GS::ObjectState modifyParameters;
+                    modifyParameters.Add ("graphicOverrideRules", GS::Array<GS::ObjectState> { modify });
+                    const GS::ObjectState modified = ModifyGraphicOverrideRulesCommand ().Execute (modifyParameters, processControl);
+                    GS::Array<GS::ObjectState> results;
+                    bool success = false;
+                    if (!modified.Get ("executionResults", results) || results.IsEmpty () || !results[0].Get ("success", success) || !success) {
+                        failures += "; " + name + " (made without the transparent fill background)";
+                    }
+                }
+            }
+        }
         if (!newGuid.IsEmpty ()) {
             ruleGuids[sourceGuid] = newGuid;
             ++created;
         } else {
             ++failed;
             Int32 code = 0;
+            GS::UniString message;
             GS::Array<GS::ObjectState> items;
             GS::ObjectState error;
             if (response.Get ("graphicOverrideRuleIds", items) && !items.IsEmpty () && items[0].Get ("error", error)) {
                 error.Get ("code", code);
+                error.Get ("message", message);
             }
-            failures += "; " + name + GS::UniString::Printf (" (%d)", static_cast<int> (code));
+            // deslab: the message says which attribute of the style was not found.
+            failures += "; " + name + GS::UniString::Printf (" (%d: ", static_cast<int> (code)) + message + ")";
         }
     }
     reportLines.Push (GS::UniString::Printf ("GraphicOverrideRule: created %d, already there %d, failed %d",
@@ -1223,12 +1291,32 @@ void ApplyLayouts (const GS::ObjectState& package, GS::Array<GS::UniString>& rep
             masterIds[GS::UniString (info.name)] = id;
         }
     }
-    Int32 created = 0, existing = 0, failed = 0;
+    Int32 created = 0, existing = 0, failed = 0, resized = 0;
     for (const GS::ObjectState& os : masters) {
         GS::UniString name, ref;
         os.Get ("name", name);
         os.Get ("ref", ref);
-        if (masterIds.find (name) != masterIds.end ()) {
+        const auto found = masterIds.find (name);
+        if (found != masterIds.end ()) {
+            // deslab: a master of the same name takes the standard's size and margins.
+            API_DatabaseUnId id = found->second;
+            API_LayoutInfo layout = {};
+            if (ACAPI_Navigator_GetLayoutSets (&layout, &id) == NoError) {
+                delete layout.customData;
+                layout.customData = nullptr;
+                const API_LayoutInfo before = layout;
+                os.Get ("sizeX", layout.sizeX);
+                os.Get ("sizeY", layout.sizeY);
+                os.Get ("leftMargin", layout.leftMargin);
+                os.Get ("topMargin", layout.topMargin);
+                os.Get ("rightMargin", layout.rightMargin);
+                os.Get ("bottomMargin", layout.bottomMargin);
+                if ((layout.sizeX != before.sizeX || layout.sizeY != before.sizeY || layout.leftMargin != before.leftMargin ||
+                     layout.topMargin != before.topMargin || layout.rightMargin != before.rightMargin || layout.bottomMargin != before.bottomMargin) &&
+                    ACAPI_Navigator_ChangeLayoutSets (&layout, &id) == NoError) {
+                    ++resized;
+                }
+            }
             ++existing;
             continue;
         }
@@ -1255,8 +1343,8 @@ void ApplyLayouts (const GS::ObjectState& package, GS::Array<GS::UniString>& rep
         masterIds[name] = info.databaseUnId;
         ++created;
     }
-    reportLines.Push (GS::UniString::Printf ("MasterLayout: created %d, already there %d, failed %d (drawing content not copied)",
-        static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)));
+    reportLines.Push (GS::UniString::Printf ("MasterLayout: created %d, already there %d (resized %d), failed %d (drawing content not copied)",
+        static_cast<int> (created), static_cast<int> (existing), static_cast<int> (resized), static_cast<int> (failed)));
 
     std::map<GS::UniString, bool> layoutNames;
     for (API_DatabaseUnId id : Databases (false)) {
