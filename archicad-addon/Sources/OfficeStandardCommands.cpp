@@ -1076,10 +1076,11 @@ void FreeView (API_NavigatorView& view)
         if (view.modelViewOpt->gdlOptions != nullptr) {
             ACAPI_FreeGDLModelViewOptionsPtr (&view.modelViewOpt->gdlOptions);
         }
-        delete view.modelViewOpt;
         view.modelViewOpt = nullptr;
     }
-    delete view.dimPrefs;
+    // deslab: 11.11.2026, the two blocks themselves are let go, not released: for a view with its own model view
+    // options Archicad hands out its own block, `delete` on it corrupted the heap and Archicad went down, and the
+    // DevKit does not say which call releases it. A few hundred bytes per view.
     view.dimPrefs = nullptr;
     delete view.layerStats;
     view.layerStats = nullptr;
@@ -1345,8 +1346,7 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
         return GS::UniString::Printf ("view %d", static_cast<int> (err));
     }
     if (swapped) {
-        delete view.dimPrefs;   // the model view options the view was made with stay
-        view.dimPrefs = nullptr;
+        view.dimPrefs = nullptr;   // the model view options the view was made with stay
     } else {
         FreeView (view);
     }
@@ -1374,14 +1374,14 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     } else if (FindModelViewOptions (mvoName, nullptr)) {
         SetCharProperty (&os, "modelViewOptName", view.modelViewOptName);
     } else if (os.Get ("modelViewOptions", hex)) {
-        auto* options = new API_ModelViewOptions ();
-        if (FromHex (hex, *options)) {
+        auto* options = reinterpret_cast<API_ModelViewOptions*> (BMAllocatePtr (sizeof (API_ModelViewOptions), ALLOCATE_CLEAR, 0));
+        if (options != nullptr && FromHex (hex, *options)) {
             options->gdlOptions = ProjectGdlOptions ();
             GdlOptionsFromOS (options->gdlOptions, os);
             view.modelViewOpt = options;
             view.modelViewOptName[0] = '\0';
-        } else {
-            delete options;
+        } else if (options != nullptr) {
+            BMKillPtr (reinterpret_cast<GSPtr*> (&options));
         }
     }
     GS::UniString dimName;
@@ -1390,12 +1390,12 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     if (FindDimensionStandard (dimName, nullptr)) {
         SetCharProperty (&os, "dimName", view.dimName);
     } else if (os.Get ("dimensionPrefs", hex)) {
-        auto* prefs = new API_DimensionPrefs ();
-        if (FromHex (hex, *prefs)) {
+        auto* prefs = reinterpret_cast<API_DimensionPrefs*> (BMAllocatePtr (sizeof (API_DimensionPrefs), ALLOCATE_CLEAR, 0));
+        if (prefs != nullptr && FromHex (hex, *prefs)) {
             view.dimPrefs = prefs;
             view.dimName[0] = '\0';
-        } else {
-            delete prefs;
+        } else if (prefs != nullptr) {
+            BMKillPtr (reinterpret_cast<GSPtr*> (&prefs));
         }
     }
     err = ACAPI_Navigator_ChangeNavigatorView (&item, &view);
