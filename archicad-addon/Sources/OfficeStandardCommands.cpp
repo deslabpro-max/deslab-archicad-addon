@@ -1282,8 +1282,42 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     if (!EnsureFolder (path, folders, folder)) {
         return "folder not created";
     }
+    // deslab: 11.11.2026, Archicad 27 does not take a view's own model view options from ChangeNavigatorView: the view
+    // kept the combination that was current when it was made (a stock one with «hide zone stamp» on, so no zone
+    // stamp showed). A new view takes the options of the window, so these are set to the standard's for the moment
+    // the view is made and put back after.
+    GS::UniString wantedMvoName, wantedHex;
+    os.Get ("modelViewOptName", wantedMvoName);
+    API_ModelViewOptions custom = {};
+    API_ViewOptions before = {};
+    short beforeIndex = 0;
+    bool swapped = false;
+    GSErrCode swapErr = NoError;
+    if (!FindModelViewOptions (wantedMvoName, nullptr) && os.Get ("modelViewOptions", wantedHex) && FromHex (wantedHex, custom)) {
+        custom.gdlOptions = ProjectGdlOptions ();
+        GdlOptionsFromOS (custom.gdlOptions, os);
+        swapErr = ACAPI_Navigator_GetViewOptions (&before, &beforeIndex);
+        if (swapErr == NoError) {
+            API_ViewOptions wanted = before;
+            wanted.modelViewOpt = custom;
+            swapErr = ACAPI_Navigator_ChangeViewOptions (&wanted);
+            swapped = swapErr == NoError;
+        }
+    }
+    const auto restore = [&] () {
+        if (swapped) {
+            ACAPI_Navigator_ChangeViewOptions (&before, beforeIndex > 0 ? &beforeIndex : nullptr);
+        }
+        if (before.modelViewOpt.gdlOptions != nullptr) {
+            ACAPI_FreeGDLModelViewOptionsPtr (&before.modelViewOpt.gdlOptions);
+        }
+        if (custom.gdlOptions != nullptr) {
+            ACAPI_FreeGDLModelViewOptionsPtr (&custom.gdlOptions);
+        }
+    };
     API_Guid created = APINULLGuid;
     GSErrCode err = ACAPI_Navigator_CloneProjectMapItemToViewMap (&story, &folder, &created);
+    restore ();
     if (err != NoError) {
         return GS::UniString::Printf ("clone %d", static_cast<int> (err));
     }
@@ -1310,7 +1344,12 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     if (err != NoError) {
         return GS::UniString::Printf ("view %d", static_cast<int> (err));
     }
-    FreeView (view);
+    if (swapped) {
+        delete view.dimPrefs;   // the model view options the view was made with stay
+        view.dimPrefs = nullptr;
+    } else {
+        FreeView (view);
+    }
     os.Get ("saveLaySet", view.saveLaySet);
     SetCharProperty (&os, "layerCombination", view.layerCombination);
     os.Get ("saveDScale", view.saveDScale);
@@ -1330,7 +1369,9 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     GS::UniString mvoName, hex;
     os.Get ("modelViewOptName", mvoName);
     os.Get ("saveDispOpt", view.saveDispOpt);
-    if (FindModelViewOptions (mvoName, nullptr)) {
+    if (swapped) {
+        // made with the standard's options above
+    } else if (FindModelViewOptions (mvoName, nullptr)) {
         SetCharProperty (&os, "modelViewOptName", view.modelViewOptName);
     } else if (os.Get ("modelViewOptions", hex)) {
         auto* options = new API_ModelViewOptions ();
@@ -1359,6 +1400,9 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     }
     err = ACAPI_Navigator_ChangeNavigatorView (&item, &view);
     FreeView (view);
+    if (err == NoError && swapErr != NoError) {
+        return GS::UniString::Printf ("made, but its model view options were not set (%d)", static_cast<int> (swapErr));
+    }
     return err == NoError ? GS::EmptyUniString : GS::UniString::Printf ("settings %d", static_cast<int> (err));
 }
 
