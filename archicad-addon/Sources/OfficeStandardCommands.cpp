@@ -10,6 +10,7 @@
 #include "ObjectStateJSONConversion.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <string>
@@ -808,7 +809,8 @@ void ApplyGraphicOverrides (const GS::ObjectState& package, const GuidMap& attri
 
 // deslab: views of the View Map (story views only for now). Model view options and dimension standards cannot be
 // created through the API, so each view keeps their names and, for a project without them, a copy of the settings as
-// custom view settings (the raw Archicad 27 structures, hex encoded; the GDL part of the model view options is left out).
+// custom view settings (the raw Archicad 27 structures, hex encoded; the GDL part of the model view options goes
+// separately, by parameter name, see GdlOptionsToOS).
 template <typename T>
 GS::UniString ToHex (const T& value)
 {
@@ -841,8 +843,180 @@ bool FromHex (const GS::UniString& hex, T& value)
     return true;
 }
 
+// deslab: 11.11.2026, the library part of the model view options (the settings Archicad's library objects read: how a
+// zone stamp, a door or a window marker shows) travels too. A new project showed no zone stamp with the same stamp,
+// category and parameters as the standard: only this part differed. Each option set is written as its parameter
+// values by name; on the open project its own sets are the base and take the values of the parameters they share
+// (same name, type and array size). Parameters holding attribute indices other than pens stay as the project has them.
+GS::UniString BytesToHex (const unsigned char* bytes, size_t size)
+{
+    static const char digits[] = "0123456789abcdef";
+    std::string out;
+    out.reserve (size * 2);
+    for (size_t i = 0; i < size; ++i) {
+        out += digits[bytes[i] >> 4];
+        out += digits[bytes[i] & 0xF];
+    }
+    return GS::UniString (out.c_str ());
+}
+
+std::string BytesFromHex (const GS::UniString& hex)
+{
+    const std::string text (hex.ToCStr ().Get ());
+    std::string out;
+    for (size_t i = 0; i + 1 < text.size (); i += 2) {
+        unsigned int byte = 0;
+        for (size_t j = 0; j < 2; ++j) {
+            const char c = text[i + j];
+            byte = byte * 16 + ((c >= '0' && c <= '9') ? static_cast<unsigned int> (c - '0') : static_cast<unsigned int> (c - 'a' + 10));
+        }
+        out += static_cast<char> (byte);
+    }
+    return out;
+}
+
+bool GdlParamTravels (API_AddParID type)
+{
+    switch (type) {
+        case APIParT_Integer: case APIParT_Length: case APIParT_Angle: case APIParT_RealNum: case APIParT_LightSw:
+        case APIParT_ColRGB: case APIParT_Intens: case APIParT_PenCol: case APIParT_CString: case APIParT_Boolean:
+            return true;
+        default:
+            return false;
+    }
+}
+
+UInt32 GdlOptionsCount (const API_GDLModelViewOptions* gdlOptions)
+{
+    return gdlOptions == nullptr ? 0 : static_cast<UInt32> (BMGetPtrSize (reinterpret_cast<GSConstPtr> (gdlOptions)) / sizeof (API_GDLModelViewOptions));
+}
+
+void GdlOptionsToOS (const API_GDLModelViewOptions* gdlOptions, GS::ObjectState& os)
+{
+    const UInt32 count = GdlOptionsCount (gdlOptions);
+    if (count == 0) {
+        return;
+    }
+    const auto& list = os.AddList<GS::ObjectState> ("gdlOptions");
+    for (UInt32 i = 0; i < count; ++i) {
+        const API_GDLModelViewOptions& option = gdlOptions[i];
+        GS::ObjectState optionOS ("name", GS::UniString (option.name), "guid", APIGuidToString (option.guid));
+        const auto& params = optionOS.AddList<GS::ObjectState> ("params");
+        const UInt32 paramCount = option.params == nullptr ? 0 : static_cast<UInt32> (BMGetHandleSize (reinterpret_cast<GSHandle> (option.params)) / sizeof (API_AddParType));
+        for (UInt32 k = 0; k < paramCount; ++k) {
+            const API_AddParType& param = (*option.params)[k];
+            if (!GdlParamTravels (param.typeID)) {
+                continue;
+            }
+            GS::ObjectState paramOS ("name", GS::UniString (param.name), "type", static_cast<Int32> (param.typeID));
+            if (param.typeMod == API_ParArray) {
+                if (param.value.array == nullptr) {
+                    continue;
+                }
+                paramOS.Add ("dim1", param.dim1);
+                paramOS.Add ("dim2", param.dim2);
+                paramOS.Add ("array", BytesToHex (reinterpret_cast<const unsigned char*> (*param.value.array), static_cast<size_t> (BMGetHandleSize (param.value.array))));
+            } else if (param.typeID == APIParT_CString) {
+                paramOS.Add ("text", GS::UniString (param.value.uStr));
+            } else {
+                paramOS.Add ("real", param.value.real);
+            }
+            params (paramOS);
+        }
+        list (optionOS);
+    }
+}
+
+// Puts the standard's values into the open project's own option sets. Returns the number of values that changed.
+Int32 GdlOptionsFromOS (API_GDLModelViewOptions* gdlOptions, const GS::ObjectState& os)
+{
+    GS::Array<GS::ObjectState> list;
+    if (!os.Get ("gdlOptions", list)) {
+        return 0;
+    }
+    Int32 changed = 0;
+    const UInt32 count = GdlOptionsCount (gdlOptions);
+    for (const GS::ObjectState& optionOS : list) {
+        GS::UniString name, guid;
+        optionOS.Get ("name", name);
+        optionOS.Get ("guid", guid);
+        GS::Array<GS::ObjectState> params;
+        optionOS.Get ("params", params);
+        for (UInt32 i = 0; i < count; ++i) {
+            API_GDLModelViewOptions& option = gdlOptions[i];
+            if (option.params == nullptr || (APIGuidToString (option.guid) != guid && GS::UniString (option.name) != name)) {
+                continue;
+            }
+            const UInt32 paramCount = static_cast<UInt32> (BMGetHandleSize (reinterpret_cast<GSHandle> (option.params)) / sizeof (API_AddParType));
+            for (const GS::ObjectState& paramOS : params) {
+                GS::UniString paramName;
+                Int32 type = 0;
+                paramOS.Get ("name", paramName);
+                paramOS.Get ("type", type);
+                for (UInt32 k = 0; k < paramCount; ++k) {
+                    API_AddParType& param = (*option.params)[k];
+                    if (static_cast<Int32> (param.typeID) != type || GS::UniString (param.name) != paramName) {
+                        continue;
+                    }
+                    GS::UniString hex, text;
+                    double real = 0.0;
+                    if (param.typeMod == API_ParArray) {
+                        Int32 dim1 = 0, dim2 = 0;
+                        if (!paramOS.Get ("array", hex) || !paramOS.Get ("dim1", dim1) || !paramOS.Get ("dim2", dim2) || dim1 != param.dim1 || dim2 != param.dim2) {
+                            break;
+                        }
+                        const std::string bytes = BytesFromHex (hex);
+                        const bool same = param.value.array != nullptr && static_cast<size_t> (BMGetHandleSize (param.value.array)) == bytes.size () &&
+                            memcmp (*param.value.array, bytes.data (), bytes.size ()) == 0;
+                        if (!same && !bytes.empty ()) {
+                            GSHandle handle = BMAllocateHandle (static_cast<GSSize> (bytes.size ()), ALLOCATE_CLEAR, 0);
+                            if (handle != nullptr) {
+                                memcpy (*handle, bytes.data (), bytes.size ());
+                                if (param.value.array != nullptr) {
+                                    BMKillHandle (&param.value.array);
+                                }
+                                param.value.array = handle;
+                                ++changed;
+                            }
+                        }
+                    } else if (param.typeID == APIParT_CString) {
+                        if (paramOS.Get ("text", text) && GS::UniString (param.value.uStr) != text) {
+                            GS::ucsncpy (param.value.uStr, text.ToUStr (), API_UAddParStrLen - 1);
+                            param.value.uStr[API_UAddParStrLen - 1] = 0;
+                            ++changed;
+                        }
+                    } else if (paramOS.Get ("real", real) && param.value.real != real) {
+                        param.value.real = real;
+                        ++changed;
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+    }
+    return changed;
+}
+
+// The option sets of the open project's first model view options combination: the base the standard's values go
+// into. The caller owns the pointer (ACAPI_FreeGDLModelViewOptionsPtr).
+API_GDLModelViewOptions* ProjectGdlOptions ()
+{
+    UInt32 count = 0;
+    ACAPI_Navigator_ModelViewOptions_GetNum (count);
+    for (UInt32 i = 1; i <= count; ++i) {
+        API_ModelViewOptionsType mvo = {};
+        mvo.head.index = static_cast<Int32> (i);
+        if (ACAPI_Navigator_ModelViewOptions_Get (&mvo) == NoError && mvo.modelViewOpt.gdlOptions != nullptr) {
+            return mvo.modelViewOpt.gdlOptions;
+        }
+    }
+    return nullptr;
+}
+
+
 // deslab: looked up by index: the search by Unicode name does not find the template's sets.
-bool FindModelViewOptions (const GS::UniString& name, API_ModelViewOptions* options)
+bool FindModelViewOptions (const GS::UniString& name, API_ModelViewOptions* options, GS::ObjectState* gdl = nullptr)
 {
     if (name.IsEmpty ()) {
         return false;
@@ -861,6 +1035,9 @@ bool FindModelViewOptions (const GS::UniString& name, API_ModelViewOptions* opti
         if (match && options != nullptr) {
             *options = mvo.modelViewOpt;
             options->gdlOptions = nullptr;
+        }
+        if (match && gdl != nullptr) {
+            GdlOptionsToOS (mvo.modelViewOpt.gdlOptions, *gdl);
         }
         if (mvo.modelViewOpt.gdlOptions != nullptr) {
             ACAPI_FreeGDLModelViewOptionsPtr (&mvo.modelViewOpt.gdlOptions);
@@ -988,10 +1165,11 @@ void CaptureViewItems (const API_NavigatorItem& item, GS::Array<GS::UniString> p
         os.Add ("saveDispOpt", view.saveDispOpt);
         API_ModelViewOptions options = {};
         if (view.modelViewOpt != nullptr) {
+            GdlOptionsToOS (view.modelViewOpt->gdlOptions, os);
             options = *view.modelViewOpt;
             options.gdlOptions = nullptr;
             os.Add ("modelViewOptions", ToHex (options));
-        } else if (FindModelViewOptions (mvoName, &options)) {
+        } else if (FindModelViewOptions (mvoName, &options, &os)) {
             os.Add ("modelViewOptions", ToHex (options));
         }
         const GS::UniString dimName (view.dimName);
@@ -1157,7 +1335,8 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     } else if (os.Get ("modelViewOptions", hex)) {
         auto* options = new API_ModelViewOptions ();
         if (FromHex (hex, *options)) {
-            options->gdlOptions = nullptr;
+            options->gdlOptions = ProjectGdlOptions ();
+            GdlOptionsFromOS (options->gdlOptions, os);
             view.modelViewOpt = options;
             view.modelViewOptName[0] = '\0';
         } else {

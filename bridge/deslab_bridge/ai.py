@@ -160,7 +160,9 @@ def _chat_claude_code(messages, profile, model, json_mode):
             raise AIError("Claude Code: " + (out or done.stderr.decode("utf-8", "replace"))[:400]) from None
         if data.get("is_error"):
             raise AIError("Claude Code: " + str(data.get("result"))[:400])
-        usage = dict(data.get("usage") or {}, cost=data.get("total_cost_usd"), provider=CLAUDE_CODE)
+        # deslab: which model really answered (11.11.2026: the report said only «claude-code», a Fable run could not be told from Sonnet)
+        usage = dict(data.get("usage") or {}, cost=data.get("total_cost_usd"), provider=CLAUDE_CODE,
+                     models=sorted(data.get("modelUsage") or {}), requested=variant)
         return data.get("result", ""), usage
 
 
