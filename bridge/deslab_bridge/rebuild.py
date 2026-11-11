@@ -163,11 +163,21 @@ def flat_bbox(ac, guids):
     return {k: (min if k.endswith("Min") else max)(b[k] for b in boxes) for k in ("xMin", "xMax", "yMin", "yMax")}
 
 
-def place(ac, guids):
+def place(ac, guids, scene=None, state_path=None):
     # deslab: the built flat goes to the template layouts (layouts.py)
     profile = _load(Path(__file__).resolve().parent.parent / "office-profile.json")
     layouts.show_plan_view(ac, profile["layouts"]["items"][0]["view"])
-    return layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
+    out = layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
+    if scene:
+        # deslab: 11.11.2026, the rooms with their areas on the layout
+        rooms = [{"number": r.get("number", i + 1), "name": r.get("name"),
+                  "area": abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]]))}
+                 for i, r in enumerate(scene.get("rooms", [])) if r.get("polygon")]
+        try:
+            out += layouts.place_explication(ac, rooms, profile, state_path)
+        except Exception as error:  # the plan is on the layouts already; the table must not lose the run
+            out.append(f"Экспликация не построена: {error}")
+    return out
 
 
 def clear_area(ac, scene, origin, margin=3.0, delete=True, ignore=()):
@@ -319,7 +329,7 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     report["check"] = {f"план {i + 1}": layout_check.check(shifted, c, l) for i, (c, l) in enumerate(planned)}
     # deslab: --no-pictures skips ChangeWindow/SaveCurrentWindowAsImage (a run must not touch the open view)
     report["pictures"] = snapshots(ac, new, out_dir, name) if pictures else []
-    report["layouts"] = place(ac, new) if on_layouts else []
+    report["layouts"] = place(ac, new, scene, out_dir / f"explication-{name}.json") if on_layouts else []
     with open(out_dir / f"rebuild-{name}-report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
     return report

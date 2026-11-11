@@ -22,6 +22,9 @@
     "margin": 0.0,
     "offset": {"x": 0.0, "y": -0.3},
     "scales": [20, 25, 30, 40, 45, 50, 60, 75, 100],
+    "explication": {"layout": "ОБМЕРНЫЙ ПЛАН", "title": "Экспликация помещений", "x": 0.330, "width": 0.085, "top": 0.141, "bottom": 0.104,
+                    "rowHeight": 0.0052, "columns": [0.012, 0.048, 0.025], "font": "GOST Type BU Кириллический", "size": 3.0,
+                    "textPen": 1, "linePen": 252, "layerIndex": 1},
     "items": [
       {"layout": "ОБМЕРНЫЙ ПЛАН", "view": "Обмерный план"},
       {"layout": "ИНЖЕНЕРНЫЕ УЗЛЫ", "view": "Инженерные узлы"}
