@@ -1749,17 +1749,23 @@ void CaptureLayouts (GS::ObjectState& package, GS::ObjectState& counts)
         ++masterCount;
     }
     const auto& layouts = package.AddList<GS::ObjectState> ("layouts");
-    Int32 layoutCount = 0;
+    Int32 layoutCount = 0, layoutContentCount = 0, layoutContentSkipped = 0;
     for (API_DatabaseUnId id : Databases (false)) {
         API_DatabaseInfo info, master;
         API_LayoutInfo layout = {};
         if (!DatabaseInfo (id, info) || !DatabaseInfo (info.masterLayoutUnId, master) || ACAPI_Navigator_GetLayoutSets (&layout, &id) != NoError) {
             continue;
         }
-        layouts (GS::ObjectState ("name", GS::UniString (info.name), "ref", GS::UniString (info.ref),
+        GS::ObjectState layoutOS ("name", GS::UniString (info.name), "ref", GS::UniString (info.ref),
             "master", GS::UniString (master.name), "customLayoutNumber", GS::UniString (layout.customLayoutNumber),
             "customLayoutNumbering", layout.customLayoutNumbering, "doNotIncludeInNumbering", layout.doNotIncludeInNumbering,
-            "showMasterBelow", layout.showMasterBelow));
+            "showMasterBelow", layout.showMasterBelow);
+        // deslab: 11.11.2026, what the office draws on the layout itself (legend table, note, approval block): its
+        // lines and texts, as for a master. Drawings, fills and objects are counted and left out for now.
+        const GS::Array<GS::ObjectState> layoutContent = CaptureMasterContent (id, layoutContentSkipped);
+        layoutContentCount += static_cast<Int32> (layoutContent.GetSize ());
+        layoutOS.Add ("content", layoutContent);
+        layouts (layoutOS);
         delete layout.customData;
         ++layoutCount;
     }
@@ -1767,6 +1773,8 @@ void CaptureLayouts (GS::ObjectState& package, GS::ObjectState& counts)
     counts.Add ("masterLayoutElements", contentCount);
     counts.Add ("masterLayoutElementsSkipped", contentSkipped);
     counts.Add ("layouts", layoutCount);
+    counts.Add ("layoutElements", layoutContentCount);
+    counts.Add ("layoutElementsSkipped", layoutContentSkipped);
 }
 
 void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids, GS::ProcessControl& processControl,
@@ -1869,6 +1877,7 @@ void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids
     }
     created = existing = failed = 0;
     GS::UniString failures;
+    std::map<GS::UniString, bool> createdNames;
     for (const GS::ObjectState& os : layouts) {
         GS::UniString name, masterName;
         os.Get ("name", name);
@@ -1902,6 +1911,7 @@ void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids
         const GSErrCode err = ACAPI_Navigator_CreateLayout (&layout, &masterId);
         if (err == NoError) {
             ++created;
+            createdNames[name] = true;
         } else {
             ++failed;
             failures += "; " + name + GS::UniString::Printf (" (%d)", static_cast<int> (err));
@@ -1909,6 +1919,28 @@ void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids
     }
     reportLines.Push (GS::UniString::Printf ("Layout: created %d, already there %d, failed %d",
         static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
+
+    // deslab: the lines and texts of the layouts made just now (a layout that was there is not drawn on).
+    std::map<GS::UniString, API_DatabaseUnId> layoutIds;
+    for (API_DatabaseUnId id : Databases (false)) {
+        API_DatabaseInfo info;
+        if (DatabaseInfo (id, info)) {
+            layoutIds[GS::UniString (info.name)] = id;
+        }
+    }
+    Int32 layoutDrawn = 0, layoutDrawFailed = 0;
+    for (const GS::ObjectState& os : layouts) {
+        GS::UniString name;
+        GS::Array<GS::ObjectState> content;
+        os.Get ("name", name);
+        const auto found = layoutIds.find (name);
+        if (createdNames.find (name) == createdNames.end () || found == layoutIds.end () || !os.Get ("content", content)) {
+            continue;
+        }
+        bool skippedFilled = false;
+        ApplyMasterContent (found->second, content, attributeGuids, processControl, layoutDrawn, layoutDrawFailed, skippedFilled);
+    }
+    reportLines.Push (GS::UniString::Printf ("LayoutContent: drawn %d, failed %d", static_cast<int> (layoutDrawn), static_cast<int> (layoutDrawFailed)));
 }
 
 // deslab: the pen sets in effect for the model and for the layouts (by name) and the filled project info fields.
@@ -2255,7 +2287,9 @@ GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema (
             "embeddedLibraryFiles": { "type": "integer", "description": "The files of the project's embedded library copied next to the package (<name>-library)." },
             "favoritesExported": { "type": "boolean", "description": "The favorites were written next to the package (<name>-favorites.prf)." },
             "masterLayouts": { "type": "integer" },
-            "layouts": { "type": "integer" }
+            "layouts": { "type": "integer" },
+            "layoutElements": { "type": "integer" },
+            "layoutElementsSkipped": { "type": "integer" }
         },
         "additionalProperties": false,
         "required": ["layers", "surfaces", "buildingMaterials", "layerCombinations"]
