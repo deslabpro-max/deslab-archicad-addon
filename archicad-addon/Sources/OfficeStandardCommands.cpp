@@ -1640,6 +1640,11 @@ GS::Array<GS::ObjectState> CaptureMasterContent (API_DatabaseUnId id, Int32& ski
                     ++skipped;
                     continue;
                 }
+                // deslab: 11.11.2026, a text block of a set width wraps its lines (the approval block, 74 mm); without
+                // the width the lines ran on and out of the sheet.
+                if (!element.text.nonBreaking && element.text.width > 0.0) {
+                    os.Add ("wrapWidth", element.text.width);
+                }
                 out.Push (os);
             } else {
                 ++skipped;
@@ -1666,6 +1671,7 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
             return;
         }
         GS::Array<GS::ObjectState> lines, texts;
+        GS::Array<double> wrapWidths;
         for (const GS::ObjectState& item : content) {
             GS::UniString type, layer;
             item.Get ("type", type);
@@ -1705,6 +1711,9 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
                     item.Get ("text", plain);
                     text.Add ("text", plain);
                 }
+                double wrapWidth = 0.0;
+                item.Get ("wrapWidth", wrapWidth);
+                wrapWidths.Push (wrapWidth);
                 texts.Push (text);
             }
         }
@@ -1723,7 +1732,32 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
             count (CreateLineElementsCommand ().Execute (GS::ObjectState ("linesData", lines), processControl));
         }
         if (!texts.IsEmpty ()) {
-            count (CreateTextsCommand ().Execute (GS::ObjectState ("textsData", texts), processControl));
+            const GS::ObjectState response = CreateTextsCommand ().Execute (GS::ObjectState ("textsData", texts), processControl);
+            count (response);
+            GS::Array<GS::ObjectState> elements;
+            response.Get ("elements", elements);
+            ACAPI_CallUndoableCommand ("deslab text width", [&] () -> GSErrCode {
+                for (UIndex i = 0; i < elements.GetSize () && i < wrapWidths.GetSize (); ++i) {
+                    GS::ObjectState elementId;
+                    GS::UniString guid;
+                    if (wrapWidths[i] <= 0.0 || !elements[i].Get ("elementId", elementId) || !elementId.Get ("guid", guid)) {
+                        continue;
+                    }
+                    API_Element element = {};
+                    element.header.guid = APIGuidFromString (guid.ToCStr ());
+                    if (ACAPI_Element_Get (&element) != NoError) {
+                        continue;
+                    }
+                    API_Element mask;
+                    ACAPI_ELEMENT_MASK_CLEAR (mask);
+                    element.text.width = wrapWidths[i];
+                    element.text.nonBreaking = false;
+                    ACAPI_ELEMENT_MASK_SET (mask, API_TextType, width);
+                    ACAPI_ELEMENT_MASK_SET (mask, API_TextType, nonBreaking);
+                    ACAPI_Element_Change (&element, &mask, nullptr, 0, true);
+                }
+                return NoError;
+            });
         }
     });
 }

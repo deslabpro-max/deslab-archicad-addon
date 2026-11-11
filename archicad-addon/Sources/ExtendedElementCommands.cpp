@@ -936,6 +936,11 @@ GSErrCode ApplyDimensionTextLeaders (
         note.leaderShape = API_Segmented;
         note.anchorPoint = APILbl_Underlined;
         note.leaderPen = point.leaderPen > 0 ? point.leaderPen : note.notePen;
+        // deslab: 11.11.2026, a new project's dimension defaults gave the leader a blue arrowhead (pen 45); the
+        // office leader has none.
+        note.arrowData.begArrow = false;
+        note.arrowData.endArrow = false;
+        note.arrowData.arrowPen = note.leaderPen;
     }
 
     API_Element mask;
