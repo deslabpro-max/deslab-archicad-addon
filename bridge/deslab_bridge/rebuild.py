@@ -163,21 +163,32 @@ def flat_bbox(ac, guids):
     return {k: (min if k.endswith("Min") else max)(b[k] for b in boxes) for k in ("xMin", "xMax", "yMin", "yMax")}
 
 
-def place(ac, guids, scene=None, state_path=None):
+def place(ac, guids, scene=None, source=None):
     # deslab: the built flat goes to the template layouts (layouts.py)
     profile = _load(Path(__file__).resolve().parent.parent / "office-profile.json")
     layouts.show_plan_view(ac, profile["layouts"]["items"][0]["view"])
     out = layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
-    if scene:
-        # deslab: 11.11.2026, the rooms with their areas on the layout
-        rooms = [{"number": r.get("number", i + 1), "name": r.get("name"),
-                  "area": abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]]))}
-                 for i, r in enumerate(scene.get("rooms", [])) if r.get("polygon")]
+    # deslab: 11.11.2026, the zone schedule and the note with the real source and area; the plan is on the layouts
+    # already, so a failure here must not lose the run
+    total = sum(abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]])) for r in (scene or {}).get("rooms", []) if r.get("polygon"))
+    for step, args in ((layouts.place_explication, (ac, profile)), (layouts.place_note, (ac, profile, source, total))):
         try:
-            out += layouts.place_explication(ac, rooms, profile, state_path)
-        except Exception as error:  # the plan is on the layouts already; the table must not lose the run
-            out.append(f"Экспликация не построена: {error}")
+            out += step(*args)
+        except Exception as error:
+            out.append(f"{step.__name__}: {error}")
+    layouts.show_plan_view(ac, profile["layouts"]["items"][0]["view"])
     return out
+
+
+def source_of(preset):
+    """deslab: what the plan was made from, for the note on the layout."""
+    import datetime
+    for kind, path in (("scan", preset.get("e57")), ("drawing", (preset.get("aiPdf") or [None])[0])):
+        if path:
+            path = Path(str(path).rpartition(":")[0] if kind == "drawing" and ":" in str(path)[2:] else str(path))
+            date = datetime.date.fromtimestamp(path.stat().st_mtime).strftime("%d.%m.%Y") if path.exists() else ""
+            return {"kind": kind, "name": path.name, "date": date}
+    return {}
 
 
 def clear_area(ac, scene, origin, margin=3.0, delete=True, ignore=()):
@@ -329,7 +340,7 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     report["check"] = {f"план {i + 1}": layout_check.check(shifted, c, l) for i, (c, l) in enumerate(planned)}
     # deslab: --no-pictures skips ChangeWindow/SaveCurrentWindowAsImage (a run must not touch the open view)
     report["pictures"] = snapshots(ac, new, out_dir, name) if pictures else []
-    report["layouts"] = place(ac, new, scene, out_dir / f"explication-{name}.json") if on_layouts else []
+    report["layouts"] = place(ac, new, scene, source_of(preset)) if on_layouts else []
     with open(out_dir / f"rebuild-{name}-report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
     return report

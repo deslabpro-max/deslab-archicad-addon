@@ -174,71 +174,85 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
     return out
 
 
-def explication_table(rooms, cfg):
-    """deslab: Игорь 11.11.2026, the layout must show the rooms with their areas. The template has an interactive
-    schedule there («Экспликация обмерный план»), which the API cannot make, so the same table is drawn with lines and
-    texts in the schedule's place: number, name, area, and the total. Returns (lines, texts) in paper metres."""
-    x0, top, width = cfg["x"], cfg["top"], cfg["width"]
-    rows = [(str(r.get("number", i + 1)), r.get("name") or f"Помещение {r.get('number', i + 1)}", r["area"]) for i, r in enumerate(rooms)]
-    count = len(rows) + 2  # header and total
-    row = min(float(cfg.get("rowHeight", 0.0052)), (top - cfg["bottom"]) / count)
-    size = round(min(float(cfg.get("size", 3.0)), row * 1000 * 0.6), 2)
-    widths = cfg.get("columns", [0.012, 0.048, 0.025])
-    xs = [x0]
-    for w in widths:
-        xs.append(xs[-1] + w)
-    xs[-1] = x0 + width
-    bottom = top - row * count
-    lines = [((x0, top - row * i), (x0 + width, top - row * i)) for i in range(count + 1)]
-    lines += [((x, top), (x, bottom)) for x in xs]
-    area = lambda v: f"{v:.2f}".replace(".", ",")
-    cells = [("№", "Наименование", "Площадь, м²")] + [(n, name, area(a)) for n, name, a in rows] + [("", "Итого", area(sum(a for _, _, a in rows)))]
-    texts = []
-    for i, cell in enumerate(cells):
-        y = top - row * (i + 0.5)
-        for k, value in enumerate(cell):
-            if not value:
-                continue
-            left = k == 1 and 0 < i < len(cells) - 1
-            texts.append({"x": xs[k] + 0.0015 if left else (xs[k] + xs[k + 1]) / 2, "y": y, "text": value,
-                          "anchor": "MiddleLeft" if left else "Middle", "justification": "Left" if left else "Center", "size": size})
-    if cfg.get("title"):
-        texts.append({"x": x0 + width / 2, "y": top + row * 0.9, "text": cfg["title"], "anchor": "Middle", "justification": "Center",
-                      "size": float(cfg.get("size", 3.0))})
-    return lines, texts
+def _area(value):
+    return f"{value:.2f}".replace(".", ",")
 
 
-def place_explication(ac, rooms, profile, state_path=None):
-    """Draws the explication on its layout; the table of the previous run (state file) is removed first."""
-    import json
-    cfg = (profile.get("layouts") or {}).get("explication")
-    if not cfg or not rooms:
-        return []
+def note_text(cfg, source, total):
+    """deslab: Игорь 11.11.2026, the note on the layout says what the drawing was really made from (a 3D scan, a drawing,
+    a manual survey) and carries the measured area of this very plan, not the template's sample."""
+    source = source or {}
+    kind = source.get("kind")
+    line = cfg.get("sources", {}).get(kind) or cfg.get("sources", {}).get("default", "все чертежи выполнены на основе обмеров существующих перегородок")
+    line = line.format(name=source.get("name", ""), date=source.get("date", "")).replace(" от )", ")").strip()
+    rows = [line] + list(cfg.get("lines", [])) + [cfg.get("area", "фактическая площадь при замерах {area} м2").format(area=_area(total))]
+    return "\n".join([cfg.get("title", "ПРИМЕЧАНИЕ")] + ["- " + r for r in rows])
+
+
+def _layout(ac, name):
     layouts = {(i.get("prefix", "") + " " + i["name"]).strip(): i for i in _tree(ac, "LayoutBook") if i.get("type") == "LayoutItem"}
-    layout = next((l for k, l in layouts.items() if cfg["layout"] in k), None)
+    return next((l for k, l in layouts.items() if name in k), None)
+
+
+def place_note(ac, profile, source, total):
+    """Rewrites the template's note text on the layouts (found by its first word)."""
+    cfg = (profile.get("layouts") or {}).get("note")
+    if not cfg:
+        return []
+    text, title, done = note_text(cfg, source, total), cfg.get("title", "ПРИМЕЧАНИЕ"), 0
+    for name in cfg.get("layouts", []):
+        layout = _layout(ac, name)
+        if not layout:
+            continue
+        ac.tapir("ChangeWindow", {"navigatorItemId": layout["navigatorItemId"]})
+        texts = ac.tapir("GetElementsByType", {"elementType": "Text"}).get("elements", [])
+        details = ac.tapir("GetDetailsOfElements", {"elements": texts}).get("detailsOfElements", []) if texts else []
+        for element, d in zip(texts, details):
+            old = str((d.get("details") or {}).get("typeSpecificDetails", d.get("details") or {}).get("text", ""))
+            # the API gives Cyrillic of this font as cp1251 read as Latin-1
+            try:
+                old = old if title in old else old.encode("latin-1").decode("cp1251")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+            if old.lstrip().startswith(title):
+                ac.tapir("ModifyTexts", {"textsWithDetails": [{"elementId": element["elementId"], "text": text}]})
+                done += 1
+    return [f"Примечание: обновлено на {done} листах, площадь {_area(total)} м²" if done else "Примечание: текст на листах не найден"]
+
+
+def place_explication(ac, profile):
+    """deslab: Игорь 11.11.2026: the explication is the interactive schedule of the zones (as in the template), placed on
+    the layout as a Drawing, so the rooms, their names and the total follow the zones. The API cannot create a schedule
+    scheme, so the first one found by the profile's names is used: the office scheme when the file has it, else the
+    stock zone schedule of the Archicad template."""
+    cfg = (profile.get("layouts") or {}).get("explication")
+    if not cfg:
+        return []
+    layout = _layout(ac, cfg["layout"])
     if not layout:
         return [f"Экспликация: нет листа «{cfg['layout']}»"]
+    items = [i for kind in ("ViewMap", "ProjectMap") for i in _tree(ac, kind) if i.get("type") == "ScheduleItem"]
+    schedule = next((i for name in cfg["schedules"] for i in items if i["name"] == name), None)
+    if not schedule:
+        return ["Экспликация: в файле нет ведомости зон (" + ", ".join(cfg["schedules"]) + ")"]
     ac.tapir("ChangeWindow", {"navigatorItemId": layout["navigatorItemId"]})
-    if state_path is not None and state_path.exists():
-        try:
-            old = json.loads(state_path.read_text(encoding="utf-8")).get("guids", [])
-            if old:
-                ac.tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in old]})
-        except (ArchicadError, ValueError, OSError):
-            pass
-    lines, texts = explication_table(rooms, cfg)
-    layer = int(cfg.get("layerIndex", 1))
-    made = ac.tapir("CreateLineElements", {"linesData": [
-        {"begCoordinate": {"x": a[0], "y": a[1]}, "endCoordinate": {"x": b[0], "y": b[1]}, "linePenIndex": int(cfg.get("linePen", 252)),
-         "layerIndex": layer, "floorInd": 0} for a, b in lines]}).get("elements", [])
-    made += ac.tapir("CreateTexts", {"textsData": [
-        {"coordinate": {"x": t["x"], "y": t["y"], "z": 0}, "text": t["text"], "floorIndex": 0, "layerIndex": layer,
-         "style": {"fontName": cfg.get("font", "GOST Type BU Кириллический"), "height": t["size"], "penIndex": int(cfg.get("textPen", 1)),
-                   "justification": t["justification"], "anchor": t["anchor"]}} for t in texts]}).get("elements", [])
-    guids = [e["elementId"]["guid"] for e in made if isinstance(e, dict) and "elementId" in e]
-    if state_path is not None:
-        state_path.write_text(json.dumps({"guids": guids}), encoding="utf-8")
-    failed = len(made) - len(guids)
-    show_plan_view(ac, profile["layouts"]["items"][0]["view"])
-    total = sum(r["area"] for r in rooms)
-    return [f"Экспликация: {len(rooms)} помещ., всего {total:.2f} м²" + (f", не создано элементов: {failed}" if failed else "")]
+    drawings = ac.tapir("GetElementsByType", {"elementType": "Drawing"}).get("elements", [])
+    details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
+    title = cfg.get("title", "Экспликация помещений")
+    old = [e for e, d in zip(drawings, details) if (d.get("details") or {}).get("typeSpecificDetails", d.get("details") or {}).get("name") == title]
+    right, top = cfg["right"], cfg["top"]
+    new = ac.tapir("CreateDrawings", {"drawingsData": [{"navigatorItemId": schedule["navigatorItemId"], "name": title,
+                                                         "position": {"x": right - 0.04, "y": top - 0.02}, "scale": 1}]})["elements"][0]
+    if "elementId" not in new:
+        return [f"Экспликация: чертёж ведомости не создан ({new})"]
+    ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [{"elementId": new["elementId"], "details": {
+        "typeSpecificDetails": {"titleLibraryPartIndex": int(cfg.get("titleLibraryPartIndex", 0))}}}]})
+    # the schedule's size is known only once it is placed: its top right corner goes to the template's place
+    got = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": new["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
+    dx, dy = right - got["xMax"], top - got["yMax"]
+    if abs(dx) > 0.0002 or abs(dy) > 0.0002:
+        ac.tapir("MoveElements", {"elementsWithMoveVectors": [{"elementId": new["elementId"], "moveVector": {"x": dx, "y": dy, "z": 0}, "copy": False}]})
+    if old:
+        ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in old]})
+    size = f"{1000 * (got['xMax'] - got['xMin']):.0f} x {1000 * (got['yMax'] - got['yMin']):.0f} мм"
+    return [f"Экспликация: ведомость «{schedule['name']}» на листе, {size}"]

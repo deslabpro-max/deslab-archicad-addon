@@ -402,14 +402,12 @@ def test_ai_keeps_a_box_the_outline_goes_round():
     assert [w["id"] for w in new["walls"]] == ["S", "BOX", "E", "N", "W"], report
 
 
-def test_explication_table():
+def test_note_text():
+    import json
     from deslab_bridge import layouts
-    cfg = {"x": 0.330, "width": 0.085, "top": 0.141, "bottom": 0.104, "rowHeight": 0.0052, "title": "Экспликация помещений"}
-    lines, texts = layouts.explication_table([{"number": 1, "name": "Кухня", "area": 12.35}, {"number": 2, "name": None, "area": 7.0}], cfg)
-    assert len(lines) == 5 + 4  # header, two rooms, total: 5 horizontals; 4 verticals
-    values = [t["text"] for t in texts]
-    assert "12,35" in values and "Помещение 2" in values and "19,35" in values and "Итого" in values
-    assert all(0.330 <= t["x"] <= 0.415 for t in texts)
-    # eight rooms still fit above the legend: the rows get lower
-    lines, texts = layouts.explication_table([{"number": i, "name": "К", "area": 1.0} for i in range(1, 9)], cfg)
-    assert min(min(a[1], b[1]) for a, b in lines) >= 0.104 - 1e-9
+    cfg = json.load(open(Path(__file__).resolve().parent.parent / "office-profile.json", encoding="utf-8"))["layouts"]["note"]
+    text = layouts.note_text(cfg, {"kind": "scan", "name": "Nagornaya_7.e57", "date": "11.11.2026"}, 49.786)
+    assert text.splitlines() == ["ПРИМЕЧАНИЕ", "- все чертежи выполнены на основании 3D-скана «Nagornaya_7.e57» от 11.11.2026",
+                                 "- размеры и высоты даны от уровня чернового пола", "- фактическая площадь при замерах 49,79 м2"]
+    assert "на основе обмеров" in layouts.note_text(cfg, None, 10)
+

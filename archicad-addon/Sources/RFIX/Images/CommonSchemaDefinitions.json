@@ -3940,7 +3940,13 @@
                     "mid": { "$ref": "#/Coordinate2D" },
                     "end": { "$ref": "#/Coordinate2D" },
                     "pen": { "type": "integer", "description": "Leader pen; the text pen when left out." },
-                    "anchorAtTextEnd": { "type": "boolean", "description": "Leader attached at the text end (default true, as in the office template)." }
+                    "anchorAtTextEnd": { "type": "boolean", "description": "Leader attached at the text end (default true, as in the office template)." },
+                    "dot": {
+                        "type": "object",
+                        "description": "deslab: a filled dot where the leader starts, as on the opening labels; no arrowhead when left out.",
+                        "properties": { "pen": { "type": "integer" }, "size": { "type": "number", "description": "Dot size, mm." } },
+                        "additionalProperties": false
+                    }
                 },
                 "additionalProperties": false,
                 "required": ["beg", "mid", "end"]

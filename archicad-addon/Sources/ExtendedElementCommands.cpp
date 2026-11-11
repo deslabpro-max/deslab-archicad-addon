@@ -71,6 +71,9 @@ struct AssociativeDimensionPoint {
     bool hasTextAt = false;
     API_Coord textAt = {0.0, 0.0};
     bool leaderAnchorAtTextEnd = true;  // as 9 of 10 leaders in the office template
+    bool leaderDot = false;  // deslab: a small dot where the leader starts, as on the opening labels
+    short leaderDotPen = 0;
+    double leaderDotSize = 1.0;  // mm
 };
 
 enum class SectionAssociativeDimensionPreset {
@@ -763,6 +766,14 @@ GS::Optional<GS::UniString> ParseAssociativeDimensionPoint (const GS::ObjectStat
                 point.leaderPen = static_cast<short> (pen);
             }
             textLeader->Get ("anchorAtTextEnd", point.leaderAnchorAtTextEnd);
+            if (const GS::ObjectState* dot = textLeader->Get ("dot")) {
+                point.leaderDot = true;
+                Int32 dotPen = 0;
+                if (dot->Get ("pen", dotPen)) {
+                    point.leaderDotPen = static_cast<short> (dotPen);
+                }
+                dot->Get ("size", point.leaderDotSize);
+            }
         }
     }
 
@@ -937,10 +948,14 @@ GSErrCode ApplyDimensionTextLeaders (
         note.anchorPoint = APILbl_Underlined;
         note.leaderPen = point.leaderPen > 0 ? point.leaderPen : note.notePen;
         // deslab: 11.11.2026, a new project's dimension defaults gave the leader a blue arrowhead (pen 45); the
-        // office leader has none.
-        note.arrowData.begArrow = false;
+        // office leader starts with a small dot like the opening labels (Игорь), or with nothing when no dot is asked.
+        note.arrowData.begArrow = point.leaderDot;
         note.arrowData.endArrow = false;
-        note.arrowData.arrowPen = note.leaderPen;
+        note.arrowData.arrowType = APIArr_FullCirc;
+        note.arrowData.arrowPen = point.leaderDot && point.leaderDotPen > 0 ? point.leaderDotPen : note.leaderPen;
+        if (point.leaderDot && point.leaderDotSize > 0) {
+            note.arrowData.arrowSize = point.leaderDotSize;
+        }
     }
 
     API_Element mask;

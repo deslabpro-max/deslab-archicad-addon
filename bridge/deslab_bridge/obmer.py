@@ -910,6 +910,7 @@ def plan_dimension_chains(scene, profile):
     rise = cfg.get("leaderRise", 0.22)
     shelf = cfg.get("leaderShelf", 0.1)
     pen = cfg.get("leaderPen", 120)  # pen of the leaders in the office template
+    dot = {"pen": cfg.get("leaderDotPen", pen), "size": cfg.get("leaderDotSize", 1.0)}
     # Where the leader goes (Игорь's own fix of run 15, 04.11.2026): the shelf runs OUT past the
     # end of the chain, to the free side (over the wall hatch or into a doorway is fine), about
     # as long as the text, and the text starts at the shelf end; only when that side is taken
@@ -977,7 +978,7 @@ def plan_dimension_chains(scene, profile):
             mid, end, sg = chosen
             # the leader holds the end of the text when the shelf runs against the reading way
             at_end = _dot(_mul(d, sg), read) < 0
-            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(end), "pen": pen,
+            ch.setdefault("textLeaders", {})[k + 1] = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(end), "pen": pen, "dot": dot,
                                                        "anchorAtTextEnd": at_end}
             texts.append((ch, _rect_of_segment(end, _add(end, _mul(d, sg * width)), clear)))
             ch.setdefault("leaderBoxes", []).append(_rect_of_segment(end, _add(end, _mul(d, sg * width)), text_half))
@@ -1102,6 +1103,7 @@ def place_dimension_texts(chains, labels, profile, marks=(), inside=None):
 
     rise = cfg.get("leaderRise", 0.22)
     pen = cfg.get("leaderPen", 120)
+    dot = {"pen": cfg.get("leaderDotPen", pen), "size": cfg.get("leaderDotSize", 1.0)}
 
     def leader_spot(ch, d, ref, ts, k, width):
         n = _pt(ch["normal"])
@@ -1138,7 +1140,7 @@ def place_dimension_texts(chains, labels, profile, marks=(), inside=None):
                                and _seg_box(s_[0], s_[1], _rect_of_segment(a_, b_, 0.02))
                                for a_, b_ in legs for c, s_ in lines):
                             continue
-                        info = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(end), "pen": pen,
+                        info = {"beg": _xy(beg), "mid": _xy(mid), "end": _xy(end), "pen": pen, "dot": dot,
                                 "anchorAtTextEnd": _dot(_mul(d, sg), read) < 0}
                         return info, tbox
         return None
