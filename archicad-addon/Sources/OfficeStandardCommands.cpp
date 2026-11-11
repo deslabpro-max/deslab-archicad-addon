@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <deque>
 #include <functional>
 #include <string>
@@ -860,21 +861,6 @@ GS::UniString BytesToHex (const unsigned char* bytes, size_t size)
     return GS::UniString (out.c_str ());
 }
 
-std::string BytesFromHex (const GS::UniString& hex)
-{
-    const std::string text (hex.ToCStr ().Get ());
-    std::string out;
-    for (size_t i = 0; i + 1 < text.size (); i += 2) {
-        unsigned int byte = 0;
-        for (size_t j = 0; j < 2; ++j) {
-            const char c = text[i + j];
-            byte = byte * 16 + ((c >= '0' && c <= '9') ? static_cast<unsigned int> (c - '0') : static_cast<unsigned int> (c - 'a' + 10));
-        }
-        out += static_cast<char> (byte);
-    }
-    return out;
-}
-
 bool GdlParamTravels (API_AddParID type)
 {
     switch (type) {
@@ -926,94 +912,6 @@ void GdlOptionsToOS (const API_GDLModelViewOptions* gdlOptions, GS::ObjectState&
         list (optionOS);
     }
 }
-
-// Puts the standard's values into the open project's own option sets. Returns the number of values that changed.
-Int32 GdlOptionsFromOS (API_GDLModelViewOptions* gdlOptions, const GS::ObjectState& os)
-{
-    GS::Array<GS::ObjectState> list;
-    if (!os.Get ("gdlOptions", list)) {
-        return 0;
-    }
-    Int32 changed = 0;
-    const UInt32 count = GdlOptionsCount (gdlOptions);
-    for (const GS::ObjectState& optionOS : list) {
-        GS::UniString name, guid;
-        optionOS.Get ("name", name);
-        optionOS.Get ("guid", guid);
-        GS::Array<GS::ObjectState> params;
-        optionOS.Get ("params", params);
-        for (UInt32 i = 0; i < count; ++i) {
-            API_GDLModelViewOptions& option = gdlOptions[i];
-            if (option.params == nullptr || (APIGuidToString (option.guid) != guid && GS::UniString (option.name) != name)) {
-                continue;
-            }
-            const UInt32 paramCount = static_cast<UInt32> (BMGetHandleSize (reinterpret_cast<GSHandle> (option.params)) / sizeof (API_AddParType));
-            for (const GS::ObjectState& paramOS : params) {
-                GS::UniString paramName;
-                Int32 type = 0;
-                paramOS.Get ("name", paramName);
-                paramOS.Get ("type", type);
-                for (UInt32 k = 0; k < paramCount; ++k) {
-                    API_AddParType& param = (*option.params)[k];
-                    if (static_cast<Int32> (param.typeID) != type || GS::UniString (param.name) != paramName) {
-                        continue;
-                    }
-                    GS::UniString hex, text;
-                    double real = 0.0;
-                    if (param.typeMod == API_ParArray) {
-                        Int32 dim1 = 0, dim2 = 0;
-                        if (!paramOS.Get ("array", hex) || !paramOS.Get ("dim1", dim1) || !paramOS.Get ("dim2", dim2) || dim1 != param.dim1 || dim2 != param.dim2) {
-                            break;
-                        }
-                        const std::string bytes = BytesFromHex (hex);
-                        const bool same = param.value.array != nullptr && static_cast<size_t> (BMGetHandleSize (param.value.array)) == bytes.size () &&
-                            memcmp (*param.value.array, bytes.data (), bytes.size ()) == 0;
-                        if (!same && !bytes.empty ()) {
-                            GSHandle handle = BMAllocateHandle (static_cast<GSSize> (bytes.size ()), ALLOCATE_CLEAR, 0);
-                            if (handle != nullptr) {
-                                memcpy (*handle, bytes.data (), bytes.size ());
-                                if (param.value.array != nullptr) {
-                                    BMKillHandle (&param.value.array);
-                                }
-                                param.value.array = handle;
-                                ++changed;
-                            }
-                        }
-                    } else if (param.typeID == APIParT_CString) {
-                        if (paramOS.Get ("text", text) && GS::UniString (param.value.uStr) != text) {
-                            GS::ucsncpy (param.value.uStr, text.ToUStr (), API_UAddParStrLen - 1);
-                            param.value.uStr[API_UAddParStrLen - 1] = 0;
-                            ++changed;
-                        }
-                    } else if (paramOS.Get ("real", real) && param.value.real != real) {
-                        param.value.real = real;
-                        ++changed;
-                    }
-                    break;
-                }
-            }
-            break;
-        }
-    }
-    return changed;
-}
-
-// The option sets of the open project's first model view options combination: the base the standard's values go
-// into. The caller owns the pointer (ACAPI_FreeGDLModelViewOptionsPtr).
-API_GDLModelViewOptions* ProjectGdlOptions ()
-{
-    UInt32 count = 0;
-    ACAPI_Navigator_ModelViewOptions_GetNum (count);
-    for (UInt32 i = 1; i <= count; ++i) {
-        API_ModelViewOptionsType mvo = {};
-        mvo.head.index = static_cast<Int32> (i);
-        if (ACAPI_Navigator_ModelViewOptions_Get (&mvo) == NoError && mvo.modelViewOpt.gdlOptions != nullptr) {
-            return mvo.modelViewOpt.gdlOptions;
-        }
-    }
-    return nullptr;
-}
-
 
 // deslab: looked up by index: the search by Unicode name does not find the template's sets.
 bool FindModelViewOptions (const GS::UniString& name, API_ModelViewOptions* options, GS::ObjectState* gdl = nullptr)
@@ -1269,7 +1167,81 @@ bool EnsureFolder (const GS::Array<GS::UniString>& path, std::map<GS::UniString,
     return true;
 }
 
-GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API_NavigatorItem>& folders)
+// deslab: 11.11.2026, a trace of the risky steps (%TEMP%\\deslab-apply-trace.log, flushed line by line): two builds went
+// down inside Archicad while the views were made, and a crash leaves no report.
+void Trace (const GS::UniString& line)
+{
+    const char* temp = std::getenv ("TEMP");
+    if (temp == nullptr) {
+        return;
+    }
+    std::ofstream out (std::string (temp) + "\\deslab-apply-trace.log", std::ios::app);
+    out << line.ToCStr (CC_UTF8).Get () << std::endl;
+}
+
+// deslab: 11.11.2026, Archicad 27 does not take a view's own model view options from ChangeNavigatorView: the view
+// kept the combination that was current when it was made (a stock one with «hide zone stamp» on, so no zone stamp
+// showed). A new view takes the options of the window, so the window gets the standard's options while such views are
+// made and its own back after. The library part of the options (gdlOptions) stays the window's: writing the
+// standard's values into it is left out until it is proven safe.
+struct ViewOptionsSwap {
+    bool active = false;
+    bool haveBefore = false;
+    GS::UniString hex;
+    API_ViewOptions before = {};
+    short beforeIndex = 0;
+    GSErrCode err = NoError;
+};
+
+void RestoreViewOptions (ViewOptionsSwap& swap)
+{
+    if (swap.active) {
+        Trace ("ChangeViewOptions: back");
+        ACAPI_Navigator_ChangeViewOptions (&swap.before, swap.beforeIndex > 0 ? &swap.beforeIndex : nullptr);
+        Trace ("ChangeViewOptions: back done");
+        swap.active = false;
+        swap.hex.Clear ();
+    }
+}
+
+// True when the window now has the options this view wants as its own.
+bool WantViewOptions (ViewOptionsSwap& swap, const GS::ObjectState& os)
+{
+    GS::UniString name, hex;
+    os.Get ("modelViewOptName", name);
+    API_ModelViewOptions custom = {};
+    swap.err = NoError;
+    if (FindModelViewOptions (name, nullptr) || !os.Get ("modelViewOptions", hex) || !FromHex (hex, custom)) {
+        RestoreViewOptions (swap);
+        return false;
+    }
+    if (swap.active && swap.hex == hex) {
+        return true;
+    }
+    if (!swap.haveBefore) {
+        Trace ("GetViewOptions");
+        swap.err = ACAPI_Navigator_GetViewOptions (&swap.before, &swap.beforeIndex);
+        Trace (GS::UniString::Printf ("GetViewOptions done %d, index %d", static_cast<int> (swap.err), static_cast<int> (swap.beforeIndex)));
+        if (swap.err != NoError) {
+            return false;
+        }
+        swap.haveBefore = true;
+    }
+    API_ViewOptions wanted = swap.before;
+    wanted.modelViewOpt = custom;
+    wanted.modelViewOpt.gdlOptions = swap.before.modelViewOpt.gdlOptions;
+    Trace ("ChangeViewOptions: standard");
+    swap.err = ACAPI_Navigator_ChangeViewOptions (&wanted);
+    Trace (GS::UniString::Printf ("ChangeViewOptions: standard done %d", static_cast<int> (swap.err)));
+    if (swap.err != NoError) {
+        return false;
+    }
+    swap.active = true;
+    swap.hex = hex;
+    return true;
+}
+
+GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API_NavigatorItem>& folders, ViewOptionsSwap& swap)
 {
     GS::Array<GS::UniString> path;
     os.Get ("path", path);
@@ -1283,42 +1255,14 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     if (!EnsureFolder (path, folders, folder)) {
         return "folder not created";
     }
-    // deslab: 11.11.2026, Archicad 27 does not take a view's own model view options from ChangeNavigatorView: the view
-    // kept the combination that was current when it was made (a stock one with «hide zone stamp» on, so no zone
-    // stamp showed). A new view takes the options of the window, so these are set to the standard's for the moment
-    // the view is made and put back after.
-    GS::UniString wantedMvoName, wantedHex;
-    os.Get ("modelViewOptName", wantedMvoName);
-    API_ModelViewOptions custom = {};
-    API_ViewOptions before = {};
-    short beforeIndex = 0;
-    bool swapped = false;
-    GSErrCode swapErr = NoError;
-    if (!FindModelViewOptions (wantedMvoName, nullptr) && os.Get ("modelViewOptions", wantedHex) && FromHex (wantedHex, custom)) {
-        custom.gdlOptions = ProjectGdlOptions ();
-        GdlOptionsFromOS (custom.gdlOptions, os);
-        swapErr = ACAPI_Navigator_GetViewOptions (&before, &beforeIndex);
-        if (swapErr == NoError) {
-            API_ViewOptions wanted = before;
-            wanted.modelViewOpt = custom;
-            swapErr = ACAPI_Navigator_ChangeViewOptions (&wanted);
-            swapped = swapErr == NoError;
-        }
-    }
-    const auto restore = [&] () {
-        if (swapped) {
-            ACAPI_Navigator_ChangeViewOptions (&before, beforeIndex > 0 ? &beforeIndex : nullptr);
-        }
-        if (before.modelViewOpt.gdlOptions != nullptr) {
-            ACAPI_FreeGDLModelViewOptionsPtr (&before.modelViewOpt.gdlOptions);
-        }
-        if (custom.gdlOptions != nullptr) {
-            ACAPI_FreeGDLModelViewOptionsPtr (&custom.gdlOptions);
-        }
-    };
+    const bool swapped = WantViewOptions (swap, os);
+    const GSErrCode swapErr = swapped ? NoError : swap.err;
+    GS::UniString traceName;
+    os.Get ("name", traceName);
+    Trace ("Clone: " + traceName);
     API_Guid created = APINULLGuid;
     GSErrCode err = ACAPI_Navigator_CloneProjectMapItemToViewMap (&story, &folder, &created);
-    restore ();
+    Trace (GS::UniString::Printf ("Clone done %d", static_cast<int> (err)));
     if (err != NoError) {
         return GS::UniString::Printf ("clone %d", static_cast<int> (err));
     }
@@ -1376,8 +1320,7 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
     } else if (os.Get ("modelViewOptions", hex)) {
         auto* options = reinterpret_cast<API_ModelViewOptions*> (BMAllocatePtr (sizeof (API_ModelViewOptions), ALLOCATE_CLEAR, 0));
         if (options != nullptr && FromHex (hex, *options)) {
-            options->gdlOptions = ProjectGdlOptions ();
-            GdlOptionsFromOS (options->gdlOptions, os);
+            options->gdlOptions = nullptr;
             view.modelViewOpt = options;
             view.modelViewOptName[0] = '\0';
         } else if (options != nullptr) {
@@ -1398,8 +1341,11 @@ GS::UniString CreateView (const GS::ObjectState& os, std::map<GS::UniString, API
             BMKillPtr (reinterpret_cast<GSPtr*> (&prefs));
         }
     }
+    Trace ("ChangeNavigatorView");
     err = ACAPI_Navigator_ChangeNavigatorView (&item, &view);
+    Trace (GS::UniString::Printf ("ChangeNavigatorView done %d", static_cast<int> (err)));
     FreeView (view);
+    Trace ("FreeView done");
     if (err == NoError && swapErr != NoError) {
         return GS::UniString::Printf ("made, but its model view options were not set (%d)", static_cast<int> (swapErr));
     }
@@ -1432,6 +1378,8 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
     Int32 created = 0, existing = 0, failed = 0;
     GS::UniString failures;
     std::map<GS::UniString, API_NavigatorItem> folders;
+    ViewOptionsSwap swap;
+    Trace ("ApplyViews");
     for (const GS::ObjectState& os : views) {
         GS::Array<GS::UniString> path;
         GS::UniString name;
@@ -1441,7 +1389,7 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
             ++existing;
             continue;
         }
-        const GS::UniString problem = CreateView (os, folders);
+        const GS::UniString problem = CreateView (os, folders, swap);
         if (problem.IsEmpty ()) {
             ++created;
         } else {
@@ -1451,6 +1399,11 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
             }
         }
     }
+    RestoreViewOptions (swap);
+    if (swap.before.modelViewOpt.gdlOptions != nullptr) {
+        ACAPI_FreeGDLModelViewOptionsPtr (&swap.before.modelViewOpt.gdlOptions);
+    }
+    Trace ("ApplyViews done");
     reportLines.Push (GS::UniString::Printf ("View: created %d, already there %d, failed %d",
         static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
 }
