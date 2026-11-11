@@ -6,6 +6,7 @@
 #include "ElementCreationCommands.hpp"
 #include "FileSystem.hpp"
 #include "File.hpp"
+#include "Folder.hpp"
 #include "ObjectStateJSONConversion.hpp"
 
 #include <cstdlib>
@@ -1231,6 +1232,119 @@ void ApplyViews (const GS::ObjectState& package, GS::Array<GS::UniString>& repor
         static_cast<int> (created), static_cast<int> (existing), static_cast<int> (failed)) + failures);
 }
 
+// deslab: 11.11.2026, the office's own library parts (the zone stamp «номер в круге», the logo...) live in the embedded
+// library of the standard's project. A new project has none of them, so its zones had no stamp. «Снять стандарт» copies
+// the embedded library next to the package (<name>-library), «Оформить проект» copies it into the open project's
+// embedded library; files the project already has are kept.
+GS::UniString LibraryPath (const GS::UniString& packagePath)
+{
+    GS::UniString path = packagePath;
+    const UIndex dot = path.FindLast (GS::UniChar ('.'));
+    if (dot != MaxUIndex) {
+        path.Delete (dot, path.GetLength () - dot);
+    }
+    return path + "-library";
+}
+
+bool EmbeddedLibrary (IO::Location& location)
+{
+    GS::Array<API_LibraryInfo> libraries;
+    if (ACAPI_LibraryManagement_GetLibraries (&libraries) != NoError) {
+        return false;
+    }
+    for (const API_LibraryInfo& library : libraries) {
+        if (library.libraryType == API_EmbeddedLibrary) {
+            location = library.location;
+            return !location.IsEmpty ();
+        }
+    }
+    return false;
+}
+
+// Copies the tree with plain file operations (to the package). Returns the number of files copied.
+Int32 CopyTree (const IO::Location& from, const IO::Location& to)
+{
+    Int32 copied = 0;
+    IO::Folder source (from);
+    if (source.GetStatus () != NoError) {
+        return 0;
+    }
+    IO::fileSystem.CreateFolderTree (to);
+    GS::Array<GS::Pair<IO::Name, bool>> entries;
+    source.Enumerate ([&] (const IO::Name& name, bool isFolder) {
+        entries.Push (GS::Pair<IO::Name, bool> (name, isFolder));
+    });
+    for (const GS::Pair<IO::Name, bool>& entry : entries) {
+        const IO::Location child (from, entry.first);
+        const IO::Location target (to, entry.first);
+        if (entry.second) {
+            copied += CopyTree (child, target);
+        } else {
+            IO::fileSystem.Delete (target);
+            if (IO::fileSystem.Copy (child, target) == NoError) {
+                ++copied;
+            }
+        }
+    }
+    return copied;
+}
+
+// Copies the tree into the embedded library through the API, so Archicad knows of every folder and file.
+void CopyTreeIntoLibrary (const IO::Location& from, const IO::Location& to, Int32& copied, Int32& kept, Int32& failed)
+{
+    IO::Folder source (from);
+    if (source.GetStatus () != NoError) {
+        return;
+    }
+    GS::Array<IO::Location> files;
+    GS::Array<IO::Name> folders;
+    source.Enumerate ([&] (const IO::Name& name, bool isFolder) {
+        if (isFolder) {
+            folders.Push (name);
+            return;
+        }
+        bool exists = false;
+        if (IO::fileSystem.Contains (IO::Location (to, name), &exists) == NoError && exists) {
+            ++kept;
+        } else {
+            files.Push (IO::Location (from, name));
+        }
+    });
+    if (!files.IsEmpty ()) {
+        const bool overwrite = false;
+        if (ACAPI_LibraryManagement_CopyFilesIntoLibrary (&to, &files, &overwrite) == NoError) {
+            copied += static_cast<Int32> (files.GetSize ());
+        } else {
+            failed += static_cast<Int32> (files.GetSize ());
+        }
+    }
+    for (const IO::Name& name : folders) {
+        const IO::Location target (to, name);
+        if (IO::Folder (target).GetStatus () != NoError && ACAPI_LibraryManagement_CreateFolderInLibrary (&target) != NoError) {
+            ++failed;
+            continue;
+        }
+        CopyTreeIntoLibrary (IO::Location (from, name), target, copied, kept, failed);
+    }
+}
+
+void ApplyEmbeddedLibrary (const GS::UniString& packagePath, GS::Array<GS::UniString>& reportLines)
+{
+    const IO::Location source (LibraryPath (packagePath));
+    if (IO::Folder (source).GetStatus () != NoError) {
+        return;
+    }
+    IO::Location target;
+    if (!EmbeddedLibrary (target)) {
+        reportLines.Push ("EmbeddedLibrary: the project's embedded library was not found");
+        return;
+    }
+    Int32 copied = 0, kept = 0, failed = 0;
+    CopyTreeIntoLibrary (source, target, copied, kept, failed);
+    reportLines.Push (GS::UniString::Printf ("EmbeddedLibrary: copied %d, already there %d, failed %d",
+        static_cast<int> (copied), static_cast<int> (kept), static_cast<int> (failed)));
+}
+
 // deslab: favorites, exported next to the package as a .prf file and imported with their folders; favorites that the
 // open project already has under the same name are kept.
 GS::UniString FavoritesPath (const GS::UniString& packagePath)
@@ -1827,6 +1941,9 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     if (!hasPackage) {
         reportLines.Push ("No standard package: layers, surfaces and building materials are skipped.");
     }
+    if (hasPackage) {
+        ApplyEmbeddedLibrary (packagePath, reportLines);
+    }
     GuidMap guids;
     std::map<API_AttrTypeID, IndexMap> maps;
     const GSErrCode err = ACAPI_CallUndoableCommand ("Apply office standard", [&] () -> GSErrCode {
@@ -1950,6 +2067,7 @@ GS::Optional<GS::UniString> CaptureOfficeStandardCommand::GetRawResponseSchema (
             "graphicOverrideCombinations": { "type": "integer" },
             "views": { "type": "integer" },
             "viewsSkipped": { "type": "integer", "description": "Views that are not story views (not captured yet)." },
+            "embeddedLibraryFiles": { "type": "integer", "description": "The files of the project's embedded library copied next to the package (<name>-library)." },
             "favoritesExported": { "type": "boolean", "description": "The favorites were written next to the package (<name>-favorites.prf)." },
             "masterLayouts": { "type": "integer" },
             "layouts": { "type": "integer" }
@@ -2008,6 +2126,10 @@ GSErrCode CaptureOfficeStandardCommand::Capture (const GS::UniString& packagePat
     counts.Add ("viewsSkipped", skippedViews);
     CaptureLayouts (package, counts);
     CapturePenSetsAndProjectInfo (package, counts);
+    {
+        IO::Location embedded;
+        counts.Add ("embeddedLibraryFiles", EmbeddedLibrary (embedded) ? CopyTree (embedded, IO::Location (LibraryPath (packagePath))) : 0);
+    }
     const IO::Location favorites (FavoritesPath (packagePath));
     counts.Add ("favoritesExported", ACAPI_Favorite_Export (favorites, nullptr) == NoError);
     const IO::Location location (packagePath);
