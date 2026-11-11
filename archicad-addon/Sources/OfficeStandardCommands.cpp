@@ -1712,6 +1712,12 @@ void ApplyLayouts (const GS::ObjectState& package, const GuidMap& attributeGuids
         GS::ucsncpy (layout.layoutName, name.ToUStr (), API_UniLongNameLen - 1);
         SetCharProperty (&os, "customLayoutNumber", layout.customLayoutNumber);
         os.Get ("customLayoutNumbering", layout.customLayoutNumbering);
+        // deslab: the standard numbers its layouts through its subsets («04», «05»), which are not copied; a new
+        // project numbered them by its own book («AP1»). The number the layout shows in the standard is kept as
+        // its own number.
+        if (!layout.customLayoutNumbering && SetCharProperty (&os, "ref", layout.customLayoutNumber) && layout.customLayoutNumber[0] != 0) {
+            layout.customLayoutNumbering = true;
+        }
         os.Get ("doNotIncludeInNumbering", layout.doNotIncludeInNumbering);
         os.Get ("showMasterBelow", layout.showMasterBelow);
         const GSErrCode err = ACAPI_Navigator_CreateLayout (&layout, &masterId);
