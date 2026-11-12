@@ -8888,6 +8888,10 @@
                 "type": "boolean",
                 "description": "Whether the drawing is included in the automatic drawing numbering sequence."
             },
+            "includeInScaleAutoTexts": {
+                "type": "boolean",
+                "description": "deslab: whether the drawing's scale goes into the Drawing Scale autotexts of the layout (off for a schedule, so the stamp shows only the plan's scale)."
+            },
             "hasBorderLine": {
                 "type": "boolean",
                 "description": "Whether the drawing shows a printable border (Drawing Settings > Frame > Add Printable Border)."
@@ -10487,6 +10491,10 @@
             "isInNumbering": {
                 "type": "boolean",
                 "description": "Whether the drawing is included in the automatic drawing numbering sequence."
+            },
+            "includeInScaleAutoTexts": {
+                "type": "boolean",
+                "description": "deslab: whether the drawing's scale goes into the Drawing Scale autotexts of the layout (off for a schedule, so the stamp shows only the plan's scale)."
             },
             "hasBorderLine": {
                 "type": "boolean",

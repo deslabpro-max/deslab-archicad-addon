@@ -343,8 +343,10 @@ def place_explication(ac, profile, scheme_dir=None):
                                                          "position": {"x": right - 0.04, "y": bottom + 0.02}, "scale": 1}]})["elements"][0]
     if "elementId" not in new:
         return out + [f"Экспликация: чертёж ведомости не создан ({new})"]
+    # deslab: 12.11.2026, the schedule's own scale (1:1) must not show next to the plan's in the stamp and the layout
+    # caption («1:40, 1:1», Игорь): the drawing is kept out of the Drawing Scale autotexts
     ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [{"elementId": new["elementId"], "details": {
-        "typeSpecificDetails": {"titleLibraryPartIndex": int(cfg.get("titleLibraryPartIndex", 0))}}}]})
+        "typeSpecificDetails": {"titleLibraryPartIndex": int(cfg.get("titleLibraryPartIndex", 0)), "includeInScaleAutoTexts": False}}}]})
     # the schedule's size is known only once it is placed: its bottom right corner goes to the template's place, above
     # the legend, and the table grows upwards with the rooms
     got = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": new["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]

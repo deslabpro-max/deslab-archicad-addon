@@ -1094,6 +1094,21 @@ GS::Optional<short> GetFontIndexFromName (const GS::UniString& fontName)
         }
     }
 
+#ifdef ServerMainVers_2700
+    // deslab: 12.11.2026, a font installed on the computer but not yet used in this project is not among the
+    // project's fonts; the search by name finds it (the «подпись / ФИО» line of the approval block is in such a font
+    // and, drawn in another one, came out wider and off its lines).
+    if (!caseInsensitiveMatch.HasValue ()) {
+        API_FontType font = {};
+        GS::UniString name = fontName;
+        font.head.uniStringNamePtr = &name;
+        CHTruncate (fontName.ToCStr (CC_UTF8).Get (), font.head.name, sizeof (font.head.name));
+        if (ACAPI_Font_SearchFont (font) == NoError && font.head.index > 0) {
+            return static_cast<short> (font.head.index);
+        }
+    }
+#endif
+
     return caseInsensitiveMatch;
 }
 
