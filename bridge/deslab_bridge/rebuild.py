@@ -172,7 +172,8 @@ def place(ac, guids, scene=None, source=None, root=None):
     # already, so a failure here must not lose the run
     # the rooms rounded one by one, as the schedule on the layout sums them (49,80, not 49,79 of the unrounded sum)
     total = sum(round(abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]])), 2) for r in (scene or {}).get("rooms", []) if r.get("polygon"))
-    for step, args in ((layouts.place_explication, (ac, profile, Path(root) / "deslab-standard" / "schedules" if root else None)), (layouts.place_note, (ac, profile, source, total))):
+    for step, args in ((layouts.place_explication, (ac, profile, Path(root) / "deslab-standard" / "schedules" if root else None)), (layouts.place_note, (ac, profile, source, total)),
+                       (layouts.place_axonometry, (ac, profile))):
         try:
             out += step(*args)
         except Exception as error:

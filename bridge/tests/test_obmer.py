@@ -434,3 +434,17 @@ def test_scheme_xml():
     rows = '<Row Type="Header">\n<Row_Height value="15"/>\n</Row>\n<Row Type="Value">\n<Row_Height value="8"/>\n</Row>\n'
     new = layouts.scheme_xml(xml.replace("\t<View_Settings>", rows + "\t<View_Settings>"), "А", "Б", None, None, {"Header": 8, "Value": 6.5})
     assert '<Row Type="Header">\n<Row_Height value="8"/>' in new and '<Row Type="Value">\n<Row_Height value="6.5"/>' in new
+
+
+def test_axonometry_spot():
+    from deslab_bridge import layouts
+    frame = {"xMin": 0.034, "xMax": 0.326, "yMin": 0.04, "yMax": 0.296}
+    cfg = {"right": 0.3085, "bottom": 0.0494, "maxWidth": 0.119, "maxHeight": 0.130, "minWidth": 0.045, "gap": 0.005}
+    # a wide plan over the whole width: the strip below it, 35.6 mm tall
+    x, y, w, h = layouts.axonometry_spot({"xMin": 0.03, "xMax": 0.31, "yMin": 0.09, "yMax": 0.28}, frame, cfg, 2.0)
+    assert abs(h - 0.0356) < 1e-9 and abs(w - 0.0712) < 1e-9 and abs(x + w - 0.3085) < 1e-9 and y == 0.0494
+    # a narrow plan: the strip to its right, the template's size at most
+    x, y, w, h = layouts.axonometry_spot({"xMin": 0.03, "xMax": 0.18, "yMin": 0.06, "yMax": 0.28}, frame, cfg, 1.0)
+    assert abs(w - 0.119) < 1e-9 and abs(x + w - 0.326) < 1e-9
+    # no room at all
+    assert layouts.axonometry_spot({"xMin": 0.03, "xMax": 0.32, "yMin": 0.06, "yMax": 0.28}, frame, cfg, 2.0) is None

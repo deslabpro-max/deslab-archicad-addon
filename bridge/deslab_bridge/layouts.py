@@ -357,3 +357,135 @@ def place_explication(ac, profile, scheme_dir=None):
         ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in old]})
     size = f"{1000 * (got['xMax'] - got['xMin']):.0f} x {1000 * (got['yMax'] - got['yMin']):.0f} мм"
     return out + [f"Экспликация: ведомость «{schedule['name']}» на листе, {size}"]
+
+
+def _folder_of(ac, kind, name):
+    """The navigator id of the folder that holds the item of this name (the View Map folder of the plan view)."""
+    def walk(item, parent):
+        item = item.get("navigatorItem", item)
+        if item.get("name") == name and item.get("type") != "FolderItem":
+            return parent
+        for child in item.get("children", []):
+            found = walk(child, item)
+            if found:
+                return found
+    root = ac.api("API.GetNavigatorItemTree", {"navigatorTreeId": {"type": kind}})["navigatorTree"]["rootItem"]
+    found = walk(root, None)
+    return found.get("navigatorItemId") if found else None
+
+
+def axonometry_spot(plan, frame, cfg, aspect):
+    """deslab: 12.11.2026, where the axonometry goes on the layout: the bigger of the two free strips next to the plan
+    drawing (below it or to its right), bottom right like in the template, not bigger than the template's frame.
+    plan and frame are paper boxes in metres, aspect = width / height of the 3D drawing. Returns (xMin, yMin, width,
+    height) or None when neither strip takes the smallest size."""
+    gap = float(cfg.get("gap", 0.005))
+    right, bottom = float(cfg.get("right", frame["xMax"])), float(cfg.get("bottom", frame["yMin"]))
+    best = None
+    for width, height, x_max in ((right - frame["xMin"], plan["yMin"] - gap - bottom, right),
+                                 (frame["xMax"] - plan["xMax"] - gap, plan["yMax"] - bottom, frame["xMax"])):
+        width, height = min(width, float(cfg.get("maxWidth", 0.119))), min(height, float(cfg.get("maxHeight", 0.130)))
+        if width <= 0 or height <= 0:
+            continue
+        w = min(width, height * aspect)
+        if w >= float(cfg.get("minWidth", 0.045)) and (best is None or w > best[2]):
+            best = (x_max - w, bottom, w, w / aspect)
+    return best
+
+
+def axonometry_view(ac, profile):
+    """Makes the 3D view of the template again from the project's own axonometry: the template's projection, the view's
+    layers, overrides, scale and 3D style. The old view of this name goes first (its zoom is of the previous flat)."""
+    cfg = profile["layouts"]["axonometry"]
+    notes = []
+    old = [v for v in _tree(ac, "ViewMap") if v.get("name") == cfg["view"] and v.get("type") != "FolderItem"]
+    if old:
+        ac.tapir("DeleteNavigatorItems", {"navigatorItemIds": [{"navigatorItemId": v["navigatorItemId"]} for v in old]})
+    source = next((i for i in _tree(ac, "ProjectMap") if i.get("type") == "AxonometryItem"), None)
+    folder = _folder_of(ac, "ViewMap", profile["layouts"]["items"][0]["view"])
+    if not source or not folder:
+        return None, ["нет 3D-пункта в карте проекта или папки вида плана"]
+    ac.tapir("ChangeWindow", {"navigatorItemId": source["navigatorItemId"]})
+    done = ac.tapir("Set3DProjectionSettings", {"axonometric": {"transformationMatrix": [float(v) for v in cfg["matrix"]]}})
+    if done.get("success") is False:
+        notes.append(f"проекция не задана ({done})")
+    # only the layers of the view's combination in the 3D window, then the flat fills it: the saved view keeps this zoom
+    settings = dict(cfg.get("viewSettings") or {})
+    ac.tapir("FitInWindow", {})
+    made = ac.tapir("CloneProjectMapItemToViewMap", {"viewsData": [{"navigatorItemId": source["navigatorItemId"], "parentNavigatorItemId": folder}]})["navigatorItems"][0]
+    if "navigatorItemId" not in made:
+        return None, [f"вид не создан ({made})"]
+    view = {"navigatorItemId": made["navigatorItemId"]}
+    ac.tapir("RenameNavigatorItem", dict(view, newName=cfg["view"]))
+    for key, value in settings.items():  # one by one: a name the project does not have must not lose the rest
+        try:
+            result = ac.tapir("SetViewSettings", {"navigatorItemIdsWithViewSettings": [dict(view, viewSettings={key: value})]})
+            if not all(r.get("success") for r in result.get("executionResults", [])):
+                notes.append(f"{key} «{value}» не принят")
+        except ArchicadError as error:
+            notes.append(f"{key} «{value}» не принят ({error})")
+    return view, notes
+
+
+def place_axonometry(ac, profile):
+    """deslab: 12.11.2026 (Игорь: «нужно добавить 3D аксонометрию, так как в моем примере было»): the 3D drawing of the
+    flat on the layouts of the measured plan, like in the template."""
+    cfg = (profile.get("layouts") or {}).get("axonometry")
+    if not cfg:
+        return []
+    frame = profile["layouts"]["frame"]
+    layouts = {(i.get("prefix", "") + " " + i["name"]).strip(): i for i in _tree(ac, "LayoutBook") if i.get("type") == "LayoutItem"}
+    # the drawings of the previous run go before their view does
+    stale = []
+    for name in cfg["layouts"]:
+        layout = next((l for k, l in layouts.items() if name in k), None)
+        if not layout:
+            continue
+        ac.tapir("ChangeWindow", {"navigatorItemId": layout["navigatorItemId"]})
+        drawings = ac.tapir("GetElementsByType", {"elementType": "Drawing"}).get("elements", [])
+        details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
+        stale = [e for e, d in zip(drawings, details) if cfg["view"] in (_flat(d).get("customName"), _flat(d).get("name"))]
+        if stale:
+            ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in stale]})
+    view, notes = axonometry_view(ac, profile)
+    out = ["Аксонометрия: " + n for n in notes]
+    if not view:
+        return out
+    for name in cfg["layouts"]:
+        layout = next((l for k, l in layouts.items() if name in k), None)
+        if not layout:
+            out.append(f"Аксонометрия: нет листа «{name}»")
+            continue
+        ac.tapir("ChangeWindow", {"navigatorItemId": layout["navigatorItemId"]})
+        drawings = ac.tapir("GetElementsByType", {"elementType": "Drawing"}).get("elements", [])
+        details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
+        plans = [d["details"]["bounds"] for d in details if 0.009 <= d["details"].get("ratio", 1) * d["details"].get("drawingScale", 1) <= 0.06 and "bounds" in d["details"]]
+        if not plans:
+            out.append(f"Аксонометрия: на листе «{name}» нет чертежа плана")
+            continue
+        plan = max(plans, key=lambda b: (b["xMax"] - b["xMin"]) * (b["yMax"] - b["yMin"]))
+        source = {"navigatorItemId": view["navigatorItemId"], "nameType": "CustomName", "name": cfg["view"]}
+        probe = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position={"x": frame["xMin"], "y": frame["yMin"]}, scale=1)]})["elements"][0]
+        if "elementId" not in probe:
+            out.append(f"Аксонометрия: чертёж не создан ({probe})")
+            continue
+        box = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": probe["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
+        ac.tapir("DeleteElements", {"elements": [{"elementId": probe["elementId"]}]})
+        full_w, full_h = box["xMax"] - box["xMin"], box["yMax"] - box["yMin"]
+        spot = axonometry_spot(plan, frame, cfg, full_w / full_h) if full_w > 0 and full_h > 0 else None
+        if not spot:
+            out.append(f"Аксонометрия: на листе «{name}» рядом с планом нет места")
+            continue
+        x, y, w, h = spot
+        new = ac.tapir("CreateDrawings", {"drawingsData": [dict(source, position={"x": x, "y": y}, scale=w / full_w)]})["elements"][0]
+        if "elementId" not in new:
+            out.append(f"Аксонометрия: чертёж не создан ({new})")
+            continue
+        ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [{"elementId": new["elementId"], "details": {
+            "typeSpecificDetails": {"titleLibraryPartIndex": 0, "includeInScaleAutoTexts": False}}}]})
+        got = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": new["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
+        dx, dy = x - got["xMin"], y - got["yMin"]
+        if abs(dx) > 0.0002 or abs(dy) > 0.0002:
+            ac.tapir("MoveElements", {"elementsWithMoveVectors": [{"elementId": new["elementId"], "moveVector": {"x": dx, "y": dy, "z": 0}, "copy": False}]})
+        out.append(f"Аксонометрия: на листе «{name}», {1000 * w:.0f} x {1000 * h:.0f} мм")
+    return out

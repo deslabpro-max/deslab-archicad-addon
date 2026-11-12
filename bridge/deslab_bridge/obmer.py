@@ -1616,7 +1616,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     # 1. Model in one add-on call.
     params = {"scene": scene, "floorIndex": floor_index,
               "favorites": {k: F[k] for k in ("wall", "door", "window", "zone") if F.get(k)},
-              "layers": {"walls": L["bearingWalls"], "zones": L["zones"]},
+              # deslab: 12.11.2026, the floor slab on the template's slab layer: it is what the axonometry shows as the floor
+              "layers": {"walls": L["bearingWalls"], "zones": L["zones"], **({"slabs": L["slabs"]} if L.get("slabs") else {})},
               "materials": {"measuredWalls": profile["walls"]["material"], "assumedWalls": profile["walls"]["material"]}}
     model_scene, corner_pairs = split_corner_windows(scene)
     params["scene"] = model_scene
