@@ -247,12 +247,15 @@ def place_note(ac, profile, source, total):
     return out + ["Примечание: " + e for e in errors]
 
 
-def scheme_xml(xml, name, scheme_id, title=None, layer_index=None):
+def scheme_xml(xml, name, scheme_id, title=None, layer_index=None, row_heights=None):
     """deslab: 12.11.2026, an Interactive Schedule scheme (the XML of Scheme Settings > Export, taken from the office
     template) made ready for this project: its own name and ID, the main header shown with the title, and the «Слой»
     criterion pointed at this project's layer (the XML keeps the layer as an attribute index, which is another layer
-    or none in another file); without a layer index the criterion is dropped."""
+    or none in another file); without a layer index the criterion is dropped. row_heights {row type: mm} makes the
+    table more compact than the office scheme (its column header is 15 mm tall and ran into the approval block)."""
     import re
+    for kind, height in (row_heights or {}).items():
+        xml = re.sub(rf'(<Row Type="{re.escape(kind)}">.*?<Row_Height value=")[^"]*(")', rf"\g<1>{height:g}\g<2>", xml, count=1, flags=re.S)
     head = re.search(r"<Scheme_Settings\b[^>]*>", xml)
     if not head:
         raise ValueError("в XML нет Scheme_Settings")
@@ -292,7 +295,7 @@ def import_scheme(ac, cfg, profile, scheme_dir):
     layer_name = (profile.get("layers") or {}).get(scheme.get("layer", ""))
     layers = ac.tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", []) if layer_name else []
     index = next((a["index"] for a in layers if a.get("name") == layer_name), None)
-    xml = scheme_xml(source.read_text(encoding="utf-8"), scheme["name"], scheme["id"], cfg.get("title"), index)
+    xml = scheme_xml(source.read_text(encoding="utf-8"), scheme["name"], scheme["id"], cfg.get("title"), index, scheme.get("rowHeights"))
     path = Path(tempfile.gettempdir()) / "deslab-scheme.xml"
     path.write_text(xml, encoding="utf-8", newline="\n")
     try:

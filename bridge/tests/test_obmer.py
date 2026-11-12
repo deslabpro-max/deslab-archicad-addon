@@ -431,3 +431,6 @@ def test_scheme_xml():
     new = layouts.scheme_xml(xml, "А", "Б", None, None)
     assert new.count("<Criterion>") == 1 and "Слой" not in new and '<Hide_Main_Header value="true"/>' in new
     assert new.count("</Complex_Criteria>") == 1 and "<Value>17</Value>" in new
+    rows = '<Row Type="Header">\n<Row_Height value="15"/>\n</Row>\n<Row Type="Value">\n<Row_Height value="8"/>\n</Row>\n'
+    new = layouts.scheme_xml(xml.replace("\t<View_Settings>", rows + "\t<View_Settings>"), "А", "Б", None, None, {"Header": 8, "Value": 6.5})
+    assert '<Row Type="Header">\n<Row_Height value="8"/>' in new and '<Row Type="Value">\n<Row_Height value="6.5"/>' in new

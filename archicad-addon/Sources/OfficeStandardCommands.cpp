@@ -1877,7 +1877,9 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
                     }
                     API_Element mask;
                     ACAPI_ELEMENT_MASK_CLEAR (mask);
-                    element.text.width = wrapWidths[i];
+                    // 2 % wider: the template's block is as wide as its longest line, and at exactly that width the
+                    // line wrapped in a new project (the approval block came out 7 mm taller, 12.11.2026)
+                    element.text.width = wrapWidths[i] * 1.02;
                     element.text.nonBreaking = false;
                     ACAPI_ELEMENT_MASK_SET (mask, API_TextType, width);
                     ACAPI_ELEMENT_MASK_SET (mask, API_TextType, nonBreaking);

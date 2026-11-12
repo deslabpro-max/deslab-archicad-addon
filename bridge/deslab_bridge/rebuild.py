@@ -170,7 +170,8 @@ def place(ac, guids, scene=None, source=None, root=None):
     out = layouts.place_on_layouts(ac, flat_bbox(ac, guids), profile)
     # deslab: 11.11.2026, the zone schedule and the note with the real source and area; the plan is on the layouts
     # already, so a failure here must not lose the run
-    total = sum(abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]])) for r in (scene or {}).get("rooms", []) if r.get("polygon"))
+    # the rooms rounded one by one, as the schedule on the layout sums them (49,80, not 49,79 of the unrounded sum)
+    total = sum(round(abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]])), 2) for r in (scene or {}).get("rooms", []) if r.get("polygon"))
     for step, args in ((layouts.place_explication, (ac, profile, Path(root) / "deslab-standard" / "schedules" if root else None)), (layouts.place_note, (ac, profile, source, total))):
         try:
             out += step(*args)
