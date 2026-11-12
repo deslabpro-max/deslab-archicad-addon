@@ -1604,6 +1604,81 @@ GSErrCode InDatabase (API_DatabaseUnId id, const std::function<void ()>& action)
     return ACAPI_Database_ChangeCurrentDatabase (&start);
 }
 
+// deslab: the object parameters that mean the same in any file (no attribute indices, no arrays).
+bool ObjectParamIsNumber (API_AddParID type)
+{
+    return type == APIParT_Integer || type == APIParT_Length || type == APIParT_Angle || type == APIParT_RealNum ||
+           type == APIParT_Boolean || type == APIParT_PenCol || type == APIParT_LightSw || type == APIParT_ColRGB ||
+           type == APIParT_Intens;
+}
+
+// Places one captured object (the north sign of a layout) into the current database.
+GSErrCode CreateCapturedObject (const GS::ObjectState& item, API_AttributeIndex layer)
+{
+    GS::UniString name;
+    item.Get ("libraryPartName", name);
+    API_LibPart libPart = {};
+    GS::ucsncpy (libPart.docu_UName, name.ToUStr ().Get (), API_UniLongNameLen - 1);
+    GSErrCode err = ACAPI_LibraryPart_Search (&libPart, false, true);
+    delete libPart.location;
+    if (err != NoError) {
+        return err;
+    }
+    API_Element element = {};
+    element.header.type = API_ObjectID;
+    err = ACAPI_Element_GetDefaults (&element, nullptr);
+    if (err != NoError) {
+        return err;
+    }
+    element.header.layer = layer;
+    element.header.floorInd = 0;
+    element.object.libInd = libPart.index;
+    GS::ObjectState pos;
+    item.Get ("pos", pos);
+    pos.Get ("x", element.object.pos.x);
+    pos.Get ("y", element.object.pos.y);
+    item.Get ("angle", element.object.angle);
+    item.Get ("xRatio", element.object.xRatio);
+    item.Get ("yRatio", element.object.yRatio);
+    item.Get ("fixSize", element.object.useXYFixSize);
+    item.Get ("useObjectPens", element.object.useObjPens);
+    item.Get ("reflected", element.object.reflected);
+    Int32 pen = 0;
+    if (item.Get ("pen", pen) && pen > 0) {
+        element.object.pen = static_cast<short> (pen);
+    }
+    API_ElementMemo memo = {};
+    double a = 0.0, b = 0.0;
+    Int32 count = 0;
+    err = ACAPI_LibraryPart_GetParams (libPart.index, &a, &b, &count, &memo.params);
+    if (err != NoError) {
+        return err;
+    }
+    GS::Array<GS::ObjectState> params;
+    item.Get ("params", params);
+    for (const GS::ObjectState& par : params) {
+        GS::UniString parName;
+        par.Get ("name", parName);
+        for (Int32 i = 0; i < count; ++i) {
+            API_AddParType& target = (*memo.params)[i];
+            if (target.typeMod != API_ParSimple || parName != GS::UniString (target.name)) {
+                continue;
+            }
+            GS::UniString text;
+            if (ObjectParamIsNumber (target.typeID)) {
+                par.Get ("number", target.value.real);
+            } else if (target.typeID == APIParT_CString && par.Get ("string", text)) {
+                GS::ucsncpy (target.value.uStr, text.ToUStr ().Get (), API_UAddParStrLen - 1);
+                target.value.uStr[API_UAddParStrLen - 1] = 0;
+            }
+            break;
+        }
+    }
+    err = ACAPI_Element_Create (&element, &memo);
+    ACAPI_DisposeElemMemoHdls (&memo);
+    return err;
+}
+
 GS::Array<GS::ObjectState> CaptureMasterContent (API_DatabaseUnId id, Int32& skipped)
 {
     GS::Array<GS::ObjectState> out;
@@ -1643,6 +1718,41 @@ GS::Array<GS::ObjectState> CaptureMasterContent (API_DatabaseUnId id, Int32& ski
                     os.Add ("wrapWidth", element.text.width);
                 }
                 out.Push (os);
+            } else if (type == API_ObjectID) {
+                // deslab: 12.11.2026, Игорь wants the north sign of the template layout; an object goes by the name of
+                // its library part, with its simple parameters (attribute indices are the file's own and stay out).
+                API_LibPart libPart = {};
+                libPart.index = element.object.libInd;
+                if (ACAPI_LibraryPart_Get (&libPart) != NoError) {
+                    ++skipped;
+                    continue;
+                }
+                delete libPart.location;
+                GS::ObjectState os ("type", GS::UniString ("Object"), "layer", LayerName (element.header.layer),
+                    "libraryPartName", GS::UniString (libPart.docu_UName), "pos", Coordinate (element.object.pos),
+                    "angle", element.object.angle, "xRatio", element.object.xRatio, "yRatio", element.object.yRatio);
+                os.Add ("fixSize", element.object.useXYFixSize);
+                os.Add ("pen", static_cast<Int32> (element.object.pen));
+                os.Add ("useObjectPens", element.object.useObjPens);
+                os.Add ("reflected", element.object.reflected);
+                const auto& params = os.AddList<GS::ObjectState> ("params");
+                API_ElementMemo memo = {};
+                if (ACAPI_Element_GetMemo (guid, &memo, APIMemoMask_AddPars) == NoError && memo.params != nullptr) {
+                    const GSSize count = BMGetHandleSize (reinterpret_cast<GSHandle> (memo.params)) / sizeof (API_AddParType);
+                    for (GSIndex i = 0; i < count; ++i) {
+                        const API_AddParType& par = (*memo.params)[i];
+                        if (par.typeMod != API_ParSimple) {
+                            continue;
+                        }
+                        if (ObjectParamIsNumber (par.typeID)) {
+                            params (GS::ObjectState ("name", GS::UniString (par.name), "number", par.value.real));
+                        } else if (par.typeID == APIParT_CString) {
+                            params (GS::ObjectState ("name", GS::UniString (par.name), "string", GS::UniString (par.value.uStr)));
+                        }
+                    }
+                }
+                ACAPI_DisposeElemMemoHdls (&memo);
+                out.Push (os);
             } else {
                 ++skipped;
             }
@@ -1675,6 +1785,15 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
             item.Get ("layer", layer);
             const auto found = layers.find (layer);
             const Int32 layerIndex = found != layers.end () ? GetAttributeIndex (found->second) : 1;
+            if (type == "Object") {
+                GSErrCode objectErr = NoError;
+                ACAPI_CallUndoableCommand ("deslab layout object", [&] () -> GSErrCode {
+                    objectErr = CreateCapturedObject (item, found != layers.end () ? found->second : ACAPI_CreateAttributeIndex (1));
+                    return objectErr;
+                });
+                ++(objectErr == NoError ? drawn : failed);
+                continue;
+            }
             if (type == "Line") {
                 GS::ObjectState beg, end;
                 Int32 pen = 1;
@@ -1698,11 +1817,20 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
                 loc.Get ("x", x);
                 loc.Get ("y", y);
                 item.Get ("style", style);
+                // deslab: a font this project does not have must not lose the text (see GetFontIndexFromDetails)
+                if (!style.Contains ("fontFallback")) {
+                    style.Add ("fontFallback", true);
+                }
                 GS::ObjectState text ("coordinate", GS::ObjectState ("x", x, "y", y, "z", 0.0), "style", style,
                     "floorIndex", 0, "layerIndex", layerIndex);
                 GS::Array<GS::ObjectState> runs;
                 GS::UniString plain;
                 if (item.Get ("runs", runs) && !runs.IsEmpty ()) {
+                    for (GS::ObjectState& run : runs) {
+                        if (!run.Contains ("fontFallback")) {
+                            run.Add ("fontFallback", true);
+                        }
+                    }
                     text.Add ("runs", runs);
                 } else {
                     item.Get ("text", plain);

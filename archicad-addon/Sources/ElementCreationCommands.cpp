@@ -3708,6 +3708,13 @@ static GS::Optional<GS::ObjectState> GetFontIndexFromDetails (const GS::ObjectSt
     if (details.Get ("fontName", fontName)) {
         fontIndex = GetFontIndexFromName (fontName);
         if (!fontIndex.HasValue ()) {
+            // deslab: 12.11.2026, the office standard draws layout texts captured in another file; a run in a font
+            // this project does not have (the approval block of layout 04) takes the text's own font instead of
+            // losing the whole text. Only on the internal "fontFallback" flag, the command's own behaviour stays.
+            bool fallback = false;
+            if (details.Get ("fontFallback", fallback) && fallback) {
+                return {};
+            }
             return CreateErrorResponse (APIERR_BADNAME, GS::UniString::Printf ("No loaded font is named '%T'. fontName takes the name of a Font attribute, as GetDetailsOfElements reports it in fontName; use fontIndex to give the font by its index instead.", fontName.ToPrintf ()));
         }
         return {};

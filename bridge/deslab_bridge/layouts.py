@@ -194,12 +194,24 @@ def _layout(ac, name):
     return next((l for k, l in layouts.items() if name in k), None)
 
 
+_TEXT_STYLE = ("penIndex", "fontName", "bold", "italic", "underline", "justification", "height", "spacing", "angle", "widthFactor",
+               "charSpaceFactor", "fixedSize", "usedContour", "usedFill", "contourPenIndex", "fillPenIndex", "anchor", "contourOffset")
+
+
+def _flat(details):
+    """GetDetailsOfElements: the type's own fields, wherever this add-on version puts them."""
+    details = details.get("details") or {}
+    return {**details, **(details.get("typeSpecificDetails") or {})}
+
+
 def place_note(ac, profile, source, total):
-    """Rewrites the template's note text on the layouts (found by its first word)."""
+    """Rewrites the template's note text on the layouts (found by its first word). ModifyTexts refuses this text (four
+    paragraphs in a frame, error -2130312696 on Игорь's file, 12.11.2026), so the text is deleted and created again in its
+    place with its own style; the result is read back, and the report says only what is really on the layout."""
     cfg = (profile.get("layouts") or {}).get("note")
     if not cfg:
         return []
-    text, title, done = note_text(cfg, source, total), cfg.get("title", "ПРИМЕЧАНИЕ"), 0
+    text, title, done, errors = note_text(cfg, source, total), cfg.get("title", "ПРИМЕЧАНИЕ"), 0, []
     for name in cfg.get("layouts", []):
         layout = _layout(ac, name)
         if not layout:
@@ -208,16 +220,31 @@ def place_note(ac, profile, source, total):
         texts = ac.tapir("GetElementsByType", {"elementType": "Text"}).get("elements", [])
         details = ac.tapir("GetDetailsOfElements", {"elements": texts}).get("detailsOfElements", []) if texts else []
         for element, d in zip(texts, details):
-            old = str((d.get("details") or {}).get("typeSpecificDetails", d.get("details") or {}).get("text", ""))
-            # the API gives Cyrillic of this font as cp1251 read as Latin-1
-            try:
-                old = old if title in old else old.encode("latin-1").decode("cp1251")
-            except (UnicodeEncodeError, UnicodeDecodeError):
-                pass
-            if old.lstrip().startswith(title):
-                ac.tapir("ModifyTexts", {"textsWithDetails": [{"elementId": element["elementId"], "text": text}]})
-                done += 1
-    return [f"Примечание: обновлено на {done} листах, площадь {_area(total)} м²" if done else "Примечание: текст на листах не найден"]
+            d = _flat(d)
+            old, legacy = str(d.get("text", "")), False
+            if title not in old:
+                # the template's «GOST type A» font keeps Cyrillic as cp1251 codes; the new text goes the same way
+                try:
+                    old, legacy = old.encode("latin-1").decode("cp1251"), True
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    pass
+            if not old.lstrip().startswith(title):
+                continue
+            new = text.encode("cp1251", "replace").decode("latin-1") if legacy else text
+            position, style = d.get("position") or {}, d.get("style") or {}
+            if "x" not in position:
+                errors.append(f"{name}: у текста нет координат")
+                continue
+            made = ac.tapir("CreateTexts", {"textsData": [{
+                "coordinate": {"x": position["x"], "y": position["y"], "z": 0}, "text": new, "floorIndex": 0,
+                "layerIndex": int(d.get("layerIndex", 1)), "style": {k: style[k] for k in _TEXT_STYLE if k in style}}]}).get("elements", [{}])[0]
+            if "elementId" not in made:
+                errors.append(f"{name}: новый текст не создан ({made})")
+                continue
+            ac.tapir("DeleteElements", {"elements": [{"elementId": element["elementId"]}]})
+            done += 1
+    out = [f"Примечание: обновлено на {done} листах, площадь {_area(total)} м²" if done else "Примечание: текст на листах не найден"]
+    return out + ["Примечание: " + e for e in errors]
 
 
 def place_explication(ac, profile):
@@ -239,7 +266,10 @@ def place_explication(ac, profile):
     drawings = ac.tapir("GetElementsByType", {"elementType": "Drawing"}).get("elements", [])
     details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
     title = cfg.get("title", "Экспликация помещений")
-    old = [e for e, d in zip(drawings, details) if (d.get("details") or {}).get("typeSpecificDetails", d.get("details") or {}).get("name") == title]
+    old = [e for e, d in zip(drawings, details) if _flat(d).get("name") == title or _flat(d).get("customName") == title]
+    if old and schedule["name"] == cfg["schedules"][0]:
+        # a file made from the office template: its own explication drawing follows the zones by itself
+        return [f"Экспликация: на листе уже стоит ведомость «{schedule['name']}»"]
     right, top = cfg["right"], cfg["top"]
     new = ac.tapir("CreateDrawings", {"drawingsData": [{"navigatorItemId": schedule["navigatorItemId"], "name": title,
                                                          "position": {"x": right - 0.04, "y": top - 0.02}, "scale": 1}]})["elements"][0]
