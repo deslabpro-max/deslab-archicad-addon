@@ -3935,6 +3935,48 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
         text = NormalizeLineBreaks (text);
     }
 
+    // deslab: 12.11.2026, with "paragraphs" (below) an empty line gets a space: a paragraph of no characters is
+    // suspected of making Archicad drop the whole run table (the text came out in one font). "padEmptyLines": false
+    // keeps the lines as they are.
+    {
+        GS::Array<GS::ObjectState> paragraphsCheck;
+        bool pad = true;
+        parameters.Get ("padEmptyLines", pad);
+        if (pad && parameters.Get ("paragraphs", paragraphsCheck) && !paragraphsCheck.IsEmpty ()) {
+            if (!hasRuns) {
+                runTexts.Push (text);
+            }
+            bool lineEmpty = true;
+            for (UIndex r = 0; r < runTexts.GetSize (); ++r) {
+                GS::UniString padded;
+                const GS::UniString& source = runTexts[r];
+                for (UIndex c = 0; c < source.GetLength (); ++c) {
+                    const GS::UniChar ch = source[c];
+                    if (ch == GS::UniChar ('\n')) {
+                        if (lineEmpty) {
+                            padded += " ";
+                        }
+                        lineEmpty = true;
+                    } else {
+                        lineEmpty = false;
+                    }
+                    padded += source.GetSubstring (c, 1);
+                }
+                if (r + 1 == runTexts.GetSize () && lineEmpty) {
+                    padded += " ";
+                }
+                runTexts[r] = padded;
+            }
+            text.Clear ();
+            for (const GS::UniString& runText : runTexts) {
+                text += runText;
+            }
+            if (!hasRuns) {
+                runTexts.Clear ();
+            }
+        }
+    }
+
     // 'memo' may already carry content: the Create path gets its memo from ACAPI_Element_GetDefaults,
     // and a modify may pass one fetched via ACAPI_Element_GetMemo. Replace, never leak.
 #ifdef ServerMainVers_2800
@@ -3981,9 +4023,10 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
         }
         const Int32 count = textData.nLine;
         const Int32 length = static_cast<Int32> (text.GetLength ());
-        // paragraphs are separated by CR in Archicad's own texts (the template's content reads back so); LF is a
-        // line break inside one paragraph
-        {
+        // LF separates the paragraphs, as in the DevKit's Element_Test example; "paragraphSeparator": "CR" writes CR
+        // instead (Archicad's own texts read back with CR)
+        GS::UniString separator;
+        if (parameters.Get ("paragraphSeparator", separator) && separator == "CR") {
             GS::UniString separated = text;
             separated.ReplaceAll ("\n", "\r");
 #ifdef ServerMainVers_2800
@@ -4722,6 +4765,14 @@ GS::Optional<GS::UniString> CreateTextsCommand::GetInputParametersSchema () cons
                         "items": { "$ref": "#/TextRunDetails" },
                         "minItems": 1
                     },
+                    "paragraphs": {
+                        "type": "array",
+                        "description": "deslab: one entry per line (justification, spacing, firstIndent, indent, rightIndent, tabs [{pos}]): every line becomes a paragraph of its own. Used when the count equals the number of lines.",
+                        "items": { "type": "object" }
+                    },
+                    "wrapWidth": { "type": "number", "description": "deslab: with paragraphs, the width of the text block; Archicad breaks the lines." },
+                    "paragraphSeparator": { "type": "string", "enum": ["LF", "CR"], "description": "deslab: with paragraphs, the character between them. Default LF." },
+                    "padEmptyLines": { "type": "boolean", "description": "deslab: with paragraphs, an empty line gets a space. Default true." },
                     "height": {
                         "type": "number",
                         "description": "The character height in millimeters. Optional; defaults to the Text tool default. Equivalent to style.height."
