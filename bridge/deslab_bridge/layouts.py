@@ -401,7 +401,7 @@ def axonometry_view(ac, profile):
     old = [v for v in _tree(ac, "ViewMap") if v.get("name") == cfg["view"] and v.get("type") != "FolderItem"]
     if old:
         ac.tapir("DeleteNavigatorItems", {"navigatorItemIds": [{"navigatorItemId": v["navigatorItemId"]} for v in old]})
-    source = next((i for i in _tree(ac, "ProjectMap") if i.get("type") == "AxonometryItem"), None)
+    source = next((i for i in _tree(ac, "ProjectMap") if i.get("type") in ("Axonometry3DItem", "AxonometryItem")), None)  # the JSON API's name, the add-on's name
     folder = _folder_of(ac, "ViewMap", profile["layouts"]["items"][0]["view"])
     if not source or not folder:
         return None, ["нет 3D-пункта в карте проекта или папки вида плана"]
