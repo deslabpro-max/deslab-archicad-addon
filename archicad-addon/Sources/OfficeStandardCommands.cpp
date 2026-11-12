@@ -1606,6 +1606,30 @@ GSErrCode InDatabase (API_DatabaseUnId id, const std::function<void ()>& action)
     return ACAPI_Database_ChangeCurrentDatabase (&start);
 }
 
+// deslab: 12.11.2026, a layout text's paragraphs for the standard package (see ApplyTextContent, "paragraphs")
+void AddParagraphDetails (GS::ObjectState& os, const API_Guid& guid, Int32 lineCount)
+{
+    API_ElementMemo memo = {};
+    const GS::OnExit guard ([&memo] () { ACAPI_DisposeElemMemoHdls (&memo); });
+    if (ACAPI_Element_GetMemo (guid, &memo, APIMemoMask_ParagraphUni) != NoError || memo.paragraphs == nullptr) {
+        return;
+    }
+    const UInt32 count = static_cast<UInt32> (BMhGetSize (reinterpret_cast<GSHandle> (memo.paragraphs)) / sizeof (API_ParagraphType));
+    const auto& list = os.AddList<GS::ObjectState> ("paragraphs");
+    for (UInt32 p = 0; p < count; ++p) {
+        const API_ParagraphType& paragraph = (*memo.paragraphs)[p];
+        GS::ObjectState item ("justification", GS::UniString (JustificationToString (paragraph.just)),
+            "spacing", paragraph.spacing, "firstIndent", paragraph.firstIndent, "indent", paragraph.indent, "rightIndent", paragraph.rightIndent);
+        const UInt32 tabCount = (paragraph.tab != nullptr) ? static_cast<UInt32> (BMGetPtrSize (reinterpret_cast<GSPtr> (paragraph.tab)) / sizeof (API_TabType)) : 0;
+        const auto& tabs = item.AddList<GS::ObjectState> ("tabs");
+        for (UInt32 t = 0; t < tabCount; ++t) {
+            tabs (GS::ObjectState ("pos", paragraph.tab[t].pos));
+        }
+        list (item);
+    }
+    os.Add ("lineCount", static_cast<Int32> (lineCount));
+}
+
 // deslab: the object parameters that mean the same in any file (no attribute indices, no arrays).
 bool ObjectParamIsNumber (API_AddParID type)
 {
@@ -1719,6 +1743,9 @@ GS::Array<GS::ObjectState> CaptureMasterContent (API_DatabaseUnId id, Int32& ski
                 if (!element.text.nonBreaking && element.text.width > 0.0) {
                     os.Add ("wrapWidth", element.text.width);
                 }
+                // deslab: 12.11.2026, the paragraphs with their own justification and indents, and the number of lines
+                // the text really has: as many as paragraphs means that no line is wrapped in the template
+                AddParagraphDetails (os, guid, element.text.nLine);
                 out.Push (os);
             } else if (type == API_ObjectID) {
                 // deslab: 12.11.2026, Игорь wants the north sign of the template layout; an object goes by the name of
@@ -1840,6 +1867,16 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
                 }
                 double wrapWidth = 0.0;
                 item.Get ("wrapWidth", wrapWidth);
+                // deslab: 12.11.2026, the template's paragraphs; a text whose lines are all its own paragraphs was not
+                // wrapped there and is not wrapped here (the approval block broke a line that fits in the template)
+                GS::Array<GS::ObjectState> paragraphs;
+                Int32 lineCount = 0;
+                if (item.Get ("paragraphs", paragraphs) && !paragraphs.IsEmpty ()) {
+                    text.Add ("paragraphs", paragraphs);
+                    if (item.Get ("lineCount", lineCount) && lineCount == static_cast<Int32> (paragraphs.GetSize ())) {
+                        wrapWidth = 0.0;
+                    }
+                }
                 wrapWidths.Push (wrapWidth);
                 texts.Push (text);
             }

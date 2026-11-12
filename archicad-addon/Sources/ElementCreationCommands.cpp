@@ -3957,6 +3957,105 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
 
     const GS::UniChar newlineChar = GS::UniChar (char ('\n'));
     textData.nLine = text.Count (newlineChar) + 1;
+
+    // deslab: 12.11.2026, internal "paragraphs" (the office standard's layout texts): one paragraph per line, each
+    // with its own justification, indents and spacing, as the text was in the template. With one centred paragraph
+    // for the whole block the «подпись / ФИО» line of the approval block stood off its lines. Only when the list has
+    // exactly one entry per line; anything else takes the usual single paragraph below.
+    GS::Array<GS::ObjectState> paragraphsData;
+    if (parameters.Get ("paragraphs", paragraphsData) && static_cast<Int32> (paragraphsData.GetSize ()) == textData.nLine) {
+        if (!hasRuns) {
+            runTexts.Push (text);
+            runPens.Push (textData.pen);
+            runFonts.Push (textData.font);
+            runFaceBits.Push (textData.faceBits);
+            runEffects.Push (textData.effectsBits);
+            runSizes.Push (textData.size);
+        }
+        if (memo.paragraphs != nullptr) {
+            ACAPI_DisposeParagraphsHdl (&memo.paragraphs);
+            memo.paragraphs = nullptr;
+        }
+        if (memo.textLineStarts != nullptr) {
+            BMKillHandle (reinterpret_cast<GSHandle*> (&memo.textLineStarts));
+        }
+        const Int32 count = textData.nLine;
+        const Int32 length = static_cast<Int32> (text.GetLength ());
+        // paragraphs are separated by CR in Archicad's own texts (the template's content reads back so); LF is a
+        // line break inside one paragraph
+        {
+            GS::UniString separated = text;
+            separated.ReplaceAll ("\n", "\r");
+#ifdef ServerMainVers_2800
+            *memo.textContent = separated;
+#else
+            GS::ucscpy (reinterpret_cast<GS::uchar_t*> (*memo.textContent), separated.ToUStr ());
+#endif
+        }
+        memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAllClear (count * sizeof (API_ParagraphType)));
+        Int32 from = 0;
+        for (Int32 p = 0; p < count; ++p) {
+            const UIndex found = (from <= length) ? text.FindFirst (newlineChar, static_cast<UIndex> (from)) : MaxUIndex;
+            const Int32 end = (found != MaxUIndex) ? static_cast<Int32> (found) : length;
+            const Int32 range = GS::Max (end - from, 0);
+            // the runs that lie in [from, end); an empty line takes the run at its position
+            GS::Array<Int32> runIndex, runStart, runLength;
+            Int32 runFrom = 0;
+            Int32 atPosition = 0;
+            for (Int32 i = 0; i < static_cast<Int32> (runTexts.GetSize ()); ++i) {
+                const Int32 runEnd = runFrom + static_cast<Int32> (runTexts[static_cast<UIndex> (i)].GetLength ());
+                if (runFrom <= from) {
+                    atPosition = i;
+                }
+                const Int32 lo = GS::Max (runFrom, from), hi = GS::Min (runEnd, end);
+                if (hi > lo) {
+                    runIndex.Push (i);
+                    runStart.Push (lo - from);
+                    runLength.Push (hi - lo);
+                }
+                runFrom = runEnd;
+            }
+            if (runIndex.IsEmpty ()) {
+                runIndex.Push (atPosition);
+                runStart.Push (0);
+                runLength.Push (0);
+            }
+            const GS::ObjectState& data = paragraphsData[static_cast<UIndex> (p)];
+            GS::Array<double> tabs;
+            GS::Array<GS::ObjectState> tabsData;
+            data.Get ("tabs", tabsData);
+            for (const GS::ObjectState& tab : tabsData) {
+                double pos = 0.0;
+                tab.Get ("pos", pos);
+                tabs.Push (pos);
+            }
+            SetParagraph (memo.paragraphs, static_cast<UInt32> (p), from, range, GS::Max (static_cast<Int32> (tabs.GetSize ()), 1), static_cast<Int32> (runIndex.GetSize ()), 1);
+            API_ParagraphType& paragraph = (*memo.paragraphs)[p];
+            for (UIndex t = 0; t < tabs.GetSize (); ++t) {
+                paragraph.tab[t].type = APITab_Left;
+                paragraph.tab[t].pos = tabs[t];
+            }
+            GS::UniString just;
+            paragraph.just = data.Get ("justification", just) ? ParseJustificationString (just) : textData.just;
+            paragraph.spacing = textData.spacing;
+            data.Get ("spacing", paragraph.spacing);
+            data.Get ("firstIndent", paragraph.firstIndent);
+            data.Get ("indent", paragraph.indent);
+            data.Get ("rightIndent", paragraph.rightIndent);
+            for (UIndex r = 0; r < runIndex.GetSize (); ++r) {
+                const UIndex i = static_cast<UIndex> (runIndex[r]);
+                SetRun (memo.paragraphs, static_cast<UInt32> (p), static_cast<UInt32> (r), runStart[r], runLength[r], runPens[i], runFaceBits[i], runFonts[i], runEffects[i], runSizes[i]);
+            }
+            SetEOL (memo.paragraphs, static_cast<UInt32> (p), 0, GS::Max (range - 1, 0));
+            from = end + 1;
+        }
+        textData.width = 0;
+        textData.height = 0;
+        textData.nonBreaking = true;
+        textData.useEolPos = true;
+        return {};
+    }
+
     const Int32 numOfParagraphs = 1;
     const Int32 numOfRuns = hasRuns ? static_cast<Int32> (runTexts.GetSize ()) : 1;
 
