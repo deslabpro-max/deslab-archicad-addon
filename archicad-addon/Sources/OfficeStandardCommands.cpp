@@ -2332,13 +2332,19 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
     if (!hasPackage) {
         reportLines.Push ("No standard package: layers, surfaces and building materials are skipped.");
     }
+    // deslab: 12.11.2026, a trace line before every step: a rare crash (null + 0xB10, twice in a dozen runs) happens
+    // before the views, and the report of a crashed run is lost
+    Trace ("ApplyOfficeStandard: start");
     if (hasPackage) {
         ApplyEmbeddedLibrary (packagePath, reportLines);
     }
+    Trace ("EmbeddedLibrary done");
     GuidMap guids;
     std::map<API_AttrTypeID, IndexMap> maps;
+    Trace ("Attributes");
     const GSErrCode err = ACAPI_CallUndoableCommand ("Apply office standard", [&] () -> GSErrCode {
         for (const StandardType& type : standardTypes) {
+            Trace (GS::UniString ("Type: ") + type.name);
             const TypeResult result = ApplyType (source, hasPackage ? &package : nullptr, type.typeID, maps, guids, updateExisting);
             GS::UniString line = GS::UniString::Printf ("%s: created %d, already there %d (updated %d), failed %d",
                 type.name, static_cast<int> (result.created), static_cast<int> (result.existing), static_cast<int> (result.updated),
@@ -2376,11 +2382,16 @@ GSErrCode ApplyOfficeStandardCommand::ApplyAttributes (const GS::UniString& sour
             }
         }
         // Separate undo steps: the override commands open their own.
+        Trace ("GraphicOverrides");
         ApplyGraphicOverrides (package, guids, maps[API_LayerID], processControl, reportLines);
         ApplyViews (package, reportLines);
+        Trace ("Favorites");
         ApplyFavorites (packagePath, reportLines);
+        Trace ("Layouts");
         ApplyLayouts (package, guids, processControl, reportLines);
+        Trace ("PenSetsAndProjectInfo");
         ApplyPenSetsAndProjectInfo (package, reportLines);
+        Trace ("ApplyOfficeStandard: done");
     }
     return err;
 #else
