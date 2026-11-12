@@ -427,6 +427,8 @@ void NoteGuid (GuidMap& guids, const API_Guid& sourceGuid, API_AttrTypeID typeID
     }
 }
 
+void Trace (const GS::UniString& line);   // defined below, with the view steps
+
 TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package, API_AttrTypeID typeID,
                       std::map<API_AttrTypeID, IndexMap>& maps, GuidMap& guids, bool updateExisting)
 {
