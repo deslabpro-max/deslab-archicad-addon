@@ -4105,6 +4105,10 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
             textData.nonBreaking = false;
             textData.useEolPos = false;
         }
+        // deslab: 12.11.2026, API_TextType::multiStyle (input only): without it Archicad does not read the paragraphs
+        // and runs of a new text at all and writes it in the element's one font (found on the approval block)
+        textData.multiStyle = true;
+        parameters.Get ("multiStyle", textData.multiStyle);
         return {};
     }
 
@@ -4162,6 +4166,8 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
     textData.height = 0;
     textData.nonBreaking = true;
     textData.useEolPos = true;
+    // deslab: 12.11.2026, only on request here ("multiStyle": true), the command's own behaviour stays
+    parameters.Get ("multiStyle", textData.multiStyle);
 
     return {};
 }
@@ -4773,6 +4779,7 @@ GS::Optional<GS::UniString> CreateTextsCommand::GetInputParametersSchema () cons
                     "wrapWidth": { "type": "number", "description": "deslab: with paragraphs, the width of the text block; Archicad breaks the lines." },
                     "paragraphSeparator": { "type": "string", "enum": ["LF", "CR"], "description": "deslab: with paragraphs, the character between them. Default LF." },
                     "padEmptyLines": { "type": "boolean", "description": "deslab: with paragraphs, an empty line gets a space. Default true." },
+                    "multiStyle": { "type": "boolean", "description": "deslab: API_TextType::multiStyle of the new text (Archicad reads the runs and paragraphs only with it). Default: true with paragraphs, otherwise as the Text tool has it." },
                     "height": {
                         "type": "number",
                         "description": "The character height in millimeters. Optional; defaults to the Text tool default. Equivalent to style.height."
