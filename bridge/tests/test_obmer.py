@@ -411,3 +411,23 @@ def test_note_text():
                                  "- размеры и высоты даны от уровня чернового пола", "- фактическая площадь при замерах 49,79 м2"]
     assert "на основе обмеров" in layouts.note_text(cfg, None, 10)
 
+
+def test_scheme_xml():
+    from deslab_bridge import layouts
+    criterion = lambda name, value: ("\t\t\t<Criterion>\n\t\t\t\t<UniValue>\n\t\t\t\t\t<Value>\n\t\t\t\t\t\t"
+                                     f'<Variant Type="{value[0]}">\n\t\t\t\t\t\t\t<Status>Normal</Status>\n\t\t\t\t\t\t\t<Value>{value[1]}</Value>\n'
+                                     f"\t\t\t\t\t\t</Variant>\n\t\t\t\t\t</Value>\n\t\t\t\t</UniValue>\n\t\t\t\t{name}\n\t\t\t</Criterion>\n")
+    xml = ('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n'
+           '<Scheme_Settings ID="ИКЭ-07" Last_Modified="1" Name="Экспликация 1-й этаж" Scheme_Type="Element_List" Version="27.0.0">\n'
+           '\t<View_Settings>\n\t\t<Hide_Main_Header value="true"/>\n\t</View_Settings>\n\t<Criteria_Settings>\n\t\t<Complex_Criteria>\n'
+           + criterion("<Name/>", ("NumVariant", 17)) + criterion("<Name>Слой</Name>", ("Property::AttributeIndexValue", 4)) +
+           '\t\t</Complex_Criteria>\n\t</Criteria_Settings>\n\t<Header_Items>\n\t\t<Header_Item>\n\t\t\t<Caption>Экспликация 1-й этаж</Caption>\n'
+           '\t\t</Header_Item>\n\t\t<Header_Item>\n\t\t\t<Caption>№</Caption>\n\t\t</Header_Item>\n\t</Header_Items>\n</Scheme_Settings>\n')
+    new = layouts.scheme_xml(xml, "Экспликация обмерный план", "ДСЛ-ЭП-1", "Экспликация помещений", 57)
+    assert '<Scheme_Settings ID="ДСЛ-ЭП-1" Last_Modified="1" Name="Экспликация обмерный план" Scheme_Type="Element_List"' in new
+    assert '<Hide_Main_Header value="false"/>' in new and "<Caption>Экспликация помещений</Caption>" in new and "<Caption>№</Caption>" in new
+    assert "<Value>57</Value>" in new and "<Value>17</Value>" in new and "<Value>4</Value>" not in new
+    # no layer of the zones in the project: the criterion goes, the rest stays
+    new = layouts.scheme_xml(xml, "А", "Б", None, None)
+    assert new.count("<Criterion>") == 1 and "Слой" not in new and '<Hide_Main_Header value="true"/>' in new
+    assert new.count("</Complex_Criteria>") == 1 and "<Value>17</Value>" in new

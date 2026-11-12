@@ -247,42 +247,108 @@ def place_note(ac, profile, source, total):
     return out + ["Примечание: " + e for e in errors]
 
 
-def place_explication(ac, profile):
-    """deslab: Игорь 11.11.2026: the explication is the interactive schedule of the zones (as in the template), placed on
-    the layout as a Drawing, so the rooms, their names and the total follow the zones. The API cannot create a schedule
-    scheme, so the first one found by the profile's names is used: the office scheme when the file has it, else the
-    stock zone schedule of the Archicad template."""
+def scheme_xml(xml, name, scheme_id, title=None, layer_index=None):
+    """deslab: 12.11.2026, an Interactive Schedule scheme (the XML of Scheme Settings > Export, taken from the office
+    template) made ready for this project: its own name and ID, the main header shown with the title, and the «Слой»
+    criterion pointed at this project's layer (the XML keeps the layer as an attribute index, which is another layer
+    or none in another file); without a layer index the criterion is dropped."""
+    import re
+    head = re.search(r"<Scheme_Settings\b[^>]*>", xml)
+    if not head:
+        raise ValueError("в XML нет Scheme_Settings")
+    tag = re.sub(r'\bID="[^"]*"', f'ID="{scheme_id}"', head.group(0), count=1)
+    tag = re.sub(r'\bName="[^"]*"', f'Name="{name}"', tag, count=1)
+    xml = xml[:head.start()] + tag + xml[head.end():]
+    if title:
+        xml = xml.replace('<Hide_Main_Header value="true"/>', '<Hide_Main_Header value="false"/>', 1)
+        at = xml.find("<Header_Items>")  # the first header item is the table's own title
+        if at >= 0:
+            xml = xml[:at] + re.sub(r"<Caption>[^<]*</Caption>", f"<Caption>{title}</Caption>", xml[at:], count=1)
+
+    def layer(match):
+        block = match.group(0)
+        if "<Name>Слой</Name>" not in block:
+            return block
+        if layer_index is None:
+            return ""
+        return re.sub(r'(<Variant Type="Property::AttributeIndexValue">.*?<Value>)\d+(</Value>)', rf"\g<1>{int(layer_index)}\g<2>", block, count=1, flags=re.S)
+    return re.sub(r"[ \t]*<Criterion>.*?</Criterion>\n?", layer, xml, flags=re.S)
+
+
+def _schedules(ac):
+    return [i for kind in ("ViewMap", "ProjectMap") for i in _tree(ac, kind) if i.get("type") == "ScheduleItem"]
+
+
+def import_scheme(ac, cfg, profile, scheme_dir):
+    """Puts the office scheme of the explication into the project when it is not there yet (ImportScheduleScheme)."""
+    import tempfile
+    from pathlib import Path
+    scheme = cfg.get("scheme") or {}
+    source = Path(scheme_dir or "") / scheme.get("file", "")
+    if not scheme or not scheme_dir or not source.is_file():
+        return f"нет файла схемы {source}" if scheme else None
+    if any(i["name"] == scheme["name"] for i in _schedules(ac)):
+        return None
+    layer_name = (profile.get("layers") or {}).get(scheme.get("layer", ""))
+    layers = ac.tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", []) if layer_name else []
+    index = next((a["index"] for a in layers if a.get("name") == layer_name), None)
+    xml = scheme_xml(source.read_text(encoding="utf-8"), scheme["name"], scheme["id"], cfg.get("title"), index)
+    path = Path(tempfile.gettempdir()) / "deslab-scheme.xml"
+    path.write_text(xml, encoding="utf-8", newline="\n")
+    try:
+        result = ac.tapir("ImportScheduleScheme", {"schemePath": str(path)})
+    finally:
+        path.unlink(missing_ok=True)
+    if result.get("available") != 0 or result.get("errorCode") != 0:
+        return f"схема не импортирована ({result})"
+    return "imported" if index is not None else "imported, критерий слоя убран: нет слоя зон"
+
+
+def place_explication(ac, profile, scheme_dir=None):
+    """deslab: Игорь 11–12.11.2026: the explication is the interactive schedule of the zones, placed on the layout as a
+    Drawing, so the rooms, their names and the total follow the zones. The office scheme (GOST font 3 mm, the title)
+    comes with the standard package and is imported into the project by the add-on; without it the first schedule
+    found by the profile's names is used (the stock zone schedule of the Archicad template)."""
     cfg = (profile.get("layouts") or {}).get("explication")
     if not cfg:
         return []
     layout = _layout(ac, cfg["layout"])
     if not layout:
         return [f"Экспликация: нет листа «{cfg['layout']}»"]
-    items = [i for kind in ("ViewMap", "ProjectMap") for i in _tree(ac, kind) if i.get("type") == "ScheduleItem"]
-    schedule = next((i for name in cfg["schedules"] for i in items if i["name"] == name), None)
+    out = []
+    try:
+        imported = import_scheme(ac, cfg, profile, scheme_dir)
+    except Exception as error:  # the stock schedule is still better than none
+        imported = f"схема не импортирована ({error})"
+    if imported and not imported.startswith("imported"):
+        out.append("Экспликация: " + imported)
+    names = [(cfg.get("scheme") or {}).get("name")] + list(cfg.get("schedules", []))
+    items = _schedules(ac)
+    schedule = next((i for name in names if name for i in items if i["name"] == name), None)
     if not schedule:
-        return ["Экспликация: в файле нет ведомости зон (" + ", ".join(cfg["schedules"]) + ")"]
+        return out + ["Экспликация: в файле нет ведомости зон (" + ", ".join(n for n in names if n) + ")"]
     ac.tapir("ChangeWindow", {"navigatorItemId": layout["navigatorItemId"]})
     drawings = ac.tapir("GetElementsByType", {"elementType": "Drawing"}).get("elements", [])
     details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
     title = cfg.get("title", "Экспликация помещений")
     old = [e for e, d in zip(drawings, details) if _flat(d).get("name") == title or _flat(d).get("customName") == title]
-    if old and schedule["name"] == cfg["schedules"][0]:
-        # a file made from the office template: its own explication drawing follows the zones by itself
-        return [f"Экспликация: на листе уже стоит ведомость «{schedule['name']}»"]
-    right, top = cfg["right"], cfg["top"]
+    if old and schedule["name"] == names[0] and not imported:
+        # the office schedule was in the project before this run and its drawing is on the layout: it follows the zones
+        return out + [f"Экспликация: на листе уже стоит ведомость «{schedule['name']}»"]
+    right, bottom = cfg["right"], cfg["bottom"]
     new = ac.tapir("CreateDrawings", {"drawingsData": [{"navigatorItemId": schedule["navigatorItemId"], "name": title,
-                                                         "position": {"x": right - 0.04, "y": top - 0.02}, "scale": 1}]})["elements"][0]
+                                                         "position": {"x": right - 0.04, "y": bottom + 0.02}, "scale": 1}]})["elements"][0]
     if "elementId" not in new:
-        return [f"Экспликация: чертёж ведомости не создан ({new})"]
+        return out + [f"Экспликация: чертёж ведомости не создан ({new})"]
     ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [{"elementId": new["elementId"], "details": {
         "typeSpecificDetails": {"titleLibraryPartIndex": int(cfg.get("titleLibraryPartIndex", 0))}}}]})
-    # the schedule's size is known only once it is placed: its top right corner goes to the template's place
+    # the schedule's size is known only once it is placed: its bottom right corner goes to the template's place, above
+    # the legend, and the table grows upwards with the rooms
     got = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": new["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
-    dx, dy = right - got["xMax"], top - got["yMax"]
+    dx, dy = right - got["xMax"], bottom - got["yMin"]
     if abs(dx) > 0.0002 or abs(dy) > 0.0002:
         ac.tapir("MoveElements", {"elementsWithMoveVectors": [{"elementId": new["elementId"], "moveVector": {"x": dx, "y": dy, "z": 0}, "copy": False}]})
     if old:
         ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in old]})
     size = f"{1000 * (got['xMax'] - got['xMin']):.0f} x {1000 * (got['yMax'] - got['yMin']):.0f} мм"
-    return [f"Экспликация: ведомость «{schedule['name']}» на листе, {size}"]
+    return out + [f"Экспликация: ведомость «{schedule['name']}» на листе, {size}"]

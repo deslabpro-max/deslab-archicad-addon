@@ -163,7 +163,7 @@ def flat_bbox(ac, guids):
     return {k: (min if k.endswith("Min") else max)(b[k] for b in boxes) for k in ("xMin", "xMax", "yMin", "yMax")}
 
 
-def place(ac, guids, scene=None, source=None):
+def place(ac, guids, scene=None, source=None, root=None):
     # deslab: the built flat goes to the template layouts (layouts.py)
     profile = _load(Path(__file__).resolve().parent.parent / "office-profile.json")
     layouts.show_plan_view(ac, profile["layouts"]["items"][0]["view"])
@@ -171,7 +171,7 @@ def place(ac, guids, scene=None, source=None):
     # deslab: 11.11.2026, the zone schedule and the note with the real source and area; the plan is on the layouts
     # already, so a failure here must not lose the run
     total = sum(abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]])) for r in (scene or {}).get("rooms", []) if r.get("polygon"))
-    for step, args in ((layouts.place_explication, (ac, profile)), (layouts.place_note, (ac, profile, source, total))):
+    for step, args in ((layouts.place_explication, (ac, profile, Path(root) / "deslab-standard" / "schedules" if root else None)), (layouts.place_note, (ac, profile, source, total))):
         try:
             out += step(*args)
         except Exception as error:
@@ -340,7 +340,7 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
     report["check"] = {f"план {i + 1}": layout_check.check(shifted, c, l) for i, (c, l) in enumerate(planned)}
     # deslab: --no-pictures skips ChangeWindow/SaveCurrentWindowAsImage (a run must not touch the open view)
     report["pictures"] = snapshots(ac, new, out_dir, name) if pictures else []
-    report["layouts"] = place(ac, new, scene, source_of(preset)) if on_layouts else []
+    report["layouts"] = place(ac, new, scene, source_of(preset), root) if on_layouts else []
     with open(out_dir / f"rebuild-{name}-report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
     return report

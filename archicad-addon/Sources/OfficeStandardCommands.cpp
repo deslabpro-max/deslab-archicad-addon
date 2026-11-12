@@ -2558,10 +2558,10 @@ GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetInputParametersSchem
         "type": "object",
         "properties": {
             "schemePath": { "type": "string", "description": "Full path of the scheme XML file (as Scheme Settings > Export writes it)." },
-            "schemeName": { "type": "string", "description": "Name of the scheme in the XML. With schemeId: a scheme of this name and ID that the project already has is refreshed and not imported again (a second import would add a copy named '... 01')." },
-            "schemeId": { "type": "string", "description": "ID of the scheme in the XML (Scheme_Settings/@ID)." },
+            "replace": { "type": "boolean", "description": "With schemeName and schemeId: the scheme of that name and ID is removed from the project first, so the import replaces it. Without it a repeated import adds a copy named '... 01'; the caller looks in the navigator (ScheduleItem) whether the scheme is there." },
+            "schemeName": { "type": "string", "description": "Name of the scheme to replace." },
+            "schemeId": { "type": "string", "description": "ID of the scheme to replace (Scheme_Settings/@ID of its XML)." },
             "testOnly": { "type": "boolean", "description": "Only ask whether the Interactive Schedule add-on offers the import command; nothing is imported." },
-            "undoable": { "type": "boolean", "description": "Run the import inside an undoable command (default false)." },
             "developerId": { "type": "integer", "description": "Developer id of the Interactive Schedule add-on (default 0x47732F64)." },
             "localId": { "type": "integer", "description": "Local id of the Interactive Schedule add-on (default 0x74913216)." }
         },
@@ -2575,7 +2575,7 @@ GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetRawResponseSchema ()
         "type": "object",
         "properties": {
             "available": { "type": "integer", "description": "Error code of the availability test (0 = the command is there)." },
-            "present": { "type": "integer", "description": "With schemeName and schemeId: error code of the look-up (0 = the project has the scheme, nothing imported)." },
+            "removed": { "type": "integer", "description": "With replace: error code of the removal (0 = the old scheme was removed, -2130313113 = the project had none)." },
             "errorCode": { "type": "integer", "description": "Error code of the import (0 = imported)." }
         },
         "additionalProperties": true
@@ -2585,9 +2585,10 @@ GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetRawResponseSchema ()
 GS::ObjectState ImportScheduleSchemeCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
 {
     // Commands of Archicad's Interactive Schedule add-on (version 1, string parameters): 'ACSI' imports the scheme of
-    // schemePath; 'ACSR' finds the scheme of schemeName + schemeID and recalculates it.
+    // schemePath; 'ACSR' removes the scheme of schemeName + schemeID from the project (tried on 27.0.0 R1, 12.11.2026:
+    // the schedule left the navigator; 0x81060067 when there is none).
     constexpr GSType importCommand = 'ACSI';
-    constexpr GSType refreshCommand = 'ACSR';
+    constexpr GSType removeCommand = 'ACSR';
     Int32 developerId = 0x47732F64, localId = 0x74913216;
     parameters.Get ("developerId", developerId);
     parameters.Get ("localId", localId);
@@ -2603,8 +2604,6 @@ GS::ObjectState ImportScheduleSchemeCommand::Execute (const GS::ObjectState& par
     if (testOnly || available != NoError) {
         return response;
     }
-    bool undoable = false;
-    parameters.Get ("undoable", undoable);
     const auto call = [&] (GSType command, const std::vector<std::pair<const char*, std::string>>& strings) -> GSErrCode {
         GSErrCode err = NoError;
         const auto run = [&] () -> GSErrCode {
@@ -2629,25 +2628,21 @@ GS::ObjectState ImportScheduleSchemeCommand::Execute (const GS::ObjectState& par
             ACAPI_AddOnAddOnCommunication_FreeMDCLParameterList (&params);
             return err;
         };
-        if (undoable) {
-            ACAPI_CallUndoableCommand ("deslab schedule scheme", run);
-        } else {
-            run ();
-        }
+        // Always inside an undoable command: the scheme is a new object of the project database, and outside a command
+        // Archicad stops with «ODB: database content modification violation» (seen on 27.0.0 R1, 12.11.2026).
+        ACAPI_CallUndoableCommand ("deslab schedule scheme", run);
         return err;
     };
     const auto utf8 = [] (const GS::UniString& text) { return std::string (text.ToCStr (CC_UTF8).Get ()); };
 
     GS::UniString schemeName, schemeId, schemePath;
-    if (parameters.Get ("schemeName", schemeName) && parameters.Get ("schemeId", schemeId) && !schemeName.IsEmpty ()) {
-        const GSErrCode present = call (refreshCommand, { { "schemeName", utf8 (schemeName) }, { "schemeID", utf8 (schemeId) } });
-        response.Add ("present", static_cast<Int32> (present));
-        if (present == NoError) {
-            return response;
-        }
-    }
     if (!parameters.Get ("schemePath", schemePath) || schemePath.IsEmpty ()) {
-        return response.Contains ("present") ? response : CreateErrorResponse (APIERR_BADPARS, "schemePath is missing.");
+        return CreateErrorResponse (APIERR_BADPARS, "schemePath is missing.");
+    }
+    bool replace = false;
+    parameters.Get ("replace", replace);
+    if (replace && parameters.Get ("schemeName", schemeName) && parameters.Get ("schemeId", schemeId) && !schemeName.IsEmpty ()) {
+        response.Add ("removed", static_cast<Int32> (call (removeCommand, { { "schemeName", utf8 (schemeName) }, { "schemeID", utf8 (schemeId) } })));
     }
     response.Add ("errorCode", static_cast<Int32> (call (importCommand, { { "schemePath", utf8 (schemePath) } })));
     return response;
