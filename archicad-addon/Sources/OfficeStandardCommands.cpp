@@ -372,6 +372,11 @@ void LoadFromPackage (const GS::ObjectState& package, API_AttrTypeID typeID,
                     texture.Get ("xSize", m.texture.xSize);
                     texture.Get ("ySize", m.texture.ySize);
                     texture.Get ("rotAng", m.texture.rotAng);
+                    // deslab: 12.11.2026, a texture picture that the project's libraries do not have made Archicad
+                    // read through the null fileLoc (crash at 0xB10 in every run once the main library was not
+                    // loaded): the pointer is never left null
+                    static IO::Location noTextureFile;
+                    m.texture.fileLoc = &noTextureFile;
                 }
                 break;
             }
@@ -464,7 +469,16 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
                 attribute.header.index = byName->second;
                 attribute.header.guid = GetAttributeGuidFromIndex (typeID, byName->second);
                 attribute.header.uniStringNamePtr = &name;
-                const GSErrCode err = ACAPI_Attribute_ModifyExt (&attribute, &defs);
+                Trace (GS::UniString ("  modify: ") + name);
+                GSErrCode err = ACAPI_Attribute_ModifyExt (&attribute, &defs);
+                if (err != NoError && typeID == API_MaterialID && attribute.material.texture.texName[0] != 0) {
+                    // deslab: the surface without its texture rather than no surface (the picture is not in the libraries)
+                    attribute.material.texture = {};
+                    err = ACAPI_Attribute_ModifyExt (&attribute, &defs);
+                    if (err == NoError) {
+                        result.failures.Push (name + " (texture not found)");
+                    }
+                }
                 if (err == NoError) {
                     ++result.updated;
                 } else if (result.failures.GetSize () < 5) {
@@ -487,7 +501,15 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
             }
             attribute.header.index = APIInvalidAttributeIndex;
             attribute.header.uniStringNamePtr = &name;
-            const GSErrCode err = ACAPI_Attribute_CreateExt (&attribute, &defs);
+            Trace (GS::UniString ("  create: ") + name);
+            GSErrCode err = ACAPI_Attribute_CreateExt (&attribute, &defs);
+            if (err != NoError && typeID == API_MaterialID && attribute.material.texture.texName[0] != 0) {
+                attribute.material.texture = {};
+                err = ACAPI_Attribute_CreateExt (&attribute, &defs);
+                if (err == NoError) {
+                    result.failures.Push (name + " (texture not found)");
+                }
+            }
             if (err == NoError) {
                 map[sourceIndex] = attribute.header.index;
                 names[name] = attribute.header.index;
