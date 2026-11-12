@@ -15,6 +15,8 @@
 #include <deque>
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 #include <map>
 
 namespace {
@@ -2556,6 +2558,8 @@ GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetInputParametersSchem
         "type": "object",
         "properties": {
             "schemePath": { "type": "string", "description": "Full path of the scheme XML file (as Scheme Settings > Export writes it)." },
+            "schemeName": { "type": "string", "description": "Name of the scheme in the XML. With schemeId: a scheme of this name and ID that the project already has is refreshed and not imported again (a second import would add a copy named '... 01')." },
+            "schemeId": { "type": "string", "description": "ID of the scheme in the XML (Scheme_Settings/@ID)." },
             "testOnly": { "type": "boolean", "description": "Only ask whether the Interactive Schedule add-on offers the import command; nothing is imported." },
             "undoable": { "type": "boolean", "description": "Run the import inside an undoable command (default false)." },
             "developerId": { "type": "integer", "description": "Developer id of the Interactive Schedule add-on (default 0x47732F64)." },
@@ -2571,6 +2575,7 @@ GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetRawResponseSchema ()
         "type": "object",
         "properties": {
             "available": { "type": "integer", "description": "Error code of the availability test (0 = the command is there)." },
+            "present": { "type": "integer", "description": "With schemeName and schemeId: error code of the look-up (0 = the project has the scheme, nothing imported)." },
             "errorCode": { "type": "integer", "description": "Error code of the import (0 = imported)." }
         },
         "additionalProperties": true
@@ -2579,7 +2584,10 @@ GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetRawResponseSchema ()
 
 GS::ObjectState ImportScheduleSchemeCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
 {
+    // Commands of Archicad's Interactive Schedule add-on (version 1, string parameters): 'ACSI' imports the scheme of
+    // schemePath; 'ACSR' finds the scheme of schemeName + schemeID and recalculates it.
     constexpr GSType importCommand = 'ACSI';
+    constexpr GSType refreshCommand = 'ACSR';
     Int32 developerId = 0x47732F64, localId = 0x74913216;
     parameters.Get ("developerId", developerId);
     parameters.Get ("localId", localId);
@@ -2592,42 +2600,55 @@ GS::ObjectState ImportScheduleSchemeCommand::Execute (const GS::ObjectState& par
     response.Add ("available", static_cast<Int32> (available));
     bool testOnly = false;
     parameters.Get ("testOnly", testOnly);
-    GS::UniString schemePath;
     if (testOnly || available != NoError) {
         return response;
     }
-    if (!parameters.Get ("schemePath", schemePath) || schemePath.IsEmpty ()) {
-        return CreateErrorResponse (APIERR_BADPARS, "schemePath is missing.");
-    }
-    const std::string path (schemePath.ToCStr (CC_UTF8).Get ());
-    const auto call = [&] () -> GSErrCode {
-        GSHandle params = nullptr;
-        GSErrCode err = ACAPI_AddOnAddOnCommunication_InitMDCLParameterList (&params);
-        if (err != NoError) {
-            return err;
-        }
-        API_MDCLParameter par = {};
-        par.name = "schemePath";
-        par.type = MDCLPar_string;
-        par.string_par = path.c_str ();
-        err = ACAPI_AddOnAddOnCommunication_AddMDCLParameter (params, &par);
-        if (err == NoError) {
-            err = ACAPI_AddOnAddOnCommunication_Call (&mdid, importCommand, 1, params, nullptr, true);
-        }
-        ACAPI_AddOnAddOnCommunication_FreeMDCLParameterList (&params);
-        return err;
-    };
     bool undoable = false;
     parameters.Get ("undoable", undoable);
-    GSErrCode err = NoError;
-    if (undoable) {
-        ACAPI_CallUndoableCommand ("deslab schedule scheme", [&] () -> GSErrCode {
-            err = call ();
+    const auto call = [&] (GSType command, const std::vector<std::pair<const char*, std::string>>& strings) -> GSErrCode {
+        GSErrCode err = NoError;
+        const auto run = [&] () -> GSErrCode {
+            GSHandle params = nullptr;
+            err = ACAPI_AddOnAddOnCommunication_InitMDCLParameterList (&params);
+            if (err != NoError) {
+                return err;
+            }
+            for (const auto& item : strings) {
+                API_MDCLParameter par = {};
+                par.name = item.first;
+                par.type = MDCLPar_string;
+                par.string_par = item.second.c_str ();
+                err = ACAPI_AddOnAddOnCommunication_AddMDCLParameter (params, &par);
+                if (err != NoError) {
+                    break;
+                }
+            }
+            if (err == NoError) {
+                err = ACAPI_AddOnAddOnCommunication_Call (&mdid, command, 1, params, nullptr, true);
+            }
+            ACAPI_AddOnAddOnCommunication_FreeMDCLParameterList (&params);
             return err;
-        });
-    } else {
-        err = call ();
+        };
+        if (undoable) {
+            ACAPI_CallUndoableCommand ("deslab schedule scheme", run);
+        } else {
+            run ();
+        }
+        return err;
+    };
+    const auto utf8 = [] (const GS::UniString& text) { return std::string (text.ToCStr (CC_UTF8).Get ()); };
+
+    GS::UniString schemeName, schemeId, schemePath;
+    if (parameters.Get ("schemeName", schemeName) && parameters.Get ("schemeId", schemeId) && !schemeName.IsEmpty ()) {
+        const GSErrCode present = call (refreshCommand, { { "schemeName", utf8 (schemeName) }, { "schemeID", utf8 (schemeId) } });
+        response.Add ("present", static_cast<Int32> (present));
+        if (present == NoError) {
+            return response;
+        }
     }
-    response.Add ("errorCode", static_cast<Int32> (err));
+    if (!parameters.Get ("schemePath", schemePath) || schemePath.IsEmpty ()) {
+        return response.Contains ("present") ? response : CreateErrorResponse (APIERR_BADPARS, "schemePath is missing.");
+    }
+    response.Add ("errorCode", static_cast<Int32> (call (importCommand, { { "schemePath", utf8 (schemePath) } })));
     return response;
 }
