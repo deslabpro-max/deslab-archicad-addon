@@ -1807,7 +1807,6 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
             return;
         }
         GS::Array<GS::ObjectState> lines, texts;
-        GS::Array<double> wrapWidths;
         for (const GS::ObjectState& item : content) {
             GS::UniString type, layer;
             item.Get ("type", type);
@@ -1877,7 +1876,9 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
                         wrapWidth = 0.0;
                     }
                 }
-                wrapWidths.Push (wrapWidth);
+                if (wrapWidth > 0.0) {
+                    text.Add ("wrapWidth", wrapWidth);
+                }
                 texts.Push (text);
             }
         }
@@ -1896,34 +1897,7 @@ void ApplyMasterContent (API_DatabaseUnId id, const GS::Array<GS::ObjectState>& 
             count (CreateLineElementsCommand ().Execute (GS::ObjectState ("linesData", lines), processControl));
         }
         if (!texts.IsEmpty ()) {
-            const GS::ObjectState response = CreateTextsCommand ().Execute (GS::ObjectState ("textsData", texts), processControl);
-            count (response);
-            GS::Array<GS::ObjectState> elements;
-            response.Get ("elements", elements);
-            ACAPI_CallUndoableCommand ("deslab text width", [&] () -> GSErrCode {
-                for (UIndex i = 0; i < elements.GetSize () && i < wrapWidths.GetSize (); ++i) {
-                    GS::ObjectState elementId;
-                    GS::UniString guid;
-                    if (wrapWidths[i] <= 0.0 || !elements[i].Get ("elementId", elementId) || !elementId.Get ("guid", guid)) {
-                        continue;
-                    }
-                    API_Element element = {};
-                    element.header.guid = APIGuidFromString (guid.ToCStr ());
-                    if (ACAPI_Element_Get (&element) != NoError) {
-                        continue;
-                    }
-                    API_Element mask;
-                    ACAPI_ELEMENT_MASK_CLEAR (mask);
-                    // 2 % wider: the template's block is as wide as its longest line, and at exactly that width the
-                    // line wrapped in a new project (the approval block came out 7 mm taller, 12.11.2026)
-                    element.text.width = wrapWidths[i] * 1.02;
-                    element.text.nonBreaking = false;
-                    ACAPI_ELEMENT_MASK_SET (mask, API_TextType, width);
-                    ACAPI_ELEMENT_MASK_SET (mask, API_TextType, nonBreaking);
-                    ACAPI_Element_Change (&element, &mask, nullptr, 0, true);
-                }
-                return NoError;
-            });
+            count (CreateTextsCommand ().Execute (GS::ObjectState ("textsData", texts), processControl));
         }
     });
 }

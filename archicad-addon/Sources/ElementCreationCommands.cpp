@@ -4053,6 +4053,15 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
         textData.height = 0;
         textData.nonBreaking = true;
         textData.useEolPos = true;
+        // deslab: 12.11.2026, internal "wrapWidth": the text block's width in the template; Archicad breaks the lines
+        // itself. Set here, at creation: a later change of the width alone rebuilt the text with one run per line
+        // in the element's font, and «подпись» / «ФИО» lost their small font and their place under the lines.
+        double wrapWidth = 0.0;
+        if (parameters.Get ("wrapWidth", wrapWidth) && wrapWidth > 0.0) {
+            textData.width = wrapWidth;
+            textData.nonBreaking = false;
+            textData.useEolPos = false;
+        }
         return {};
     }
 
