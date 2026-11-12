@@ -2539,3 +2539,95 @@ GS::ObjectState CaptureOfficeStandardCommand::Execute (const GS::ObjectState& pa
     }
     return counts;
 }
+
+ImportScheduleSchemeCommand::ImportScheduleSchemeCommand () :
+    CommandBase (CommonSchema::NotUsed)
+{
+}
+
+GS::String ImportScheduleSchemeCommand::GetName () const
+{
+    return "ImportScheduleScheme";
+}
+
+GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetInputParametersSchema () const
+{
+    return R"({
+        "type": "object",
+        "properties": {
+            "schemePath": { "type": "string", "description": "Full path of the scheme XML file (as Scheme Settings > Export writes it)." },
+            "testOnly": { "type": "boolean", "description": "Only ask whether the Interactive Schedule add-on offers the import command; nothing is imported." },
+            "undoable": { "type": "boolean", "description": "Run the import inside an undoable command (default false)." },
+            "developerId": { "type": "integer", "description": "Developer id of the Interactive Schedule add-on (default 0x47732F64)." },
+            "localId": { "type": "integer", "description": "Local id of the Interactive Schedule add-on (default 0x74913216)." }
+        },
+        "additionalProperties": false
+    })";
+}
+
+GS::Optional<GS::UniString> ImportScheduleSchemeCommand::GetRawResponseSchema () const
+{
+    return R"({
+        "type": "object",
+        "properties": {
+            "available": { "type": "integer", "description": "Error code of the availability test (0 = the command is there)." },
+            "errorCode": { "type": "integer", "description": "Error code of the import (0 = imported)." }
+        },
+        "additionalProperties": true
+    })";
+}
+
+GS::ObjectState ImportScheduleSchemeCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
+{
+    constexpr GSType importCommand = 'ACSI';
+    Int32 developerId = 0x47732F64, localId = 0x74913216;
+    parameters.Get ("developerId", developerId);
+    parameters.Get ("localId", localId);
+    API_ModulID mdid = {};
+    mdid.developerID = static_cast<GSType> (developerId);
+    mdid.localID = static_cast<GSType> (localId);
+
+    GS::ObjectState response;
+    const GSErrCode available = ACAPI_AddOnAddOnCommunication_Test (&mdid, importCommand, 1);
+    response.Add ("available", static_cast<Int32> (available));
+    bool testOnly = false;
+    parameters.Get ("testOnly", testOnly);
+    GS::UniString schemePath;
+    if (testOnly || available != NoError) {
+        return response;
+    }
+    if (!parameters.Get ("schemePath", schemePath) || schemePath.IsEmpty ()) {
+        return CreateErrorResponse (APIERR_BADPARS, "schemePath is missing.");
+    }
+    const std::string path (schemePath.ToCStr (CC_UTF8).Get ());
+    const auto call = [&] () -> GSErrCode {
+        GSHandle params = nullptr;
+        GSErrCode err = ACAPI_AddOnAddOnCommunication_InitMDCLParameterList (&params);
+        if (err != NoError) {
+            return err;
+        }
+        API_MDCLParameter par = {};
+        par.name = "schemePath";
+        par.type = MDCLPar_string;
+        par.string_par = path.c_str ();
+        err = ACAPI_AddOnAddOnCommunication_AddMDCLParameter (params, &par);
+        if (err == NoError) {
+            err = ACAPI_AddOnAddOnCommunication_Call (&mdid, importCommand, 1, params, nullptr, true);
+        }
+        ACAPI_AddOnAddOnCommunication_FreeMDCLParameterList (&params);
+        return err;
+    };
+    bool undoable = false;
+    parameters.Get ("undoable", undoable);
+    GSErrCode err = NoError;
+    if (undoable) {
+        ACAPI_CallUndoableCommand ("deslab schedule scheme", [&] () -> GSErrCode {
+            err = call ();
+            return err;
+        });
+    } else {
+        err = call ();
+    }
+    response.Add ("errorCode", static_cast<Int32> (err));
+    return response;
+}
