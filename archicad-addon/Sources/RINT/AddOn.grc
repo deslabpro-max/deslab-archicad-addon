@@ -2,18 +2,19 @@
 #include "AddOnVersion.hpp"
 
 'STR#' ID_ADDON_INFO "Add-on Name and Description" {
-/* [  1] */		"Tapir Additional JSON Commands"
-/* [  2] */		"Tapir Additional JSON Commands"
+/* deslab: Игорь 13.11.2026, the add-on is deslab's own: no Tapir in its file name, its name in the Add-On Manager or its menu */
+/* [  1] */		"deslab"
+/* [  2] */		"deslab: measured plans and drawings from a scan, JSON commands"
 }
 
 'STR#' ID_ADDON_MENU "Add-On Menu" {
-/* [   ] */        "Tapir"
-/* [  1] */        "About Tapir...^E3^ES^EE^EI^ED^EL^EW^ET^EM^32503"
+/* [   ] */        "deslab"
+/* [  1] */        "About deslab...^E3^ES^EE^EI^ED^EL^EW^ET^EM^32503"
 }
 
 'STR#' ID_ADDON_MENU_FOR_PALETTE "Add-On Menu" {
-/* [   ] */        "Tapir"
-/* [  1] */        "Tapir Palette^E3^ES^EE^EI^ED^EL^EW^ET^EM"
+/* [   ] */        "deslab"
+/* [  1] */        "Script Palette^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 /* deslab: the deslab Obmer palette (DeslabObmerPalette); its Russian texts are set in code, ResConv keeps only code page 1252 */
@@ -23,42 +24,42 @@
 }
 
 'STR#' ID_ADDON_MENU_FOR_UPDATE "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Check for Updates...^E3^ES^EE^EI^ED^EL^EW^ET^EM^32510"
 }
 
 'STR#' ID_ADDON_MENU_FOR_SHORTCUTS "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Manage Script Shortcuts...^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 'STR#' ID_ADDON_MENU_RUNSCRIPT_1 "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Run Script Shortcut 1^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 'STR#' ID_ADDON_MENU_RUNSCRIPT_2 "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Run Script Shortcut 2^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 'STR#' ID_ADDON_MENU_RUNSCRIPT_3 "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Run Script Shortcut 3^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 'STR#' ID_ADDON_MENU_RUNSCRIPT_4 "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Run Script Shortcut 4^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 'STR#' ID_ADDON_MENU_RUNSCRIPT_5 "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Run Script Shortcut 5^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
 'STR#' ID_ADDON_MENU_RUNSCRIPT_6 "Add-On Menu" {
-/* [   ] */        "Tapir"
+/* [   ] */        "deslab"
 /* [  1] */        "Run Script Shortcut 6^E3^ES^EE^EI^ED^EL^EW^ET^EM"
 }
 
@@ -68,20 +69,20 @@
 }
 
 'STR#' ID_AUTOUPDATE_STRINGS "Tapir Update Strings" {
-/* [  1] */ "Tapir Update"
-/* [  2] */ "You are using Tapir version %s. A new version %T is available."
+/* [  1] */ "deslab Update"
+/* [  2] */ "You are using deslab version %s. A new version %T is available."
 /* [  3] */ "Would you like to update to the latest version for the best experience?"
 /* [  4] */ "Update and Restart Archicad"
 /* [  5] */ "Continue with this version"
-/* [  6] */ "Tapir Update"
-/* [  7] */ "You are using the latest Tapir version %s."
+/* [  6] */ "deslab Update"
+/* [  7] */ "You are using the latest deslab version %s."
 /* [  8] */ "OK"
 }
 
-'GDLG' ID_ABOUT_DIALOG Modal     40   40  200  237  "Tapir" {
+'GDLG' ID_ABOUT_DIALOG Modal     40   40  200  237  "deslab" {
 /* [  1] */ Button                     10  204  180   23    LargePlain "OK"
 /* [  2] */ Icon                       36   10  128  128    ID_TAPIR_LOGO
-/* [  3] */ CenterText                 10  148  180   23    LargeBold vCenter "Tapir Archicad Automation"
+/* [  3] */ CenterText                 10  148  180   23    LargeBold vCenter "deslab (built on Tapir)"
 /* [  4] */ CenterText                 10  171  180   23    LargePlain vCenter "Version: %T, Port: %T"
 }
 
@@ -92,7 +93,7 @@
 4    ""        VersionText
 }
 
-'GDLG' ID_PALETTE Palette | leftCaption | close   0   0  428  28  "Tapir Palette"  {
+'GDLG' ID_PALETTE Palette | leftCaption | close   0   0  428  28  "Script Palette"  {
 /* [  1] */ IconButton                 0   0  28  28    ID_TAPIR_LOGO_MINI noFrame
 /* [  2] */ PopupControl              28   3 260  22    80  3
 /* [  3] */ IconButton               288   0  28  28    ID_RUN_BUTTON_ICON noFrame
@@ -112,7 +113,7 @@
 7    "Manage Shortcuts"    ManageShortcutsButton
 }
 
-'GDLG' ID_SCRIPTUI_PALETTE Palette | leftCaption | close | grow   0   0  600  450  "Tapir Script UI"  {
+'GDLG' ID_SCRIPTUI_PALETTE Palette | leftCaption | close | grow   0   0  600  450  "Script UI"  {
 /* [  1] */ Browser                     0   0  600  450
 }
 
