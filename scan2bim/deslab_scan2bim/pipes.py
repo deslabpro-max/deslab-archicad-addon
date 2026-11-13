@@ -174,9 +174,13 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
                     # where the cloud goes on above or below the spot, the pipe has entered something bigger
                     # (the radiator it feeds): the run ends there
                     d0, d1 = ds.min(), ds.max() + 1
-                    above = occ[:, zs.max() + 3:zs.max() + 7, d0:d1].any(axis=(1, 2))
-                    below = occ[:, max(zs.min() - 6, 0):max(zs.min() - 2, 0), d0:d1].any(axis=(1, 2))
-                    line &= ~(above | below)
+                    # (a panel radiator shows its front and its top, nothing inside: looked for up to 6 cm nearer
+                    # to the room, and as a block 4 cm high, which a second pipe alongside is not)
+                    e0, e1 = max(d0 - 3, 0), d1 + 6
+                    above = occ[:, zs.max() + 3:zs.max() + 7, e0:e1].any(axis=2)
+                    below = occ[:, max(zs.min() - 6, 0):max(zs.min() - 2, 0), e0:e1].any(axis=2)
+                    block = (above.sum(axis=1) >= 3) | (below.sum(axis=1) >= 3)
+                    line &= ~block
                     if not line[w0:w0 + wn].any():
                         continue
                     here = np.nonzero(line[w0:w0 + wn])[0]

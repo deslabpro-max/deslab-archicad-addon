@@ -127,6 +127,32 @@ def test_candidates_from_the_cloud():
     assert "candidates" in ai.scene_for_model(scene, with_mep=False)
 
 
+def test_pipes_from_the_cloud():
+    # deslab: 13.11.2026, the helper finds the pipes, the model names their systems; a box candidate on the risers is not drawn
+    from deslab_bridge.mep import pipe_label_items, pipe_objects
+    scene = json.loads(json.dumps(SCENE))
+    scene["mep"] = []
+    scene["candidates"] = [
+        {"id": "C1", "wallId": "W1", "side": "left", "from": 2.6, "to": 2.9, "bottom": 0.0, "top": 2.7, "depth": 0.15,
+         "at": {"x": 2.75, "y": 0.2}, "start": {"x": 2.6, "y": 0.1}, "end": {"x": 2.9, "y": 0.1}, "hint": "box or shaft?"}]
+    scene["pipes"] = [
+        {"id": "P1", "kind": "riser", "diameter": 0.03, "path": [{"x": 2.7, "y": 0.2, "z": 0.0}, {"x": 2.7, "y": 0.2, "z": 2.7}]},
+        {"id": "P2", "kind": "run", "diameter": 0.02, "path": [{"x": 2.7, "y": 0.2, "z": 0.35, "joins": "P1"}, {"x": 1.5, "y": 0.2, "z": 0.35}]},
+        {"id": "P3", "kind": "run", "diameter": 0.012, "path": [{"x": 4.0, "y": 0.12, "z": 2.0}, {"x": 4.6, "y": 0.12, "z": 2.0}]},
+        {"id": "P4", "kind": "riser", "diameter": 0.11, "path": [{"x": 5.0, "y": 3.0, "z": 0.0}, {"x": 5.0, "y": 3.0, "z": 2.7}]}]
+    review = {"candidates": [{"id": "C1", "kind": "box", "confidence": 0.8}],
+              "pipes": [{"id": "P1", "system": "heating", "confidence": 0.8}, {"id": "P2", "system": "heating", "confidence": 0.7},
+                        {"id": "P3", "system": "clutter", "confidence": 0.9}]}
+    new, report = ai.apply_review(scene, review)
+    systems = {p["id"]: p.get("system") for p in new["pipes"]}
+    assert systems == {"P1": "heating", "P2": "heating", "P3": None, "P4": None}, systems
+    assert new["mep"] == [], new["mep"]
+    assert "P4" in "\n".join(report["rejected"])
+    assert len(pipe_objects(new, {})) == 2
+    assert [(i, t) for i, t, _ in pipe_label_items(new)] == [("P1", "Стояк отопления")]
+    assert "pipes" in ai.scene_for_model(scene, with_mep=False)
+
+
 def test_balcony_door_swing_in_a_thick_wall():
     # Nagornaya: the slab runs to the outer outline, the wall is 0.64 m thick; the rooms tell the flat's side
     scene = {"walls": [{"id": "W3", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.64, "kind": "exterior",

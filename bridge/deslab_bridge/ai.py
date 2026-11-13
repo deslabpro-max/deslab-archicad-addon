@@ -213,6 +213,8 @@ REVIEW_SCHEMA = {
     "candidates": [{"id": "C1 (an id from the scene's `candidates`, every one must be answered)",
                     "kind": "radiator|heatingRiser|waterRiser|sewerRiser|shaft|box|panel|vent|clutter|furniture|windowBoard|other",
                     "confidence": "0..1 (0.4 and more is drawn; the candidate itself is real, you only doubt its name)", "note": "short text"}],
+    "pipes": [{"id": "P1 (an id from the scene's `pipes`, every one must be answered)",
+               "system": "heating|water|sewer|vent|clutter", "confidence": "0..1", "note": "short text"}],
     "vents": [{"wallId": "W4", "side": "left|right (the face, as in the picture's title)", "along": "m along the wall, from the picture's axis",
                "height": "m over the floor", "confidence": "0..1"}],
     "clutter": [{"wallId": "W7", "reason": "short text"}],
@@ -243,6 +245,13 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   рядом с канализационным стояком (ХВС и ГВС, обычно две). shaft: выступающий короб вентиляции на всю высоту с решёткой или отверстием.
   box: короб без решётки (закрытые стояки). panel: электрощит. vent: решётка или отверстие вентиляции.
   Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
+- Трубы P1, P2… (раздел pipes сцены) алгоритм нашёл и измерил в облаке сам: kind riser это стояк (ось x, y, от z до z), run это труба
+  вдоль стены (два конца оси, высота z), diameter в метрах, joins показывает, к какой трубе она присоединена, hint это догадка алгоритма.
+  Назови систему каждой трубы в разделе pipes: heating (пара тонких стояков у окна и трубы от них к радиатору), water (тонкие стояки и
+  отводы в санузле или кухне), sewer (около 110 мм, отводы 50 мм у пола), vent (круглый воздуховод 100-160 мм под потолком или стояк).
+  Не труба (косяк, наличник, кабель-канал, кромка радиатора, карниз, плинтус, мебель): clutter. Труба с joins почти всегда той же
+  системы, что и труба, к которой она присоединена. Геометрию труб не меняй. Кандидата C…, который стоит на месте стояков P…
+  (группа труб, принятая за короб), называй clutter: трубы будут построены сами.
 - Вентиляционные отверстия и решётки в стене, у которых нет номера кандидата, выдай в vents: стена, грань, расстояние вдоль стены и высота
   по осям развёртки.
 - Проёмы: если на развёртке в дверном проёме нет полотна и коробки (пустой проём в бетоне), kind = "opening"; входная дверь с полотном это door.
@@ -267,7 +276,7 @@ def build_system_prompt(profile=None, rules_text=None):
 
 def scene_for_model(scene, with_mep=True):
     """The scene without the noise: what the model needs to judge walls, openings and rooms."""
-    names = ("source", "levels", "walls", "rooms", "slabs", "assumptions", "warnings", "candidates") + (("mep", "tracing") if with_mep else ())
+    names = ("source", "levels", "walls", "rooms", "slabs", "assumptions", "warnings", "candidates", "pipes") + (("mep", "tracing") if with_mep else ())
     return json.dumps({k: scene[k] for k in names if k in scene}, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -405,6 +414,9 @@ def _confident(item, minimum):
     except (TypeError, ValueError):
         return False
 
+
+# deslab: 13.11.2026, the systems a pipe of the scan helper may carry, with the label of its riser
+PIPE_SYSTEMS = {"heating": "Стояк отопления", "water": "Стояк воды", "sewer": "Стояк канализации", "vent": "Вентиляция"}
 
 OFFICE_LABELS = {"shaft": "Вытяжка", "radiator": None, "panel": "Щиток", "sewerRiser": "Стояк канализации", "waterRiser": "Стояк воды",
                  "heatingRiser": "Стояк отопления", "box": "Короб", "vent": "Вент. отв"}
@@ -615,6 +627,42 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
     for cid in candidates:
         if cid not in answered:
             rejected.append(f"кандидат {cid}: модель не ответила")
+    # deslab: 13.11.2026 (Игорь: «у тебя почему-то короб… трубы должны повторяться по диаметрам и направлению, как в облаке»):
+    # the helper's pipes named by the model; a pipe keeps the cloud's axis and diameter, a riser gets the office label
+    pipes = {p["id"]: p for p in new.get("pipes", [])}
+    named = set()
+    for item in review.get("pipes", []) or []:
+        pid, system = item.get("id"), item.get("system")
+        p = pipes.get(pid)
+        if p is None or pid in named:
+            rejected.append(f"труба {pid}: нет такого номера или повтор")
+            continue
+        named.add(pid)
+        p["review"] = {k: item[k] for k in ("system", "confidence", "note") if k in item}
+        if system in ("clutter", "none", "other"):
+            continue
+        if system not in PIPE_SYSTEMS:
+            rejected.append(f"труба {pid}: неизвестная система {system}")
+        elif not _confident(item, candidate_confidence):
+            rejected.append(f"труба {pid} ({system}): уверенность {item.get('confidence')} ниже порога")
+        else:
+            p["system"] = system
+            if p.get("kind") == "riser":
+                p["label"] = PIPE_SYSTEMS[system]
+            applied.append(f"труба {pid}: {system}, d {int(round(float(p.get('diameter', 0)) * 1000))} мм")
+    for pid in pipes:
+        if pid not in named:
+            rejected.append(f"труба {pid}: модель не ответила")
+    # a box or a riser drawn from a candidate where the pipes themselves are built would draw the same thing twice
+    risers = [p for p in pipes.values() if p.get("system") and p.get("kind") == "riser"]
+    for m in list(mep):
+        if m.get("candidate") and m.get("kind") in ("box", "shaft", "heatingRiser", "waterRiser", "sewerRiser"):
+            pts = m.get("polygon") or [m.get("at")]
+            cx, cy = sum(q["x"] for q in pts) / len(pts), sum(q["y"] for q in pts) / len(pts)
+            reach = 0.15 + max((math.hypot(q["x"] - cx, q["y"] - cy) for q in pts), default=0.0)
+            if any(math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= reach for r in risers):
+                mep.remove(m)
+                rejected.append(f"{m['kind']} {m['id']} из кандидата {m['candidate']}: на этом месте построены сами трубы")
     for n, item in enumerate(review.get("vents", []) or [], 1):
         wall = walls.get(item.get("wallId"))
         try:

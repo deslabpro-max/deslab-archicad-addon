@@ -230,6 +230,8 @@ def pipe_objects(scene, profile):
     lib = cfg.get("pipePart", "Цилиндр 27")
     out = []
     for pipe in scene.get("pipes", []):
+        if not pipe.get("system"):
+            continue   # found by the helper, not named by the review: not drawn
         r = float(pipe.get("diameter", 0.025)) / 2
         pts = [(float(p["x"]), float(p["y"]), float(p.get("z", 0.0))) for p in pipe.get("path", [])]
         for k, (a, b) in enumerate(zip(pts, pts[1:])):
@@ -258,7 +260,7 @@ def pipe_label_items(scene):
     """One label per pipe that has a "label": the dot at its "labelAt" or at the first point of its path."""
     items = []
     for pipe in scene.get("pipes", []):
-        if pipe.get("label") and pipe.get("path"):
+        if pipe.get("system") and pipe.get("label") and pipe.get("path"):
             p = pipe.get("labelAt") or pipe["path"][0]
             items.append((pipe["id"], pipe["label"], (float(p["x"]), float(p["y"]))))
     return items

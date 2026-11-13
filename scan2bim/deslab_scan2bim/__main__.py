@@ -76,6 +76,14 @@ def main(argv=None):
             scene["views"] = [v["file"] for v in write_views(pts, scene, args.views)]
     except Exception as exc:  # the walls are still good without it
         scene["warnings"].append(f"cloud views and candidates failed: {exc}")
+    # deslab: 13.11.2026 (Игорь: трубы «по диаметрам, по направлению, как в облаке»): the pipes themselves, P1…; the
+    # reviewing model says what each one carries
+    try:
+        from .pipes import find_pipes
+        from .views import model_points as _model_points
+        scene["pipes"] = find_pipes(_model_points(pts, scene), scene)
+    except Exception as exc:
+        scene["warnings"].append(f"pipes failed: {exc}")
     scene["source"]["seconds"] = round(time.time() - t0, 1)
     scene["source"]["version"] = __version__
     with open(args.output, "w", encoding="utf-8") as f:
