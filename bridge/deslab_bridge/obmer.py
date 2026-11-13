@@ -1753,6 +1753,16 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     from .mep import pipe_objects
     pipes = pipe_objects(scene, profile)
     if pipes:
+        # deslab: 13.11.2026, grey pipes were lost against the grey wall in 3D: a surface per system, by its name in
+        # the profile ("mep.pipeSurfaces"), where the project has it
+        surfaces = profile.get("mep", {}).get("pipeSurfaces", {})
+        if surfaces:
+            by_name = {a["name"]: a["index"] for a in ac.tapir("GetAttributesByType", {"attributeType": "Surface"}).get("attributes", [])
+                       if "name" in a}
+            for m, _, params in pipes:
+                index = by_name.get(surfaces.get(m.get("system")))
+                if index:
+                    params.append({"name": "gs_prim_mat", "value": index})
         guids = _created(ac.tapir("CreateObjects", {"objectsData": [
             {**d, "floorIndex": floor_index} for _, d, _ in pipes]}), "elements", report, "Труба")
         _check_details(ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": [
