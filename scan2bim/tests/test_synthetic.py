@@ -11,7 +11,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from deslab_scan2bim import grid  # noqa: E402
-from deslab_scan2bim.analyze import Options, Wall, analyze, join_walls  # noqa: E402
+from deslab_scan2bim.analyze import Options, Wall, analyze, join_walls, prune_walls  # noqa: E402
 
 D = 0.015
 H = 3.0
@@ -121,6 +121,12 @@ def check_join():
     join_walls(walls)
     assert np.allclose(a.end, (5.0, 0.0)) and np.allclose(b.beg, (5.0, 0.0)), (a.end, b.beg)
     assert np.allclose(t.beg, (2.0, 0.0)), t.beg
+    # a short two-faced stub inside the body of a thick wall (its far face paired with a door jamb) is dropped
+    thick = Wall(axis=0, c=3.335, a=0.0, b=8.0, thickness=0.43, room_side=0, measured=True)
+    stub = Wall(axis=0, c=3.2, a=6.15, b=6.53, thickness=0.69, room_side=0, measured=True)
+    for w in (thick, stub):
+        w.beg, w.end = np.array(w.point(w.a)), np.array(w.point(w.b))
+    assert prune_walls([thick, stub], set()) == [thick]
 
 
 if __name__ == "__main__":

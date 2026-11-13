@@ -24,7 +24,7 @@ import sys
 import numpy as np
 
 from .grid import label
-from .views import _frame, _wall_coords, model_points
+from .views import _frame, _inside, _wall_coords, model_points
 
 CELL = 0.01        # plan and cross-section cell, m
 LEVEL = 0.05       # step along the pipe, m
@@ -49,6 +49,15 @@ def _in_wall_body(scene, x, y, margin=0.0):
     return False
 
 
+def _in_rooms(scene, x, y, margin=0.05):
+    """Inside a room of the flat (the stair hall and the neighbours behind the walls are scanned through the doors)."""
+    rooms = scene.get("rooms") or []
+    if not rooms:
+        return True
+    return any(_inside(r["polygon"], (x + dx, y + dy)) for r in rooms
+               for dx, dy in ((0, 0), (margin, 0), (-margin, 0), (0, margin), (0, -margin)))
+
+
 def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
     """Thin things standing in the room: spots of the plan up to 22 cm across, filled at half of the heights or more
     over 1.2 m or more, not inside a wall (window and door frames stand there)."""
@@ -66,16 +75,26 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
     occ = np.zeros((nz, ny, nx), dtype=bool)
     occ[iz, iy, ix] = True
     levels = _grow(occ).sum(axis=0)
-    tall = levels >= max(int(min_span / LEVEL * fill), 4)
-    labels, count = label(tall)
+    # A scan leaves a thin veil of stray points between a pipe and the wall behind it, which ties the pipe's spot
+    # to the wall's when few filled heights are asked for. So the spots are taken at a strict share of the heights
+    # first (a pipe standing free from floor to ceiling), then at looser ones (a pipe hidden in part).
+    spots, taken = [], np.zeros(levels.shape, dtype=bool)
+    for share in (0.8, 0.6, 0.4):
+        labels, count = label(levels >= max(int(nz * share), int(min_span / LEVEL * fill), 4))
+        for k in range(1, count + 1):
+            ys, xs = np.nonzero(labels == k)
+            if (xs.max() - xs.min() + 1) * CELL > max_size or (ys.max() - ys.min() + 1) * CELL > max_size or len(ys) < 2:
+                continue
+            box = (slice(max(ys.min() - 2, 0), ys.max() + 3), slice(max(xs.min() - 2, 0), xs.max() + 3))
+            if taken[box].any():
+                continue
+            taken[box] = True
+            spots.append((ys, xs))
     found = []
-    for k in range(1, count + 1):
-        ys, xs = np.nonzero(labels == k)
+    for ys, xs in spots:
         w, h = (xs.max() - xs.min() + 1) * CELL, (ys.max() - ys.min() + 1) * CELL
-        if max(w, h) > max_size or len(ys) < 2:
-            continue
         cx, cy = x0 + (xs.min() + xs.max() + 1) / 2 * CELL, y0 + (ys.min() + ys.max() + 1) / 2 * CELL
-        if _in_wall_body(scene, cx, cy):
+        if _in_wall_body(scene, cx, cy) or not _in_rooms(scene, cx, cy):
             continue
         column = occ[:, max(ys.min() - 1, 0):ys.max() + 2, max(xs.min() - 1, 0):xs.max() + 2].any(axis=(1, 2))
         zs = np.nonzero(column)[0]
@@ -101,14 +120,29 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
     return found
 
 
-def find_runs(pts, scene, reach=0.6, min_length=0.3, max_size=0.2):
+def _without_risers(pts, risers, margin=0.03):
+    keep = np.ones(len(pts), dtype=bool)
+    for r in risers:
+        a, b = r["path"]
+        keep &= ~((np.hypot(pts[:, 0] - a["x"], pts[:, 1] - a["y"]) < r["diameter"] / 2 + margin)
+                  & (pts[:, 2] > a["z"] - 0.05) & (pts[:, 2] < b["z"] + 0.05))
+    return pts[keep]
+
+
+def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, window=0.6, step=0.2, fill=0.8):
     """Pipes along the walls: per wall face, spots of its cross-section (height x distance from the face) up to 20 cm
-    across that are filled along 0.3 m of the wall or more."""
+    across that are filled along 0.4 m of the wall or more without a break.
+
+    The cross-section is taken per 0.6 m stretch of the wall, not of the whole wall: a radiator further along stands
+    at the height and the distance of the pipe that feeds it and would swallow the pipe's spot. The pieces found in
+    neighbouring stretches at one height and distance are one run. The risers' own points are left out (a riser by a
+    wall was cut into a ladder of short «runs»)."""
     height = float(scene["levels"]["ceiling"])
+    pts = _without_risers(pts, risers)
     found = []
     for wall in scene.get("walls", []):
         a, u, n, length = _frame(wall)
-        if length < 0.4:
+        if length < min_length:
             continue
         t, d, _ = _wall_coords(pts, wall)
         half = float(wall["thickness"]) / 2
@@ -124,42 +158,80 @@ def find_runs(pts, scene, reach=0.6, min_length=0.3, max_size=0.2):
             occ = np.zeros((nt, nz, nd), dtype=bool)
             occ[np.clip(it, 0, nt - 1), np.clip(iz, 0, nz - 1), np.clip(idp, 0, nd - 1)] = True
             grown = _grow(occ)
-            along = grown.sum(axis=0)
-            labels, count = label(along >= int(min_length / LEVEL))
-            for k in range(1, count + 1):
-                zs, ds = np.nonzero(labels == k)
-                tall, deep = (zs.max() - zs.min() + 1) * CELL, (ds.max() - ds.min() + 1) * CELL
-                if tall > max_size or deep > max_size or len(zs) < 2:
-                    continue
-                line = grown[:, zs.min():zs.max() + 1, ds.min():ds.max() + 1].any(axis=(1, 2))
-                bins = np.nonzero(line)[0]
-                runs, start, prev = [], bins[0], bins[0]
-                for b in bins[1:]:
-                    if b - prev > 3:
-                        runs.append((start, prev))
-                        start = b
-                    prev = b
-                runs.append((start, prev))
-                dia = max(tall - 2 * CELL - CELL / 2, 0.012)
-                zc = (zs.min() + zs.max() + 1) / 2 * CELL
-                zz, dd = pts[m, 2], depth[m]
-                near = (zz >= zs.min() * CELL) & (zz <= (zs.max() + 1) * CELL) & (dd >= ds.min() * CELL) & (dd <= (ds.max() + 1) * CELL)
-                if near.sum() >= 30:
-                    lo, hi = np.percentile(zz[near], 2), np.percentile(zz[near], 98)
-                    dia, zc = max(float(hi - lo), 0.012), float((lo + hi) / 2)
-                # the front of the pipe is seen: its axis is half a diameter behind the nearest points
-                dc = min(ds.min() * CELL + CELL + dia / 2, (ds.min() + ds.max() + 1) / 2 * CELL + dia / 2)
-                for b0, b1 in runs:
-                    t0, t1 = b0 * LEVEL, (b1 + 1) * LEVEL
-                    if t1 - t0 < min_length:
+            zz, dd, tt = pts[m, 2], depth[m], t[m]
+            wn, st = int(round(window / LEVEL)), int(round(step / LEVEL))
+            pieces = []   # (t0, t1, z centre, depth of the axis, diameter)
+            for w0 in range(0, max(nt - wn, 0) + 1, st):
+                part = grown[w0:w0 + wn]
+                labels, count = label(part.sum(axis=0) >= int(min_length / LEVEL * fill))
+                for k in range(1, count + 1):
+                    zs, ds = np.nonzero(labels == k)
+                    tall, deep = (zs.max() - zs.min() + 1) * CELL, (ds.max() - ds.min() + 1) * CELL
+                    if tall > max_size or deep > max_size or len(zs) < 2:
                         continue
-                    p0 = a + u * t0 + n * side * (half + dc)
-                    p1 = a + u * t1 + n * side * (half + dc)
-                    found.append({"kind": "run", "diameter": round(dia, 3), "wallId": wall["id"],
-                                  "side": "left" if side > 0 else "right",
-                                  "path": [{"x": round(float(p0[0]), 4), "y": round(float(p0[1]), 4), "z": round(float(zc), 3)},
-                                           {"x": round(float(p1[0]), 4), "y": round(float(p1[1]), 4), "z": round(float(zc), 3)}]})
-    return found
+                    # how far the spot runs on along the whole wall, without a break of more than a bin
+                    line = grown[:, zs.min():zs.max() + 1, ds.min():ds.max() + 1].any(axis=(1, 2))
+                    here = np.nonzero(line[w0:w0 + wn])[0]
+                    b0 = b1 = w0 + int(here[len(here) // 2])
+                    while b0 > 0 and (line[b0 - 1] or (b0 > 1 and line[b0 - 2])):
+                        b0 -= 1
+                    while b1 < nt - 1 and (line[b1 + 1] or (b1 < nt - 2 and line[b1 + 2])):
+                        b1 += 1
+                    while not line[b0]:
+                        b0 += 1
+                    while not line[b1]:
+                        b1 -= 1
+                    t0, t1 = b0 * LEVEL, (b1 + 1) * LEVEL
+                    if t1 - t0 < min_length or line[b0:b1 + 1].mean() < fill:
+                        continue
+                    dia = max(tall - 2 * CELL - CELL / 2, 0.012)
+                    zc = (zs.min() + zs.max() + 1) / 2 * CELL
+                    near = (zz >= zs.min() * CELL) & (zz <= (zs.max() + 1) * CELL) & (dd >= ds.min() * CELL) & \
+                           (dd <= (ds.max() + 1) * CELL) & (tt >= t0) & (tt <= t1)
+                    if near.sum() >= 30:
+                        lo, hi = np.percentile(zz[near], 2), np.percentile(zz[near], 98)
+                        dia, zc = max(float(hi - lo), 0.012), float((lo + hi) / 2)
+                        t0, t1 = max(t0, float(tt[near].min())), min(t1, float(tt[near].max()))
+                    # the front of the pipe is seen: its axis is half a diameter behind the nearest points
+                    dc = min(ds.min() * CELL + CELL + dia / 2, (ds.min() + ds.max() + 1) / 2 * CELL + dia / 2)
+                    pieces.append([t0, t1, zc, dc, dia])
+            runs = []
+            for p in sorted(pieces, key=lambda p: -(p[1] - p[0])):
+                same = [r for r in runs if abs(r[2] - p[2]) < 0.03 and abs(r[3] - p[3]) < 0.03
+                        and p[0] <= r[1] + 0.1 and r[0] <= p[1] + 0.1]
+                if same:
+                    same[0][0], same[0][1] = min(same[0][0], p[0]), max(same[0][1], p[1])
+                else:
+                    runs.append(p)
+            for t0, t1, zc, dc, dia in runs:
+                p0 = a + u * t0 + n * side * (half + dc)
+                p1 = a + u * t1 + n * side * (half + dc)
+                mid = (p0 + p1) / 2
+                if not _in_rooms(scene, mid[0], mid[1]) or _in_wall_body(scene, mid[0], mid[1]):
+                    continue
+                found.append({"kind": "run", "diameter": round(dia, 3), "wallId": wall["id"],
+                              "side": "left" if side > 0 else "right",
+                              "path": [{"x": round(float(p0[0]), 4), "y": round(float(p0[1]), 4), "z": round(float(zc), 3)},
+                                       {"x": round(float(p1[0]), 4), "y": round(float(p1[1]), 4), "z": round(float(zc), 3)}]})
+    return _without_doubles(found)
+
+
+def _without_doubles(runs, tol=0.04):
+    """A pipe in a corner is seen from both walls of the corner: the longer piece stays."""
+    keep = []
+    for r in sorted(runs, key=lambda r: -math.dist(*[(p["x"], p["y"]) for p in r["path"]])):
+        a, b = [np.array((p["x"], p["y"])) for p in r["path"]]
+        double = False
+        for o in keep:
+            p, q = [np.array((e["x"], e["y"])) for e in o["path"]]
+            v = q - p
+            if abs(o["path"][0]["z"] - r["path"][0]["z"]) > tol:
+                continue
+            off = [np.linalg.norm(p + np.clip(np.dot(e - p, v) / np.dot(v, v), 0, 1) * v - e) for e in (a, b)]
+            double |= max(off) < tol
+        if not double:
+            keep.append(r)
+    return keep
 
 
 def _hint(pipe, height):
@@ -214,7 +286,8 @@ def join_pipes(pipes, reach=0.15):
 def find_pipes(pts, scene):
     """Scene "pipes": risers and runs with ids P1…, joined where they meet."""
     height = float(scene["levels"]["ceiling"])
-    pipes = find_risers(pts, scene) + find_runs(pts, scene)
+    risers = find_risers(pts, scene)
+    pipes = risers + find_runs(pts, scene, risers)
     pipes.sort(key=lambda p: (p["kind"] != "riser", round(p["path"][0]["x"], 1), round(p["path"][0]["y"], 1), p["path"][0]["z"]))
     for k, p in enumerate(pipes, 1):
         p["id"] = f"P{k}"
@@ -234,8 +307,9 @@ def render(pts, scene, pipes, path, scale=100):
         return (x - x0) * scale, (y1 - y) * scale
     m = (pts[:, 2] > 0.3) & (pts[:, 2] < 0.9)
     for x, y in pts[m][::7, :2]:
-        if x0 < x < x1 and y0 < y < y1:
-            img.putpixel((int((x - x0) * scale), int((y1 - y) * scale)), (170, 170, 170))
+        i, j = int((x - x0) * scale), int((y1 - y) * scale)
+        if 0 <= i < img.width and 0 <= j < img.height:
+            img.putpixel((i, j), (170, 170, 170))
     for p in pipes:
         a, b = p["path"][0], p["path"][-1]
         if p["kind"] == "riser":

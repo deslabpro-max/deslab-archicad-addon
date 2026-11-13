@@ -1140,6 +1140,7 @@ def prune_walls(walls, joined):
     """deslab: walls are closed and clean. Drop, as scan noise:
     - a one-sided wall that overlaps a longer parallel wall (a frame, a reveal, the same wall
       seen twice); its openings move to that wall;
+    - a short two-faced piece (under 0.6 m, no openings) whose centre line is inside a longer measured wall;
     - a short piece (under 0.6 m, no openings) with a free end, alongside a parallel wall within
       0.6 m (a ledge), or with both ends free."""
     def free_ends(w):
@@ -1147,10 +1148,17 @@ def prune_walls(walls, joined):
 
     drop = set()
     for w in sorted(walls, key=lambda w: np.linalg.norm(w.end - w.beg)):
-        if w.measured:
-            continue
         cw, lw, hw = _span(w)
         L = hw - lw
+        # deslab: a short two-faced piece whose centre line runs inside the body of a longer measured
+        # wall is that wall's far face paired with a door jamb, not a wall of its own
+        if w.measured:
+            if L < 0.6 and not w.openings and any(
+                    o is not w and id(o) not in drop and o.axis == w.axis and o.measured
+                    and _span(o)[2] - _span(o)[1] > L and abs(cw - _span(o)[0]) < o.thickness / 2
+                    and min(hw, _span(o)[2]) - max(lw, _span(o)[1]) >= 0.7 * L for o in walls):
+                drop.add(id(w))
+            continue
         for o in walls:
             if o is w or id(o) in drop or o.axis != w.axis:
                 continue
