@@ -217,6 +217,53 @@ def mep_objects(scene, profile):
     return out
 
 
+PIPE_LABELS = {"heating": "Отопление", "water": "Вода", "sewer": "Канализация", "vent": "Вентиляция"}
+
+
+def pipe_objects(scene, profile):
+    """deslab: Игорь 13.11.2026, «научиться строить коммуникации, вентиляционные трубы, трубы отопления… по диаметрам, по
+    направлению то, как это сделано в облаке точек». Scene "pipes": [{"id", "system": heating|water|sewer|vent,
+    "diameter", "path": [{x, y, z}, …]}]: every leg of the path is a «Цилиндр 27» set by the two ends of its axis (its
+    «Координаты» mode; checked to the millimetre in Archicad 27, where the MEP tools cannot be reached by an add-on). At a
+    bend both legs run half a diameter on, so the corner is closed. Returns (pipe, CreateObjects data, GDL parameters)."""
+    cfg = profile.get("mep", {})
+    lib = cfg.get("pipePart", "Цилиндр 27")
+    out = []
+    for pipe in scene.get("pipes", []):
+        r = float(pipe.get("diameter", 0.025)) / 2
+        pts = [(float(p["x"]), float(p["y"]), float(p.get("z", 0.0))) for p in pipe.get("path", [])]
+        for k, (a, b) in enumerate(zip(pts, pts[1:])):
+            d = tuple(b[i] - a[i] for i in range(3))
+            length = math.sqrt(sum(v * v for v in d))
+            if length < 1e-4:
+                continue
+            u = tuple(v / length for v in d)
+            if k > 0:
+                a = tuple(a[i] - u[i] * r for i in range(3))
+            if k < len(pts) - 2:
+                b = tuple(b[i] + u[i] * r for i in range(3))
+            out.append((pipe, {"libraryPartName": lib, "coordinates": {"x": a[0], "y": a[1], "z": a[2]}},
+                        [{"name": "iEditMode", "value": 2}, {"name": "radius_1", "value": r},
+                         {"name": "dist_x", "value": b[0] - a[0]}, {"name": "dist_y", "value": b[1] - a[1]},
+                         {"name": "ZZYZX", "value": b[2] - a[2]}]))
+    pen = cfg.get("pen")
+    if pen:
+        for _, d, params in out:
+            d["pen"] = pen
+            params.append({"name": "gs_cont_pen", "value": pen})
+    return out
+
+
+def pipe_label_items(scene):
+    """One label per pipe that has a "label": the dot at its "labelAt" or at the first point of its path."""
+    items = []
+    for pipe in scene.get("pipes", []):
+        if pipe.get("label") and pipe.get("path"):
+            p = pipe.get("labelAt") or pipe["path"][0]
+            items.append((pipe["id"], pipe["label"], (float(p["x"]), float(p["y"]))))
+    return items
+
+
 def mep_outlines(scene, profile):
     """A panel without a library part that takes its size («Электрощиты 21» draws 0.5 x 0.5 m
     whatever A and B are, run kv94i): its outline on the plan, a closed polyline."""
@@ -544,6 +591,7 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
         else:
             dot = _mul(_add(_pt(m["start"]), _pt(m["end"])), 0.5)
         items.append((m["id"], m["label"], dot))
+    items += pipe_label_items(scene)
     tr_text = profile.get("mep", {}).get("tracingLabel", "Трассировка h={height_mm}")
     # one label per joined run of tracing (run JK v5: a label on each of 16 strips piled up)
     strips = scene.get("tracing", [])

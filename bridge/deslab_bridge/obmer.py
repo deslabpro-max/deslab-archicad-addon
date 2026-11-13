@@ -164,6 +164,9 @@ def shift_scene(scene, origin):
         for seg in item.get("partitions") or []:  # inner walls of a shaft (run kv94i: left at x=0)
             for p in seg:
                 move(p)
+    for pipe in scene.get("pipes", []):  # deslab: pipes move with the plan
+        for p in pipe.get("path", []) + ([pipe["labelAt"]] if pipe.get("labelAt") else []):
+            move(p)
     return scene
 
 
@@ -1591,7 +1594,7 @@ def build_measured_plan(ac, scene, profile=None, rooms=None, origin=None, floor_
     # template's layer indices (hidden «2D - Узловая Точка», «MEP - …ВК»), so their leaders and the layer change were
     # refused: all layers are opened for every build
     names = None
-    if scene.get("mep") or scene.get("tracing"):
+    if scene.get("mep") or scene.get("tracing") or scene.get("pipes"):
         # deslab: shaft and tracing walls and the objects are made on the tool's default layer
         # first, which may be hidden («009 …ПЛИТКА», run kv94i): then no layer change takes; all
         # layers are opened for the build
@@ -1746,7 +1749,18 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         for kinds, key in ((("sewerRiser", "waterRiser", "heatingRiser"), "risers"), (("radiator",), "radiators"), (("panel",), "panel")):
             set_layer(ac, [g for (m, _, _), g in zip(objects, guids) if g and m.get("kind") in kinds],
                       idx.get(L.get(key)) or mep_layer, report, "коммуникации")
-    report.step("шахты, трассировка, стояки, радиаторы", walls=len(extra_walls), objects=len(objects))
+    # deslab: pipes of the scene (heating, water, sewer, ventilation) as cylinders along their axes
+    from .mep import pipe_objects
+    pipes = pipe_objects(scene, profile)
+    if pipes:
+        guids = _created(ac.tapir("CreateObjects", {"objectsData": [
+            {**d, "floorIndex": floor_index} for _, d, _ in pipes]}), "elements", report, "Труба")
+        _check_details(ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": [
+            {"elementId": {"guid": g}, "gdlParameters": params} for (_, _, params), g in zip(pipes, guids) if g]}), report, "Труба: размеры")
+        for vent, key in ((True, "ducts"), (False, "pipes")):
+            set_layer(ac, [g for (m, _, _), g in zip(pipes, guids) if g and (m.get("system") == "vent") == vent],
+                      idx.get(L.get(key)) or idx.get(L.get("risers")) or mep_layer, report, "трубы")
+    report.step("шахты, трассировка, стояки, радиаторы, трубы", walls=len(extra_walls), objects=len(objects), pipes=len(pipes))
 
     partitions = [wall_guid[w["id"]] for w in scene.get("walls", []) if is_partition(w, profile) and w["id"] in wall_guid]
     set_layer(ac, partitions, idx.get(L["partitions"]), report, "перегородки")
