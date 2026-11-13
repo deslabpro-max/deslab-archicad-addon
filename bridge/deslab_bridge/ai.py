@@ -653,6 +653,16 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
     for pid in pipes:
         if pid not in named:
             rejected.append(f"труба {pid}: модель не ответила")
+    # risers of one system that stand side by side (the pair by the window, the water risers) share one label:
+    # three labels on one spot lay on each other (Nagornaya, 13.11.2026)
+    labelled = []
+    for p in pipes.values():
+        if p.get("label"):
+            at = p["path"][0]
+            if any(q["label"] == p["label"] and math.hypot(q["path"][0]["x"] - at["x"], q["path"][0]["y"] - at["y"]) < 0.5 for q in labelled):
+                del p["label"]
+            else:
+                labelled.append(p)
     # a box or a riser drawn from a candidate where the pipes themselves are built would draw the same thing twice
     risers = [p for p in pipes.values() if p.get("system") and p.get("kind") == "riser"]
     for m in list(mep):
