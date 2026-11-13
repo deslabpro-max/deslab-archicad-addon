@@ -31,6 +31,8 @@ def main(argv=None):
     ap.add_argument("--default-thickness", type=float, default=Options.default_thickness)
     ap.add_argument("--dump", help="also write the read points as <DUMP>.N.npz parts "
                     "(centimetres, int16, up to 2M points each) for offline debugging")
+    ap.add_argument("--views", help="deslab: folder for the pictures of the cloud for the reviewing model "
+                    "(wall elevations, plan cuts) and views.json")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
 
@@ -47,6 +49,17 @@ def main(argv=None):
                   open(args.output, "w", encoding="utf-8"), ensure_ascii=False)
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    # deslab: 13.11.2026, what the walls alone do not tell: the threshold of a balcony door and the things that stand at
+    # the walls (candidates for radiators, risers, boxes), measured in the cloud; the pictures are for the model
+    try:
+        from .views import find_candidates, measure_thresholds, model_points, write_views
+        model = model_points(pts, scene)
+        scene["assumptions"] += measure_thresholds(model, scene)
+        scene["candidates"] = find_candidates(model, scene)
+        if args.views:
+            scene["views"] = [v["file"] for v in write_views(pts, scene, args.views)]
+    except Exception as exc:  # the walls are still good without it
+        scene["warnings"].append(f"cloud views and candidates failed: {exc}")
     scene["source"]["seconds"] = round(time.time() - t0, 1)
     scene["source"]["version"] = __version__
     with open(args.output, "w", encoding="utf-8") as f:

@@ -290,7 +290,12 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         for spec in preset.get("aiPdf", []):  # "file.pdf:12"
             pdf, _, page = str(spec).rpartition(":")
             images.append(ai.pdf_page_png(Path(pdf), page or 1, out_dir / f"ai-page-{name}-{page}.png"))
-        print("ИИ разбирает сцену…")
+        # deslab: 13.11.2026, the model looks at the cloud itself: the helper's wall elevations and plan cuts with the numbered
+        # candidates (scene "views"); the smaller files first, at most 24 pictures
+        shots = [v for v in scene.get("views", []) if Path(v).exists()]
+        plans = [v for v in shots if Path(v).name.startswith("plan-")]
+        images += plans + [v for v in shots if v not in plans][:24 - len(plans)]
+        print(f"ИИ разбирает сцену, картинок облака: {len(shots)}…")
         review, usage, _ = ai.ai_review(scene, images, profile, with_mep=False, model=preset.get("aiModel"))
         scene_in = {k: v for k, v in scene.items() if k not in ("mep", "tracing")}
         scene, ai_report = ai.apply_review(scene_in, review)

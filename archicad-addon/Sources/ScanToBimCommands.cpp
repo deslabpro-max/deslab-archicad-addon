@@ -72,7 +72,8 @@ GS::UniString DefaultHelperPath ()
 
 GS::Optional<GS::UniString> RunHelper (const GS::UniString& helperPath, const GS::UniString& e57Path, const GS::UniString& scenePath, const GS::ObjectState& parameters)
 {
-    GS::Array<GS::UniString> arguments = { e57Path, "-o", scenePath };
+    // deslab: 13.11.2026, the helper also draws the cloud for the reviewing model (wall elevations, plan cuts) next to the scene
+    GS::Array<GS::UniString> arguments = { e57Path, "-o", scenePath, "--views", scenePath + ".views" };
     double value = 0.0;
     if (parameters.Get ("exteriorThickness", value)) {
         arguments.Push ("--exterior-thickness");
@@ -395,6 +396,7 @@ GS::Optional<GS::UniString> BuildModelFromScanCommand::GetInputParametersSchema 
                 "properties": {
                     "wall": { "type": "string" },
                     "door": { "type": "string" },
+                    "opening": { "type": "string", "description": "For doorways without a leaf (opening kind \"opening\"). Default: the library part of the empty door opening." },
                     "window": { "type": "string" },
                     "slab": { "type": "string" },
                     "zone": { "type": "string" }
@@ -676,9 +678,18 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 data.Add ("width", GetNumber (opening, "width", 0.9));
                 data.Add ("height", GetNumber (opening, "height", 2.1));
                 data.Add ("sillHeight", GetNumber (opening, "sill", 0.0));
-                const GS::UniString favorite = GetString (favorites, isWindow ? "window" : "door");
-                if (!favorite.IsEmpty ()) {
+                // deslab: 13.11.2026 (Игорь: «ты рисуешь двери, а в проекте дверей нет. Там проемы»): a doorway without a
+                // leaf (kind "opening") is the template's empty door opening, not a door with a leaf
+                const bool isEmptyOpening = kind == "opening";
+                const GS::UniString favorite = GetString (favorites, isWindow ? "window" : (isEmptyOpening ? "opening" : "door"));
+                const GS::UniString ownPart = GetString (opening, "libraryPartName");
+                if (!ownPart.IsEmpty ()) {
+                    data.Add ("libraryPartName", ownPart);
+                } else if (!favorite.IsEmpty ()) {
                     data.Add ("favoriteName", favorite);
+                } else if (isEmptyOpening) {
+                    // «Простой Проем Двери»
+                    data.Add ("libraryPartName", GS::UniString ("\xD0\x9F\xD1\x80\xD0\xBE\xD1\x81\xD1\x82\xD0\xBE\xD0\xB9 \xD0\x9F\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBC \xD0\x94\xD0\xB2\xD0\xB5\xD1\x80\xD0\xB8", CC_UTF8));
                 } else if (isWindow) {
                     // deslab: one sash up to 0.9 m, two up to 1.9 m, three above
                     const double width = GetNumber (opening, "width", 0.9);

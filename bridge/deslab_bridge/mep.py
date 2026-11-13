@@ -22,7 +22,7 @@ from .obmer import (_add, _box_hits, _seg_box, _dot, _inside, _left, _len, _mul,
 
 import math
 
-RISERS = ("sewerRiser", "waterRiser")
+RISERS = ("sewerRiser", "waterRiser", "heatingRiser")  # deslab: 13.11.2026 heating risers stand in the flat (Nagornaya)
 WALL_ITEMS = ("radiator", "panel")
 
 
@@ -188,7 +188,7 @@ def mep_objects(scene, profile):
     for m in scene.get("mep", []):
         kind = m.get("kind")
         if kind in RISERS:
-            d = float(m.get("diameter", 0.16 if kind == "sewerRiser" else 0.05))
+            d = float(m.get("diameter", 0.16 if kind == "sewerRiser" else 0.05 if kind == "waterRiser" else 0.03))
             c = _pt(m["at"])
             lib = cfg.get("riserPart", "Цилиндр 27")
             out.append((m, {"libraryPartName": lib, "coordinates": {"x": c[0], "y": c[1], "z": 0.0},
@@ -531,7 +531,7 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
         if len(group) > 1:
             grouped.update(g["id"] for g in group)
             mid = (sum(_pt(g["at"])[0] for g in group) / len(group), sum(_pt(g["at"])[1] for g in group) / len(group))
-            many = {"waterRiser": "Стояки воды", "sewerRiser": "Стояки канализации"}.get(m.get("kind"), m["label"])
+            many = {"waterRiser": "Стояки воды", "sewerRiser": "Стояки канализации", "heatingRiser": "Стояки отопления"}.get(m.get("kind"), m["label"])
             items.append((m["id"], f"{many} ({len(group)})", mid))
     for m in scene.get("mep", []):
         if not m.get("label") or m["id"] in grouped:
@@ -539,7 +539,7 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
         if m.get("kind") == "shaft":
             poly = [_pt(p) for p in m["polygon"]]
             dot = (sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly))
-        elif m.get("kind") in RISERS:
+        elif m.get("kind") in RISERS or m.get("kind") == "vent":  # deslab: a vent opening is a label with its dot on the wall face
             dot = _pt(m["at"])
         else:
             dot = _mul(_add(_pt(m["start"]), _pt(m["end"])), 0.5)

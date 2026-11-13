@@ -192,12 +192,15 @@ def chat(messages, profile=None, model=None, json_mode=True):
 
 # ---------------------------------------------------------------- the review
 
-OPENING_KINDS = ("window", "door", "balconyDoor")
-MEP_KINDS = ("shaft", "sewerRiser", "waterRiser", "radiator", "panel")
+OPENING_KINDS = ("window", "door", "balconyDoor", "opening")  # deslab: "opening" is a doorway without a leaf
+MEP_KINDS = ("shaft", "sewerRiser", "waterRiser", "heatingRiser", "radiator", "panel")
+# deslab: 13.11.2026, what the model may call a numbered candidate of the scan helper (scene "candidates")
+CANDIDATE_KINDS = ("radiator", "heatingRiser", "waterRiser", "sewerRiser", "shaft", "box", "panel", "vent")
+CANDIDATE_SKIP = ("clutter", "furniture", "windowBoard", "other", "none")
 WET_KINDS = ("bathroom", "kitchen")
 
 REVIEW_SCHEMA = {
-    "openings": [{"id": "W1.1", "kind": "window|door|balconyDoor", "sashes": "1..4 (window)",
+    "openings": [{"id": "W1.1", "kind": "window|door|balconyDoor|opening (a doorway without a leaf)", "sashes": "1..4 (window)",
                   "swing": {"hinge": "start|end (the jamb with the hinge: the start or the end of the wall segment, as the wall runs start to end)",
                             "opens": "into|out (into the flat's room or outward, to the stairwell / outside)"},
                   "confidence": "0..1", "note": "short text"}],
@@ -207,6 +210,11 @@ REVIEW_SCHEMA = {
              "polygon": "[{x,y}] for a shaft", "at": "{x,y} for a riser or panel", "diameter": "m for a riser",
              "start": "{x,y}", "end": "{x,y}", "depth": "m for a radiator", "confidence": "0..1"}],
     "_panelNote": "a panel (щиток) may be given as a point `at` on the wall: the code makes the segment",
+    "candidates": [{"id": "C1 (an id from the scene's `candidates`, every one must be answered)",
+                    "kind": "radiator|heatingRiser|waterRiser|sewerRiser|shaft|box|panel|vent|clutter|furniture|windowBoard|other",
+                    "confidence": "0..1", "note": "short text"}],
+    "vents": [{"wallId": "W4", "side": "left|right (the face, as in the picture's title)", "along": "m along the wall, from the picture's axis",
+               "height": "m over the floor", "confidence": "0..1"}],
     "clutter": [{"wallId": "W7", "reason": "short text"}],
     "rooms": [{"id": "R1", "name": "text"}],
     "wetZones": [{"kind": "bathroom|kitchen", "polygon": "[{x,y}]"}],
@@ -224,7 +232,21 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   маленькие кружки 30-50 мм: это стояки воды (ХВС/ГВС), их нужно выдать как waterRiser (kind "waterRiser", at, diameter около 0.05), каждый кружок отдельным элементом.
   Радиатор это тонкий прямоугольник вдоль стены (start, end, depth около 0.07), щиток (panel) прямоугольник у стены.
 - Открывание двери: не придумывай флаги Archicad, а скажи по картинке, у какого косяка петля (hinge: start или end, считая вдоль стены от её начала к концу в сцене)
-  и куда открывается (opens: into или out). Перевод в флаги делает код."""
+  и куда открывается (opens: into или out). Перевод в флаги делает код. У балконной двери тоже укажи swing: hinge по развёртке её стены
+  (ручка стоит напротив петель), opens почти всегда into.
+- Картинки облака точек: «plan-low/mid/high» это срезы плана на разной высоте, «wall-Wn-left/right» это развёртка грани стены
+  (по горизонтали метры вдоль стены от её начала, по вертикали высота над полом; цвет показывает, насколько предмет выступает из стены).
+  Рамки с номерами C1, C2… это кандидаты, которые алгоритм нашёл и ИЗМЕРИЛ в облаке (в сцене раздел candidates: стена, грань, from/to
+  вдоль стены, bottom/top, depth). Размеры кандидатов не меняй и не придумывай свои: только назови каждый номер в разделе candidates.
+  radiator: панель под окном или у стены, низ 0.05-0.3 м, верх до 1.2 м. heatingRiser: вертикальная труба 15-40 мм от пола до потолка
+  рядом с радиатором или окном, обычно пара. sewerRiser: труба около 110 мм, обычно в санузле или шахте. waterRiser: трубы 25-50 мм
+  рядом с канализационным стояком (ХВС и ГВС, обычно две). shaft: выступающий короб вентиляции на всю высоту с решёткой или отверстием.
+  box: короб без решётки (закрытые стояки). panel: электрощит. vent: решётка или отверстие вентиляции.
+  Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
+- Вентиляционные отверстия и решётки в стене, у которых нет номера кандидата, выдай в vents: стена, грань, расстояние вдоль стены и высота
+  по осям развёртки.
+- Проёмы: если на развёртке в дверном проёме нет полотна и коробки (пустой проём в бетоне), kind = "opening"; входная дверь с полотном это door.
+- Маленькое помещение со стояками канализации и воды это санузел: назови его в rooms."""
 
 
 def build_system_prompt(profile=None, rules_text=None):
@@ -245,7 +267,7 @@ def build_system_prompt(profile=None, rules_text=None):
 
 def scene_for_model(scene, with_mep=True):
     """The scene without the noise: what the model needs to judge walls, openings and rooms."""
-    names = ("source", "levels", "walls", "rooms", "slabs", "assumptions", "warnings") + (("mep", "tracing") if with_mep else ())
+    names = ("source", "levels", "walls", "rooms", "slabs", "assumptions", "warnings", "candidates") + (("mep", "tracing") if with_mep else ())
     return json.dumps({k: scene[k] for k in names if k in scene}, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -342,7 +364,7 @@ def _wall_length(w):
     return math.hypot(w["end"]["x"] - w["start"]["x"], w["end"]["y"] - w["start"]["y"])
 
 
-def swing_flags(scene, wall, swing):
+def swing_flags(scene, wall, swing, at=None):
     """deslab: the model says WHERE the hinge is and which way the door opens; the code turns that into Archicad's
     `reflected` (hinge at the wall's end instead of its start) and `oSide` (opens to the left of the wall direction instead of
     the right). Calibrated on the one door Игорь confirmed on kv94: W3.1, wall running south (start y=10.07, end y=-0.1),
@@ -360,6 +382,17 @@ def swing_flags(scene, wall, swing):
     polys = _flat_polygons(scene)
     in_left, in_right = (any(_point_in_polygon(p, poly) for poly in polys) for p in (left, right))
     if in_left == in_right:
+        # deslab: 13.11.2026, Nagornaya: the slab runs to the OUTER outline of the walls and the outer wall is 0.64 m thick,
+        # so both points 0.5 m off the axis were «in the flat» and the balcony door's swing was refused. The rooms tell the
+        # side: a point just past each face of the wall, at the opening when it is known
+        reach = float(wall.get("thickness", 0.2)) / 2 + 0.25
+        if at is not None:
+            mx, my = wall["start"]["x"] + dx / length * at, wall["start"]["y"] + dy / length * at
+        left = {"x": mx - dy / length * reach, "y": my + dx / length * reach}
+        right = {"x": mx + dy / length * reach, "y": my - dx / length * reach}
+        rooms = [r["polygon"] for r in scene.get("rooms", []) if r.get("polygon")]
+        in_left, in_right = (any(_point_in_polygon(p, poly) for poly in rooms) for p in (left, right))
+    if in_left == in_right:
         return None
     flat_on_left = in_left
     opens_left = flat_on_left if swing["opens"] == "into" else not flat_on_left
@@ -373,7 +406,50 @@ def _confident(item, minimum):
         return False
 
 
-OFFICE_LABELS = {"shaft": "Вытяжка", "radiator": None, "panel": "Щиток", "sewerRiser": "Стояк канализации", "waterRiser": "Стояк воды"}
+OFFICE_LABELS = {"shaft": "Вытяжка", "radiator": None, "panel": "Щиток", "sewerRiser": "Стояк канализации", "waterRiser": "Стояк воды",
+                 "heatingRiser": "Стояк отопления", "box": "Короб", "vent": "Вент. отв"}
+
+
+def _face_point(wall, side, along):
+    """The point on a wall face: `side` "left"/"right" of the wall direction, `along` metres from the wall's start."""
+    dx, dy = wall["end"]["x"] - wall["start"]["x"], wall["end"]["y"] - wall["start"]["y"]
+    length = math.hypot(dx, dy)
+    ux, uy = dx / length, dy / length
+    k = (1 if side == "left" else -1) * float(wall.get("thickness", 0.2)) / 2
+    return {"x": round(wall["start"]["x"] + ux * along - uy * k, 4), "y": round(wall["start"]["y"] + uy * along + ux * k, 4)}
+
+
+def candidate_item(c, kind, number):
+    """deslab: 13.11.2026, a numbered candidate of the scan helper named by the model becomes an engineering item. Every
+    number is the cloud's (the helper measured the candidate), the model gives the name only."""
+    mx, my = (c["start"]["x"] + c["end"]["x"]) / 2, (c["start"]["y"] + c["end"]["y"]) / 2
+    nx, ny = c["at"]["x"] - mx, c["at"]["y"] - my
+    norm = math.hypot(nx, ny) or 1.0
+    nx, ny = nx / norm, ny / norm
+    width, depth = float(c["to"]) - float(c["from"]), float(c["depth"])
+    tall = float(c["top"]) - float(c["bottom"])
+    if kind in ("heatingRiser", "waterRiser", "sewerRiser"):
+        lo, hi = (0.09, 0.16) if kind == "sewerRiser" else (0.02, 0.06)
+        d = min(max(min(width, depth), lo), hi)
+        off = max(depth - d / 2, d / 2)
+        return {"kind": kind, "id": f"{'K' if kind == 'sewerRiser' else 'T'}{number}", "candidate": c["id"],
+                "at": {"x": round(mx + nx * off, 4), "y": round(my + ny * off, 4)}, "diameter": round(d, 3),
+                "label": OFFICE_LABELS[kind]}
+    if kind == "radiator":
+        return {"kind": kind, "id": f"RD{number}", "candidate": c["id"], "start": c["start"], "end": c["end"],
+                "depth": round(min(depth, 0.2), 3), "height": round(tall, 3), "elevation": round(float(c["bottom"]), 3)}
+    if kind == "panel":
+        return {"kind": kind, "id": f"EP{number}", "candidate": c["id"], "start": c["start"], "end": c["end"],
+                "depth": round(depth, 3), "height": round(tall, 3), "elevation": round(float(c["bottom"]), 3), "label": OFFICE_LABELS[kind]}
+    if kind == "vent":
+        return {"kind": kind, "id": f"V{number}", "candidate": c["id"], "at": {"x": round(mx, 4), "y": round(my, 4)},
+                "height": round((float(c["top"]) + float(c["bottom"])) / 2, 3), "label": OFFICE_LABELS[kind]}
+    # a shaft or a box: the rectangle standing out of the wall
+    a, b = c["start"], c["end"]
+    polygon = [dict(a), dict(b), {"x": round(b["x"] + nx * depth, 4), "y": round(b["y"] + ny * depth, 4)},
+               {"x": round(a["x"] + nx * depth, 4), "y": round(a["y"] + ny * depth, 4)}]
+    return {"kind": "shaft", "id": f"{'SH' if kind == 'shaft' else 'BX'}{number}", "candidate": c["id"], "polygon": polygon,
+            "thickness": 0.1, "label": OFFICE_LABELS[kind]}
 
 
 def _carries_outline(scene, wall):
@@ -402,7 +478,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
             continue
         wall, opening = openings[oid]
         if item.get("kind") in OPENING_KINDS and item["kind"] != opening.get("kind"):
-            if {item["kind"], opening.get("kind")} <= {"door", "balconyDoor"}:
+            if {item["kind"], opening.get("kind")} <= {"door", "balconyDoor", "opening"}:
                 opening["kind"] = item["kind"]
             else:
                 rejected.append(f"проём {oid}: смена типа {opening.get('kind')} на {item['kind']} не принимается")
@@ -413,7 +489,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
             else:
                 rejected.append(f"проём {oid}: створок {sashes} не принимается (окно уже 0.9 м только с одной створкой)")
         if "swing" in item and opening.get("kind") != "window":
-            flags = swing_flags(new, wall, item["swing"])
+            flags = swing_flags(new, wall, item["swing"], opening.get("centerOffset"))
             if flags is None:
                 rejected.append(f"проём {oid}: открывание {item['swing']} не переводится (неизвестна сторона квартиры или неверные значения)")
             else:
@@ -452,7 +528,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
             continue
         # deslab: risers need not stand in a shaft (kv94 K3 is 2.5 m from any), so the only hard check is «inside the flat»;
         # near a shaft (0.8 m) the confidence bar is lower, because the circles there are small and easy to read wrongly
-        in_shaft = kind in ("sewerRiser", "waterRiser") and _is_point(item.get("at")) and any(
+        in_shaft = kind in ("sewerRiser", "waterRiser", "heatingRiser") and _is_point(item.get("at")) and any(
             s.get("polygon") and _near_polygon(item["at"], s["polygon"], 0.8) for s in shafts)
         if not _confident(item, shaft_confidence if in_shaft else min_confidence):  # deslab: risers inside a shaft need less certainty
             rejected.append(f"инженерный элемент {mid}: низкая уверенность")
@@ -478,8 +554,8 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
                 item.pop("label", None)  # radiators: no label, their sizes are the dimension chain
         if kind == "shaft":
             item.setdefault("thickness", 0.1)
-        elif kind in ("sewerRiser", "waterRiser"):
-            item.setdefault("diameter", 0.11 if kind == "sewerRiser" else 0.05)
+        elif kind in ("sewerRiser", "waterRiser", "heatingRiser"):
+            item.setdefault("diameter", 0.11 if kind == "sewerRiser" else 0.05 if kind == "waterRiser" else 0.03)
         elif kind == "radiator":
             item.setdefault("depth", 0.07)
         elif kind == "panel":
@@ -488,13 +564,57 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
             item.setdefault("elevation", 1.6)
         # deslab: the labels of kv94's own drawing are short and few: «Вытяжка», «Стояк канализации», «Щиток»; radiators and water risers
         # have none (the model's «Радиатор 800», «шахта из пазогребневых блоков (левая стена)» ran over the dimensions)
-        item["label"] = {"shaft": "Вытяжка", "sewerRiser": "Стояк канализации", "panel": "Щиток"}.get(kind)
+        item["label"] = {"shaft": "Вытяжка", "sewerRiser": "Стояк канализации", "panel": "Щиток", "heatingRiser": "Стояк отопления"}.get(kind)
         if item["label"] is None:
             item.pop("label")
         mep.append(item)
         if kind == "shaft":
             shafts.append(item)
         applied.append(f"{kind} {mid}")
+    # deslab: 13.11.2026 (Игорь: «инженерные узлы пустым… надо проверить все коммуникации»): the helper's numbered candidates
+    # named by the model; the geometry is the cloud's
+    candidates = {c["id"]: c for c in new.get("candidates", [])}
+    answered = set()
+    for item in review.get("candidates", []) or []:
+        cid, kind = item.get("id"), item.get("kind")
+        c = candidates.get(cid)
+        if c is None or cid in answered:
+            rejected.append(f"кандидат {cid}: нет такого номера или повтор")
+            continue
+        answered.add(cid)
+        c["review"] = {k: item[k] for k in ("kind", "confidence", "note") if k in item}
+        if kind in CANDIDATE_SKIP:
+            continue
+        if kind not in CANDIDATE_KINDS:
+            rejected.append(f"кандидат {cid}: неизвестный тип {kind}")
+        elif not _confident(item, min_confidence):
+            rejected.append(f"кандидат {cid} ({kind}): уверенность {item.get('confidence')} ниже порога")
+        else:
+            made = candidate_item(c, kind, cid[1:])
+            if made["id"] in ids:
+                rejected.append(f"кандидат {cid}: повтор id {made['id']}")
+                continue
+            ids.add(made["id"])
+            mep.append(made)
+            applied.append(f"{kind} {made['id']} из кандидата {cid}")
+    for cid in candidates:
+        if cid not in answered:
+            rejected.append(f"кандидат {cid}: модель не ответила")
+    for n, item in enumerate(review.get("vents", []) or [], 1):
+        wall = walls.get(item.get("wallId"))
+        try:
+            along, height = float(item["along"]), float(item.get("height", 2.3))
+        except (KeyError, TypeError, ValueError):
+            rejected.append(f"вент. отверстие {n}: нет along")
+            continue
+        if not wall or item.get("side") not in ("left", "right") or not 0 <= along <= _wall_length(wall):
+            rejected.append(f"вент. отверстие {n}: нет стены {item.get('wallId')}, грани или место вне стены")
+        elif not _confident(item, min_confidence):
+            rejected.append(f"вент. отверстие {n}: низкая уверенность")
+        else:
+            mep.append({"kind": "vent", "id": f"VO{n}", "at": _face_point(wall, item["side"], along), "height": round(height, 2),
+                        "label": OFFICE_LABELS["vent"], "approximate": True})
+            applied.append(f"вент. отверстие VO{n} на {wall['id']}")
     new["mep"] = mep
 
     for item in review.get("clutter", []) or []:

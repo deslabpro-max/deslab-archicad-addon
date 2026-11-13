@@ -93,6 +93,51 @@ def test_ai_review_with_fake_model():
     assert seen["model"] == "m2"
 
 
+def test_candidates_from_the_cloud():
+    # deslab: 13.11.2026, the helper measures, the model only names the numbers
+    scene = json.loads(json.dumps(SCENE))
+    scene["mep"] = []
+    scene["candidates"] = [
+        {"id": "C1", "wallId": "W1", "side": "left", "from": 1.5, "to": 2.5, "bottom": 0.12, "top": 0.62, "depth": 0.1,
+         "at": {"x": 2.0, "y": 0.15}, "start": {"x": 1.5, "y": 0.1}, "end": {"x": 2.5, "y": 0.1}, "hint": "radiator?"},
+        {"id": "C2", "wallId": "W1", "side": "left", "from": 2.7, "to": 2.74, "bottom": 0.0, "top": 2.7, "depth": 0.08,
+         "at": {"x": 2.72, "y": 0.14}, "start": {"x": 2.7, "y": 0.1}, "end": {"x": 2.74, "y": 0.1}, "hint": "riser?"},
+        {"id": "C3", "wallId": "W2", "side": "left", "from": 3.0, "to": 3.6, "bottom": 0.0, "top": 2.7, "depth": 0.3,
+         "at": {"x": 5.75, "y": 3.3}, "start": {"x": 5.9, "y": 3.0}, "end": {"x": 5.9, "y": 3.6}, "hint": "box or shaft?"},
+        {"id": "C4", "wallId": "W1", "side": "left", "from": 4.0, "to": 5.0, "bottom": 0.4, "top": 1.0, "depth": 0.4,
+         "at": {"x": 4.5, "y": 0.3}, "start": {"x": 4.0, "y": 0.1}, "end": {"x": 5.0, "y": 0.1}, "hint": ""},
+        {"id": "C5", "wallId": "W1", "side": "left", "from": 5.2, "to": 5.3, "bottom": 0.0, "top": 2.7, "depth": 0.1,
+         "at": {"x": 5.25, "y": 0.15}, "start": {"x": 5.2, "y": 0.1}, "end": {"x": 5.3, "y": 0.1}, "hint": "riser?"},
+    ]
+    review = {"candidates": [{"id": "C1", "kind": "radiator", "confidence": 0.9}, {"id": "C2", "kind": "heatingRiser", "confidence": 0.8},
+                             {"id": "C3", "kind": "shaft", "confidence": 0.7}, {"id": "C4", "kind": "furniture", "confidence": 0.9},
+                             {"id": "C9", "kind": "radiator", "confidence": 0.9}],
+              "vents": [{"wallId": "W2", "side": "left", "along": 3.3, "height": 2.4, "confidence": 0.8}],
+              "openings": [{"id": "W2.1", "kind": "opening", "confidence": 0.9}]}
+    new, report = ai.apply_review(scene, review)
+    items = {m["id"]: m for m in new["mep"]}
+    assert set(items) == {"RD1", "T2", "SH3", "VO1"}, (set(items), report)
+    assert items["RD1"]["start"] == {"x": 1.5, "y": 0.1} and items["RD1"]["height"] == 0.5 and items["RD1"]["elevation"] == 0.12
+    assert items["T2"]["label"] == "Стояк отопления" and 0.02 <= items["T2"]["diameter"] <= 0.06
+    assert items["SH3"]["polygon"][2] == {"x": 5.6, "y": 3.6}, items["SH3"]
+    assert items["VO1"]["at"] == {"x": 5.9, "y": 3.3} and items["VO1"]["label"] == "Вент. отв"
+    assert new["walls"][1]["openings"][0]["kind"] == "opening"
+    text = "\n".join(report["rejected"])
+    assert "C9" in text and "C5" in text and "C4" not in text, text
+    assert "candidates" in ai.scene_for_model(scene, with_mep=False)
+
+
+def test_balcony_door_swing_in_a_thick_wall():
+    # Nagornaya: the slab runs to the outer outline, the wall is 0.64 m thick; the rooms tell the flat's side
+    scene = {"walls": [{"id": "W3", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.64, "kind": "exterior",
+                        "openings": [{"id": "W3.2", "kind": "balconyDoor", "centerOffset": 5.0, "width": 0.8, "sill": 0.1, "height": 2.6}]}],
+             "rooms": [{"id": "R1", "polygon": [{"x": 0, "y": 0.32}, {"x": 6, "y": 0.32}, {"x": 6, "y": 4}, {"x": 0, "y": 4}]}],
+             "slabs": [{"polygon": [{"x": -0.3, "y": -0.32}, {"x": 6.3, "y": -0.32}, {"x": 6.3, "y": 4.3}, {"x": -0.3, "y": 4.3}]}]}
+    new, report = ai.apply_review(scene, {"openings": [{"id": "W3.2", "swing": {"hinge": "end", "opens": "into"}, "confidence": 0.8}]})
+    door = new["walls"][0]["openings"][0]
+    assert door.get("reflected") is True and door.get("oSide") is True, (door, report)
+
+
 KV94_DOOR = {
     "walls": [{"id": "W3", "start": {"x": -0.1, "y": 10.0745}, "end": {"x": -0.1, "y": -0.1}, "thickness": 0.2, "kind": "interior",
                "openings": [{"id": "W3.1", "kind": "door", "width": 1.2, "sill": 0.0, "height": 2.1, "centerOffset": 8.7835}]}],

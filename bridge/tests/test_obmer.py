@@ -48,6 +48,15 @@ def test_labels():
     # door: into the room, clear of the dimension band and the «Н» text
     assert labels["W2.1"]["midCoordinate"]["x"] < 4.0 and labels["W2.1"]["cost"] < 100, labels["W2.1"]
     assert "".join(r["text"] for r in labels["W2.1"]["runs"]) == "hдвери 2100"
+    # deslab: Игорь 13.11.2026, a doorway without a leaf is «hпроёма», a balcony door with a threshold «hдвери / hпорога»
+    import copy
+    scene = copy.deepcopy(SCENE)
+    by_id = {o["id"]: o for w in scene["walls"] for o in w["openings"]}
+    by_id["W2.1"]["kind"] = "opening"
+    by_id["W1.1"].update(kind="balconyDoor", sill=0.14, height=2.5)
+    labels = {l["opening"]: l for l in obmer.plan_opening_labels(scene, PROFILE, obstacles)}
+    assert "".join(r["text"] for r in labels["W2.1"]["runs"]) == "hпроёма 2100"
+    assert "".join(r["text"] for r in labels["W1.1"]["runs"]) == "hдвери 2500\nhпорога 140"
 
 
 def test_dimensions():

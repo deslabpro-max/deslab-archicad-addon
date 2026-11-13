@@ -528,10 +528,17 @@ def plan_opening_labels(scene, profile, obstacles=None):
     def text_of(o):
         window = o["kind"] in ("window", "balconyDoor")
         values = {"height_mm": _mm(o["height"]), "sill_mm": _mm(o.get("sill", 0))}
-        if window and float(o.get("sill", 0)) > 0.05:
+        if o["kind"] == "balconyDoor" and float(o.get("sill", 0)) > 0.03:
+            # deslab: Игорь 13.11.2026, «у двери на балкон нет порога… ставить выноску, что высота этого порога»: two lines
+            # as in the template, «hдвери 2135 / hпорога 90»
+            template = cfg.get("threshold") or [["h", ""], ["двери", "sub"], [" {height_mm}\n", ""], ["h", ""], ["порога", "sub"], [" {sill_mm}", ""]]
+        elif window and float(o.get("sill", 0)) > 0.05:
             template = cfg["window"]
         elif window:
             template = [["h", ""], ["окна", "sub"], [" {height_mm}", ""]]
+        elif o["kind"] == "opening":
+            # deslab: Игорь 13.11.2026, «стоит h двери, а должно быть h проёма»
+            template = cfg.get("opening") or [["h", ""], ["проёма", "sub"], [" {height_mm}", ""]]
         else:
             template = cfg["door"]
         runs = _runs(template, values)
@@ -1615,7 +1622,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
 
     # 1. Model in one add-on call.
     params = {"scene": scene, "floorIndex": floor_index,
-              "favorites": {k: F[k] for k in ("wall", "door", "window", "zone") if F.get(k)},
+              "favorites": {k: F[k] for k in ("wall", "door", "opening", "window", "zone") if F.get(k)},
               # deslab: 12.11.2026, the floor slab on the template's slab layer: it is what the axonometry shows as the floor
               "layers": {"walls": L["bearingWalls"], "zones": L["zones"], **({"slabs": L["slabs"]} if L.get("slabs") else {})},
               "materials": {"measuredWalls": profile["walls"]["material"], "assumedWalls": profile["walls"]["material"]}}
@@ -1653,7 +1660,15 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
               if o.get("kind") == "door" and o["id"] in opening_guid and ("reflected" in o or "oSide" in o)]
     if swings:
         _check_details(ac.tapir("ModifyDoors", {"doorsWithDetails": swings}), report, "Открывание двери")
-    report.step("открывание дверей", doors=len(swings))
+    # deslab: Игорь 13.11.2026, «открывание балконной двери не с той стороны»: the balcony door is a window, its hinge side
+    # is the window's `reflected` (the model says the jamb with the hinge, ai.swing_flags)
+    flip = bool(profile.get("windows", {}).get("balconyHingeFlip", False))
+    balcony = [{"elementId": {"guid": opening_guid[o["id"]]}, "reflected": bool(o["reflected"]) != flip}
+               for w in model_scene.get("walls", []) for o in w.get("openings", [])
+               if o.get("kind") == "balconyDoor" and o["id"] in opening_guid and "reflected" in o]
+    if balcony:
+        _check_details(ac.tapir("ModifyWindows", {"windowsWithDetails": balcony}), report, "Открывание балконной двери")
+    report.step("открывание дверей", doors=len(swings), balconyDoors=len(balcony))
 
     # deslab: shafts (walls of 100 mm blocks), the tracing (low walls of the first row of blocks),
     # risers, radiators and the panel (Игорь 05.11.2026)
@@ -1704,7 +1719,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
             _check_details(ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": gdl}), report, "Размер стояка")
         # deslab: risers (pipes) on «002 Инженерные узлы», shown on both plans; radiators and the panel
         # on the engineering plan only (Игорь 06.11.2026)
-        for kinds, key in ((("sewerRiser", "waterRiser"), "risers"), (("radiator",), "radiators"), (("panel",), "panel")):
+        for kinds, key in ((("sewerRiser", "waterRiser", "heatingRiser"), "risers"), (("radiator",), "radiators"), (("panel",), "panel")):
             set_layer(ac, [g for (m, _, _), g in zip(objects, guids) if g and m.get("kind") in kinds],
                       idx.get(L.get(key)) or mep_layer, report, "коммуникации")
     report.step("шахты, трассировка, стояки, радиаторы", walls=len(extra_walls), objects=len(objects))
