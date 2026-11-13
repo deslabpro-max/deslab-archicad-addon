@@ -13,5 +13,5 @@ if (-not $p.HasExited) { "graceful quit timed out, killing PID $id"; Stop-Proces
 Start-Sleep -Seconds 1
 Get-Process GSReport -ErrorAction SilentlyContinue | Stop-Process -Force
 Remove-Item $PidFile -ErrorAction SilentlyContinue
-Remove-Item "$env:TEMP\deslab-ac-stop.flag" -ErrorAction SilentlyContinue
+Remove-Item "$env:TEMP\deslab-ac-stop.flag", "$env:TEMP\deslab-ac-ready.flag" -ErrorAction SilentlyContinue
 "stopped in {0:N1}s" -f $sw.Elapsed.TotalSeconds
