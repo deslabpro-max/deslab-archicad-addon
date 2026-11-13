@@ -60,9 +60,22 @@ def test_two_ducts_side_by_side():
     assert abs(spans[0][0] - 1.0) <= 0.03 and abs(spans[0][1] - 1.15) <= 0.03, found
     assert abs(spans[1][0] - 1.18) <= 0.03 and abs(spans[1][1] - 1.65) <= 0.03, found
     assert all(abs(c["depth"] - 0.27) < 0.02 for c in found), found
-    # the same two ducts pressed together without a groove are one thing
-    pts = np.concatenate(face[:2] + face[3:] + [plane_y(0.42, 1.0, 1.65, 0, 2.7), plane_x(1.0, 0.15, 0.42, 0, 2.7), plane_x(1.65, 0.15, 0.42, 0, 2.7)])
-    assert len([c for c in find_candidates(pts, scene) if c["top"] - c["bottom"] > 2.0]) == 1
+    # pressed together, the narrow one 26 cm and the wide one 30 cm out (Nagornaya): a step, two things
+    tall = lambda p: [c for c in find_candidates(p, scene) if c["top"] - c["bottom"] > 2.0]  # noqa: E731
+    flat = face[:2] + face[3:]
+    pts = np.concatenate(flat + [plane_y(0.41, 1.0, 1.16, 0, 2.7), plane_x(1.0, 0.15, 0.41, 0, 2.7), plane_x(1.16, 0.41, 0.45, 0, 2.7),
+                                 plane_y(0.45, 1.16, 1.65, 0, 2.7), plane_x(1.65, 0.15, 0.45, 0, 2.7)])
+    pts += np.random.default_rng(4).normal(0, 0.002, pts.shape)
+    spans = sorted((c["from"], c["to"]) for c in tall(pts))
+    assert len(spans) == 2 and abs(spans[0][1] - 1.16) <= 0.03 and abs(spans[1][0] - 1.16) <= 0.03, spans
+    # one box whose face slopes 5 cm over its 65 cm, or of one depth: one thing
+    ys, zs = np.mgrid[1.0:1.65:0.015, 0:2.7:0.015]
+    slope = np.stack([ys.ravel(), 0.45 - (ys.ravel() - 1.0) / 0.65 * 0.05, zs.ravel()], 1)
+    for front in (slope, plane_y(0.42, 1.0, 1.65, 0, 2.7)):
+        pts = np.concatenate(flat + [front, plane_x(1.0, 0.15, 0.45, 0, 2.7), plane_x(1.65, 0.15, 0.40, 0, 2.7)])
+        pts += np.random.default_rng(5).normal(0, 0.002, pts.shape)
+        spans = [(c["from"], c["to"]) for c in tall(pts)]
+        assert len(spans) == 1 and abs(spans[0][0] - 1.0) <= 0.03 and abs(spans[0][1] - 1.65) <= 0.03, spans
     return found
 
 

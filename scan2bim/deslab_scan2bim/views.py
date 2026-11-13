@@ -281,13 +281,19 @@ def _join_pipe_pieces(found, height):
     return found
 
 
-def _split_at_grooves(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.1, max_groove=0.06, dip=0.03):
+def _split_at_seams(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.1, max_groove=0.06, dip=0.03, jump=0.03,
+                    window=7, sparse=0.4, spread=0.05, max_trim=0.25):
     """deslab: 13.11.2026, Nagornaya bathroom corner: two rectangular vent ducts stand side by side from floor to ceiling
-    (Игорь: «две квадратных трубы, одна широкая, другая узкая») and came out as one box. Where they meet the scanner
-    looks into the seam: on the plan a short line going into the box (x 2.82-2.92 at y 8.29-8.33). The frontmost point of
-    a 2 cm cell hides it, the middle depth of the points of a 1 cm column does not: in the seam most points lie deeper
-    than the face. A tall thing is cut in the middle of such a seam (at most 6 cm wide, at least 10 cm on both sides).
-    `tm`, `zm`, `dm`: the points' place along the wall, height and depth. Returns the ranges along the wall."""
+    (Игорь: «две квадратных трубы, одна широкая, другая узкая») and came out as one box 0.9 m long. A tall thing is
+    looked at in columns 1 cm wide along the wall (`tm`, `zm`, `dm`: the points' place along the wall, height and depth;
+    the frontmost point of a 2 cm cell hides a seam). First its ends lose up to 25 cm of columns that hold few points
+    (a thin pipe in the gap to the next wall) or whose points lie clearly deeper and spread in depth (a side wall seen at
+    a slant). Then it is cut:
+    - in the middle of a groove: a few columns (at most 6 cm) whose points lie clearly deeper than the face on both
+      sides of them, the scanner looks between the two things;
+    - at a step: the middle depth jumps by 3 cm or more within 2 columns between two flat stretches (Nagornaya: 26 cm
+      for the narrow duct, 30 cm for the wide one; a face that slopes 5 cm over 45 cm is no step).
+    Every part keeps at least 10 cm and is trimmed at its ends the same way. Returns the ranges along the wall."""
     whole = [(t0, t1)]
     if z1 - z0 < 0.7 * height or t1 - t0 < 2 * min_part + step:
         return whole
@@ -296,26 +302,76 @@ def _split_at_grooves(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.
     cols = np.clip(((tm[sel] - t0) / step).astype(int), 0, n - 1)
     order = np.argsort(cols, kind="stable")
     counts = np.bincount(cols, minlength=n)
-    level = np.array([np.median(v) if len(v) >= 10 else np.nan for v in np.split(dm[sel][order], np.cumsum(counts)[:-1])])
+    groups = np.split(dm[sel][order], np.cumsum(counts)[:-1])
+    level = np.array([np.median(v) if len(v) >= 10 else np.nan for v in groups])
+    width = np.array([np.subtract(*np.percentile(v, [75, 25])) if len(v) >= 10 else np.nan for v in groups])
     if np.isnan(level).all():
         return whole
-    face = float(np.nanmedian(level))
-    low = np.nan_to_num(level, nan=face) < face - dip
-    cuts, k, last = [], 0, 0
-    while k < n:
-        if not low[k]:
-            k += 1
-            continue
-        j = k
-        while j < n and low[j]:
-            j += 1
-        if (j - k) * step <= max_groove and (k - last) * step >= min_part and (n - j) * step >= min_part and \
-                np.nanmedian(level[last:k]) >= face - dip and np.nanmedian(level[j:]) >= face - dip:
-            cuts.append(t0 + (k + j) / 2 * step)
-            last = j
-        k = j
-    edges = [t0] + cuts + [t1]
-    return list(zip(edges[:-1], edges[1:]))
+    part = int(round(min_part / step))
+
+    def med(i, j):
+        v = level[max(i, 0):min(j, n)]
+        v = v[~np.isnan(v)]
+        return float(np.median(v)) if len(v) >= 3 else None
+
+    def trim(lo, hi):
+        lo0, hi0, flat = lo, hi, med(lo, hi)
+        c = counts[lo:hi][counts[lo:hi] >= 10]
+        many = float(np.median(c)) if len(c) else 0.0
+
+        def thin(i):
+            return counts[i] < sparse * many or np.isnan(level[i]) or \
+                (flat is not None and level[i] < flat - dip and width[i] > spread)
+        while hi - lo > part and (lo - lo0) * step < max_trim and thin(lo):
+            lo += 1
+        while hi - lo > part and (hi0 - hi) * step < max_trim and thin(hi - 1):
+            hi -= 1
+        return lo, hi
+
+    lo, hi = trim(0, n)
+    face = med(lo, hi)
+    cuts = []
+    if face is not None and hi - lo >= 2 * part:
+        low = np.nan_to_num(level, nan=face) < face - dip
+        k, last = lo, lo
+        while k < hi:
+            if not low[k]:
+                k += 1
+                continue
+            j = k
+            while j < hi and low[j]:
+                j += 1
+            left, right = med(max(k - window, last), k), med(j, min(j + window, hi))
+            if (j - k) * step <= max_groove and k - last >= part and hi - j >= part and left is not None and \
+                    right is not None and float(np.nanmedian(level[k:j])) < min(left, right) - dip:
+                cuts.append((k + j) / 2)
+                last = j
+            k = j
+        steps = []
+        half = window // 2
+        for b in range(lo + part, hi - part + 1):
+            left, right = med(max(b - 1 - window, lo), b - 1), med(b + 1, min(b + 1 + window, hi))
+            if left is None or right is None or abs(right - left) < jump:
+                continue
+            halves = (med(b - 1 - window, b - 1 - half), med(b - 1 - half, b - 1), med(b + 1, b + 1 + half),
+                      med(b + 1 + half, b + 1 + window))
+            if None in halves or abs(halves[1] - halves[0]) > jump / 2 or abs(halves[3] - halves[2]) > jump / 2:
+                continue
+            steps.append((abs(right - left), b, left, right))
+        for _, b, left, right in sorted(steps, reverse=True):
+            # the cut goes to the first column that stands as the far side does (the step may take two columns)
+            for c in range(max(b - 2, lo + 1), min(b + 3, hi)):
+                if not np.isnan(level[c]) and (level[c] - (left + right) / 2) * (right - left) > 0:
+                    b = c
+                    break
+            if all(abs(b - c) >= part for c in cuts):
+                cuts.append(b)
+    edges = [lo] + sorted(cuts) + [hi]
+    out = []
+    for e0, e1 in zip(edges[:-1], edges[1:]):
+        p0, p1 = trim(int(np.ceil(e0)), int(np.floor(e1)))
+        out.append((t0 + p0 * step, t0 + p1 * step))
+    return out
 
 
 def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
@@ -371,7 +427,7 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
                 fill = len(ys) / max(1.0, (width / cell) * (tall / cell))
                 if fill < 0.3 and width * tall > 0.5:
                     continue   # a curtain, a ragged cloud: not a thing with a shape
-                for p0, p1 in _split_at_grooves(t[idx][m], pts[idx][m, 2], depth[m], t0, t1, z0, z1, height):
+                for p0, p1 in _split_at_seams(t[idx][m], pts[idx][m, 2], depth[m], t0, t1, z0, z1, height):
                     sub = ((xs + 0.5) * cell >= p0) & ((xs + 0.5) * cell < p1)
                     part = front[ys[sub], xs[sub]] if sub.any() else front[ys, xs]
                     found.append(_candidate(wall, side, a, u, n, half, p0, p1, z0, z1,
