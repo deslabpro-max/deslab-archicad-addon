@@ -654,6 +654,8 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         GS::ObjectState windowParameters;
         const auto& windowsData = windowParameters.AddList<GS::ObjectState> ("windowsData");
         GS::Array<GS::UniString> doorIds;
+        GS::Array<GS::ObjectState> emptyDoorsData;
+        GS::Array<GS::UniString> emptyDoorIds;
         GS::Array<GS::UniString> windowIds;
         GS::Array<bool> windowIsDoor;
         GS::Array<GS::Array<GS::ObjectState>> windowGdl;  // deslab: GDL parameters from the scene, per window
@@ -712,11 +714,21 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     windowsData (data);
                     windowIds.Push (GetString (opening, "id"));
                     windowIsDoor.Push (isBalconyDoor);
+                } else if (isEmptyOpening) {
+                    // deslab: 13.11.2026, Nagornaya run 3: a library part named for one door stays in the Door tool for the
+                    // doors after it, and the entrance door, created after two empty doorways, lost its leaf. The doors
+                    // with a leaf go first, the empty doorways after them
+                    emptyDoorsData.Push (data);
+                    emptyDoorIds.Push (GetString (opening, "id"));
                 } else {
                     doorsData (data);
                     doorIds.Push (GetString (opening, "id"));
                 }
             }
+        }
+        for (UIndex d = 0; d < emptyDoorsData.GetSize (); ++d) {
+            doorsData (emptyDoorsData[d]);
+            doorIds.Push (emptyDoorIds[d]);
         }
         GS::Array<GS::Pair<API_Guid, bool>> createdWindows;  // the window and whether it is a balcony door
         GS::Array<GS::Array<GS::ObjectState>> createdGdl;    // deslab: and its GDL parameters from the scene
@@ -742,7 +754,23 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         };
         const DefaultLayerScope defaultLayerDoor (API_DoorID, LayerOf (layers, "openings"));
         if (!doorIds.IsEmpty ()) {
+            // deslab: the Door tool is left as it was (the empty doorway's library part would stay as its default, and the
+            // next build in this project would give the entrance door no leaf)
+            API_Element doorDefaults = {};
+            API_ElementMemo doorDefaultsMemo = {};
+#ifdef ServerMainVers_2600
+            doorDefaults.header.type = API_DoorID;
+#else
+            doorDefaults.header.typeID = API_DoorID;
+#endif
+            const bool haveDoorDefaults = !emptyDoorIds.IsEmpty () && ACAPI_Element_GetDefaults (&doorDefaults, &doorDefaultsMemo) == NoError;
             collect (CreateDoorsCommand ().Execute (doorParameters, processControl), doorIds, doorList, "Door", false);
+            if (haveDoorDefaults) {
+                API_Element restoreMask;
+                ACAPI_ELEMENT_MASK_SETFULL (restoreMask);
+                ACAPI_Element_ChangeDefaults (&doorDefaults, &doorDefaultsMemo, &restoreMask);
+                ACAPI_DisposeElemMemoHdls (&doorDefaultsMemo);
+            }
         }
         const DefaultLayerScope defaultLayerWindow (API_WindowID, LayerOf (layers, "openings"));
         if (!windowIds.IsEmpty ()) {

@@ -595,6 +595,9 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             rejected.append(f"кандидат {cid}: неизвестный тип {kind}")
         elif not _confident(item, candidate_confidence):
             rejected.append(f"кандидат {cid} ({kind}): уверенность {item.get('confidence')} ниже порога")
+        elif kind in ("shaft", "box") and min(float(c["to"]) - float(c["from"]), float(c["depth"])) < 0.25:
+            # deslab: Nagornaya run 3, a «box» 0.14 m wide gave a wall of zero length (its walls are 100 mm blocks)
+            rejected.append(f"кандидат {cid} ({kind}): уже 0.25 м, короб из блоков 100 мм не строится")
         else:
             made = candidate_item(c, kind, cid[1:])
             if made["id"] in ids:
