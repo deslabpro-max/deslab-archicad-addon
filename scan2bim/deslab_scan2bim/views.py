@@ -282,19 +282,20 @@ def _join_pipe_pieces(found, height):
 
 
 def _split_at_seams(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.1, max_groove=0.06, dip=0.03, jump=0.03,
-                    window=7, sparse=0.4, spread=0.05, max_trim=0.25):
+                    window=7, sparse=0.4, spread=0.05, max_trim=0.25, seam_part=0.08, seam_depth=0.02):
     """deslab: 13.11.2026, Nagornaya bathroom corner: two rectangular vent ducts stand side by side from floor to ceiling
     (Игорь: «две квадратных трубы, одна широкая, другая узкая») and came out as one box 0.9 m long. A tall thing is
     looked at in columns 1 cm wide along the wall (`tm`, `zm`, `dm`: the points' place along the wall, height and depth;
     the frontmost point of a 2 cm cell hides a seam). First its ends lose up to 25 cm of columns that hold few points
-    (a thin pipe in the gap to the next wall) or whose points lie clearly deeper and spread in depth (a side wall seen at
-    a slant). Then it is cut:
+    (a thin pipe in the gap to the next wall), that do not stand out of the wall, or whose points lie clearly deeper and
+    spread in depth (a side wall seen at a slant). Then it is cut:
     - in the middle of a groove: a few columns (at most 6 cm) whose points lie clearly deeper than the face on both
       sides of them, the scanner looks between the two things;
     - at a step: the middle depth jumps by 3 cm or more within 2 columns between two flat stretches (Nagornaya: 26 cm
       for the narrow duct, 30 cm for the wide one; a face that slopes 5 cm over 45 cm is no step).
-    Every part keeps at least 10 cm and is trimmed at its ends the same way. Returns the ranges along the wall."""
-    whole = [(t0, t1)]
+    Every part keeps at least 10 cm and is trimmed at its ends the same way. Returns the ranges along the wall, each with
+    its faint seam (place along the wall, how deep or high in m) or None: see _weak_seam."""
+    whole = [(t0, t1, None)]
     if z1 - z0 < 0.7 * height or t1 - t0 < 2 * min_part + step:
         return whole
     sel = (tm >= t0) & (tm < t1) & (zm >= z0) & (zm < z1)
@@ -303,7 +304,9 @@ def _split_at_seams(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.1,
     order = np.argsort(cols, kind="stable")
     counts = np.bincount(cols, minlength=n)
     groups = np.split(dm[sel][order], np.cumsum(counts)[:-1])
-    level = np.array([np.median(v) if len(v) >= 10 else np.nan for v in groups])
+    # deslab: the 80th percentile, not the median: behind a metal duct the scanner sees the wall at many heights
+    # (Nagornaya y 8.20: the duct face at 1.0-1.5 and 3.0-3.3 m only), the front of the column is its face
+    level = np.array([np.percentile(v, 80) if len(v) >= 10 else np.nan for v in groups])
     width = np.array([np.subtract(*np.percentile(v, [75, 25])) if len(v) >= 10 else np.nan for v in groups])
     if np.isnan(level).all():
         return whole
@@ -320,7 +323,7 @@ def _split_at_seams(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.1,
         many = float(np.median(c)) if len(c) else 0.0
 
         def thin(i):
-            return counts[i] < sparse * many or np.isnan(level[i]) or \
+            return counts[i] < sparse * many or np.isnan(level[i]) or level[i] < 0.035 or \
                 (flat is not None and level[i] < flat - dip and width[i] > spread)
         while hi - lo > part and (lo - lo0) * step < max_trim and thin(lo):
             lo += 1
@@ -370,8 +373,36 @@ def _split_at_seams(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.1,
     out = []
     for e0, e1 in zip(edges[:-1], edges[1:]):
         p0, p1 = trim(int(np.ceil(e0)), int(np.floor(e1)))
-        out.append((t0 + p0 * step, t0 + p1 * step))
+        seam = _weak_seam(level, med, p0, p1, int(round(seam_part / step)), window, seam_depth)
+        out.append((t0 + p0 * step, t0 + p1 * step, None if seam is None else (t0 + seam[0] * step, seam[1])))
     return out
+
+
+def _weak_seam(level, med, lo, hi, part, window, least):
+    """deslab: 13.11.2026, the likeliest place in a tall part where two things meet, too faint to cut on its own
+    (Nagornaya: the front of the narrow duct 28.4 cm, a groove 26.4 cm 2 cm wide, the wide duct 29.5-30.5 cm). The model
+    looks at the picture and decides whether the candidate is two things (`parts`: 2). Returns (column, how deep or
+    high in m) or None."""
+    best = None
+    for b in range(lo + part, hi - part + 1):
+        for w in (1, 2, 3):
+            if b + w > hi - part:
+                break
+            v = level[b:b + w]
+            if np.isnan(v).all():
+                continue
+            left, right = med(max(b - window, lo), b), med(b + w, min(b + w + window, hi))
+            if left is None or right is None:
+                continue
+            strength = min(left, right) - float(np.nanmedian(v))
+            if strength >= least and (best is None or strength > best[1] + 1e-9):
+                best = (b + w / 2, strength)
+        left, right = med(max(b - 1 - window, lo), b - 1), med(b + 1, min(b + 1 + window, hi))
+        if left is not None and right is not None:
+            strength = abs(right - left)
+            if strength >= least and (best is None or strength > best[1] + 1e-9):
+                best = (b, strength)
+    return None if best is None else (best[0], round(float(best[1]), 3))
 
 
 def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
@@ -427,11 +458,18 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
                 fill = len(ys) / max(1.0, (width / cell) * (tall / cell))
                 if fill < 0.3 and width * tall > 0.5:
                     continue   # a curtain, a ragged cloud: not a thing with a shape
-                for p0, p1 in _split_at_seams(t[idx][m], pts[idx][m, 2], depth[m], t0, t1, z0, z1, height):
-                    sub = ((xs + 0.5) * cell >= p0) & ((xs + 0.5) * cell < p1)
+                for p0, p1, seam in _split_at_seams(t[idx][m], pts[idx][m, 2], depth[m], t0, t1, z0, z1, height):
+                    along = (xs + 0.5) * cell
+                    sub = (along >= p0) & (along < p1)
                     part = front[ys[sub], xs[sub]] if sub.any() else front[ys, xs]
                     found.append(_candidate(wall, side, a, u, n, half, p0, p1, z0, z1,
                                             float(np.percentile(part, 80)), fill, height))
+                    if seam is not None:
+                        # deslab: a faint seam for the model; the depths of the two sides as the candidate's own
+                        sides = [front[ys[k], xs[k]] for k in (sub & (along < seam[0]), sub & (along >= seam[0]))]
+                        if all(len(v) for v in sides):
+                            found[-1].update({"seam": round(seam[0], 3), "seamStrength": seam[1],
+                                              "seamDepths": [round(float(np.percentile(v, 80)), 3) for v in sides]})
     found = _join_pipe_pieces(found, height)
     # one thing near a corner is seen from both walls: it belongs to the wall it stands closer to
     drop = set()

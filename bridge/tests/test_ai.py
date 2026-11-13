@@ -178,6 +178,17 @@ def test_two_vent_ducts():
     morphs = duct_morphs(new)
     assert [round(d["size"]["x"], 3) for _, d in morphs] == [0.15, 0.47] and all(d["size"]["z"] == 2.7 for _, d in morphs), morphs
     assert abs(morphs[0][1]["size"]["y"] - 0.275) < 1e-6 and morphs[0][1]["basePoint"]["z"] == 0.0
+    # one candidate with a faint seam that the model sees as two ducts is cut there
+    scene["candidates"] = [dict(scene["candidates"][0], id="C1", to=3.25, end={"x": 3.25, "y": 0.1}, at={"x": 2.925, "y": 0.2375}, seam=2.75,
+                                seamStrength=0.025, seamDepths=[0.275, 0.265])]
+    new, report = ai.apply_review(scene, {"candidates": [{"id": "C1", "kind": "duct", "confidence": 0.8, "parts": 2}]})
+    ducts = [m for m in new["mep"] if m.get("duct")]
+    assert [(m["id"], m["label"]) for m in ducts] == [("VD1a", "Воздуховод 150×275"), ("VD1b", "Воздуховод 500×265")], (ducts, report)
+    assert abs(ducts[1]["polygon"][0]["x"] - 2.75) < 1e-6 and abs(ducts[1]["polygon"][2]["y"] - 0.365) < 1e-6, ducts[1]
+    # parts 2 without a seam: built whole, and said so
+    del scene["candidates"][0]["seam"]
+    new, report = ai.apply_review(scene, {"candidates": [{"id": "C1", "kind": "duct", "confidence": 0.8, "parts": 2}]})
+    assert [m["id"] for m in new["mep"] if m.get("duct")] == ["VD1"] and "без стыка" in "\n".join(report["rejected"])
     # a duct along a skew wall is a prism over its polygon
     skew = {"mep": [{"kind": "shaft", "duct": True, "id": "VD1", "elevation": 0.0, "height": 2.5,
                      "polygon": [{"x": 0, "y": 0}, {"x": 0.3, "y": 0.1}, {"x": 0.25, "y": 0.25}, {"x": -0.05, "y": 0.15}]}]}

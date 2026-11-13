@@ -212,7 +212,8 @@ REVIEW_SCHEMA = {
     "_panelNote": "a panel (щиток) may be given as a point `at` on the wall: the code makes the segment",
     "candidates": [{"id": "C1 (an id from the scene's `candidates`, every one must be answered)",
                     "kind": "radiator|heatingRiser|waterRiser|sewerRiser|shaft|box|duct|panel|vent|clutter|furniture|windowBoard|other",
-                    "confidence": "0..1 (0.4 and more is drawn; the candidate itself is real, you only doubt its name)", "note": "short text"}],
+                    "confidence": "0..1 (0.4 and more is drawn; the candidate itself is real, you only doubt its name)",
+                    "parts": "2 only for a candidate with a `seam` that the pictures show as two things side by side there", "note": "short text"}],
     "pipes": [{"id": "P1 (an id from the scene's `pipes`, every one must be answered)",
                "system": "heating|water|sewer|vent|clutter", "confidence": "0..1", "note": "short text"}],
     "vents": [{"wallId": "W4", "side": "left|right (the face, as in the picture's title)", "along": "m along the wall, from the picture's axis",
@@ -245,6 +246,8 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   рядом с канализационным стояком (ХВС и ГВС, обычно две). shaft: выступающий короб вентиляции на всю высоту с решёткой или отверстием.
   box: короб без решётки (закрытые стояки, гипсокартон). duct: открытый прямоугольный вентиляционный воздуховод от пола до потолка
   (металл или пластик, поперечные стыки-фланцы); два воздуховода рядом это два кандидата, назови каждый duct. panel: электрощит. vent: решётка или отверстие вентиляции.
+  seam у кандидата: по облаку там слабый стык (seamStrength в м, seamDepths глубины двух сторон). Если на снимках кандидат в этом месте
+  это две вещи рядом (два воздуховода, воздуховод и короб), добавь parts: 2, код разрежет его по seam, kind относится к обеим частям.
   Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
 - Трубы P1, P2… (раздел pipes сцены) алгоритм нашёл и измерил в облаке сам: kind riser это стояк (ось x, y, от z до z), run это труба
   вдоль стены (два конца оси, высота z), diameter в метрах, joins показывает, к какой трубе она присоединена, hint это догадка алгоритма.
@@ -430,6 +433,31 @@ def _face_point(wall, side, along):
     ux, uy = dx / length, dy / length
     k = (1 if side == "left" else -1) * float(wall.get("thickness", 0.2)) / 2
     return {"x": round(wall["start"]["x"] + ux * along - uy * k, 4), "y": round(wall["start"]["y"] + uy * along + ux * k, 4)}
+
+
+def split_candidate(c, least=0.05):
+    """deslab: 13.11.2026, a candidate the model sees as two things side by side (Nagornaya: a narrow and a wide vent duct)
+    is cut at the seam the helper measured; each half keeps the depth of its side. None without a seam inside it."""
+    seam, t0, t1 = c.get("seam"), float(c["from"]), float(c["to"])
+    if seam is None or not t0 + least <= float(seam) <= t1 - least:
+        return None
+    seam = float(seam)
+    ux, uy = (c["end"]["x"] - c["start"]["x"]) / (t1 - t0), (c["end"]["y"] - c["start"]["y"]) / (t1 - t0)
+    mx, my = (c["start"]["x"] + c["end"]["x"]) / 2, (c["start"]["y"] + c["end"]["y"]) / 2
+    nx, ny = c["at"]["x"] - mx, c["at"]["y"] - my
+    norm = math.hypot(nx, ny) or 1.0
+    nx, ny = nx / norm, ny / norm
+    depths = c.get("seamDepths") or [c["depth"], c["depth"]]
+    out = []
+    for (a, b), depth, tag in (((t0, seam), depths[0], "a"), ((seam, t1), depths[1], "b")):
+        start = {"x": round(c["start"]["x"] + ux * (a - t0), 4), "y": round(c["start"]["y"] + uy * (a - t0), 4)}
+        end = {"x": round(c["start"]["x"] + ux * (b - t0), 4), "y": round(c["start"]["y"] + uy * (b - t0), 4)}
+        mid = ((start["x"] + end["x"]) / 2, (start["y"] + end["y"]) / 2)
+        out.append({**{k: v for k, v in c.items() if k not in ("seam", "seamStrength", "seamDepths")},
+                    "id": c["id"] + tag, "from": round(a, 3), "to": round(b, 3), "depth": round(float(depth), 3),
+                    "start": start, "end": end,
+                    "at": {"x": round(mid[0] + nx * float(depth) / 2, 4), "y": round(mid[1] + ny * float(depth) / 2, 4)}})
+    return out
 
 
 def candidate_item(c, kind, number):
@@ -623,13 +651,17 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
         elif kind in ("shaft", "box") and min(float(c["to"]) - float(c["from"]), float(c["depth"])) < 0.1:
             rejected.append(f"кандидат {cid} ({kind}): уже 0.1 м, это не короб")
         else:
-            made = candidate_item(c, kind, cid[1:])
-            if made["id"] in ids:
-                rejected.append(f"кандидат {cid}: повтор id {made['id']}")
-                continue
-            ids.add(made["id"])
-            mep.append(made)
-            applied.append(f"{kind} {made['id']} из кандидата {cid}")
+            halves = split_candidate(c) if str(item.get("parts")) == "2" else None
+            if str(item.get("parts")) == "2" and halves is None:
+                rejected.append(f"кандидат {cid}: parts 2 без стыка seam, построен целым")
+            for part, number in (zip(halves, ("a", "b")) if halves else ((c, ""),)):
+                made = candidate_item(part, kind, cid[1:] + number)
+                if made["id"] in ids:
+                    rejected.append(f"кандидат {cid}: повтор id {made['id']}")
+                    continue
+                ids.add(made["id"])
+                mep.append(made)
+                applied.append(f"{kind} {made['id']} из кандидата {cid}")
     for cid in candidates:
         if cid not in answered:
             rejected.append(f"кандидат {cid}: модель не ответила")
