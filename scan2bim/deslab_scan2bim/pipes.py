@@ -171,6 +171,14 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
                         continue
                     # how far the spot runs on along the whole wall, without a break of more than a bin
                     line = grown[:, zs.min():zs.max() + 1, ds.min():ds.max() + 1].any(axis=(1, 2))
+                    # where the cloud goes on above or below the spot, the pipe has entered something bigger
+                    # (the radiator it feeds): the run ends there
+                    d0, d1 = ds.min(), ds.max() + 1
+                    above = occ[:, zs.max() + 3:zs.max() + 7, d0:d1].any(axis=(1, 2))
+                    below = occ[:, max(zs.min() - 6, 0):max(zs.min() - 2, 0), d0:d1].any(axis=(1, 2))
+                    line &= ~(above | below)
+                    if not line[w0:w0 + wn].any():
+                        continue
                     here = np.nonzero(line[w0:w0 + wn])[0]
                     b0 = b1 = w0 + int(here[len(here) // 2])
                     while b0 > 0 and (line[b0 - 1] or (b0 > 1 and line[b0 - 2])):
@@ -213,14 +221,14 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
 
             def stacked(r):
                 zs = sorted(o[2] for o in runs if abs(o[3] - r[3]) < 0.1 and over(o, r))
-                # the pieces around this one that follow each other within half a metre of height
+                # the pieces around this one that follow each other within 1.2 m of height
                 k = zs.index(r[2])
                 lo = hi = k
-                while lo > 0 and zs[lo] - zs[lo - 1] <= 0.5:
+                while lo > 0 and zs[lo] - zs[lo - 1] <= 1.2:
                     lo -= 1
-                while hi < len(zs) - 1 and zs[hi + 1] - zs[hi] <= 0.5:
+                while hi < len(zs) - 1 and zs[hi + 1] - zs[hi] <= 1.2:
                     hi += 1
-                return hi - lo + 1 >= 4 and zs[hi] - zs[lo] >= 1.0
+                return hi - lo + 1 >= 4 and zs[hi] - zs[lo] >= 0.8
             runs = [r for r in runs if not stacked(r)]
             # one pipe seen as two spots a few centimetres apart: the longer piece stays
             single = []
@@ -273,6 +281,7 @@ def join_pipes(pipes, reach=0.15):
     """A run that ends at a riser ends on the riser's axis; two runs that end at one point (a corner) share it."""
     risers = [p for p in pipes if p["kind"] == "riser"]
     runs = [p for p in pipes if p["kind"] == "run"]
+    used = {}
     for run in runs:
         for end in (run["path"][0], run["path"][-1]):
             best = None
@@ -281,11 +290,13 @@ def join_pipes(pipes, reach=0.15):
                 if not a["z"] - 0.05 <= end["z"] <= b["z"] + 0.05:
                     continue
                 gap = math.hypot(end["x"] - a["x"], end["y"] - a["y"])
-                if gap <= reach + r["diameter"] and (best is None or gap < best[0]):
-                    best = (gap, r)
+                if gap <= reach + r["diameter"] and (best is None or (used.get(id(r), 0), gap) < best[:2]):
+                    best = (used.get(id(r), 0), gap, r)
             if best:
-                end["x"], end["y"] = best[1]["path"][0]["x"], best[1]["path"][0]["y"]
-                end["joins"] = best[1].get("id")
+                r = best[2]
+                used[id(r)] = used.get(id(r), 0) + 1
+                end["x"], end["y"] = r["path"][0]["x"], r["path"][0]["y"]
+                end["joins"] = r.get("id")
     # a run that passes a riser close to its end (it was followed on into the corner) ends at the riser
     for run in runs:
         for k in (0, -1):
@@ -294,6 +305,7 @@ def join_pipes(pipes, reach=0.15):
                 continue
             vx, vy = other["x"] - end["x"], other["y"] - end["y"]
             length = math.hypot(vx, vy)
+            near = []
             for r in risers:
                 a, b = r["path"]
                 if length < 1e-6 or not a["z"] - 0.05 <= end["z"] <= b["z"] + 0.05:
@@ -301,8 +313,12 @@ def join_pipes(pipes, reach=0.15):
                 along = ((a["x"] - end["x"]) * vx + (a["y"] - end["y"]) * vy) / length
                 across = abs((a["x"] - end["x"]) * vy - (a["y"] - end["y"]) * vx) / length
                 if 0 < along <= min(0.5, length / 2) and across <= reach + r["diameter"]:
-                    end["x"], end["y"], end["joins"] = a["x"], a["y"], r.get("id")
-                    break
+                    near.append((used.get(id(r), 0), along, r))
+            if near:
+                # two pipes of a radiator go to the two risers that stand side by side
+                _, _, r = min(near, key=lambda c: c[:2])
+                used[id(r)] = used.get(id(r), 0) + 1
+                end["x"], end["y"], end["joins"] = r["path"][0]["x"], r["path"][0]["y"], r.get("id")
     ends = [(run, k) for run in runs for k in (0, -1) if "joins" not in run["path"][k]]
     for i, (ra, ka) in enumerate(ends):
         for rb, kb in ends[i + 1:]:

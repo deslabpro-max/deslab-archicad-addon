@@ -43,7 +43,7 @@ def test_pipes():
     # the wall, y 1.6..2.6, z 0.15..0.65); a sewer riser d 110 mm at (4.25, 4.85); a riser outside the flat
     extra = [cylinder((7.00, 0.30), "z", 0, H, 0.026, math.pi), cylinder((7.00, 0.41), "z", 0, H, 0.026, math.pi),
              veil(7.01, 7.12, 0.30, 0.35, 1), veil(7.01, 7.12, 0.41, 0.35, 2),
-             cylinder((7.00, 0.40), "y", 0.30, 1.6, 0.020, math.pi), plane_x(7.06, 1.6, 2.6, 0.15, 0.65),
+             cylinder((7.00, 0.40), "y", 0.30, 1.6, 0.020, math.pi), plane_x(7.00, 1.6, 2.6, 0.15, 0.65),
              cylinder((4.25, 4.85), "z", 0, H, 0.110, -math.pi / 4), cylinder((8.2, 4.0), "z", 0, H, 0.05, math.pi)]
     pts = cloud(extra)
     scene = analyze(pts, Options(step=1))
