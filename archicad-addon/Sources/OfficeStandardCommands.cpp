@@ -374,9 +374,9 @@ void LoadFromPackage (const GS::ObjectState& package, API_AttrTypeID typeID,
                     texture.Get ("rotAng", m.texture.rotAng);
                     // deslab: 12.11.2026, a texture picture that the project's libraries do not have made Archicad
                     // read through the null fileLoc (crash at 0xB10 in every run once the main library was not
-                    // loaded): the pointer is never left null
-                    static IO::Location noTextureFile;
-                    m.texture.fileLoc = &noTextureFile;
+                    // loaded): the pointer is never left null. 13.11.2026: it is heap allocated, because the attribute
+                    // is disposed with delete (a static location here corrupted the heap, C0000374)
+                    m.texture.fileLoc = new IO::Location ();
                 }
                 break;
             }
@@ -429,6 +429,15 @@ void NoteGuid (GuidMap& guids, const API_Guid& sourceGuid, API_AttrTypeID typeID
 
 void Trace (const GS::UniString& line);   // defined below, with the view steps
 
+// deslab: 13.11.2026, the texture is dropped but its file location pointer stays (Archicad reads through it, and the
+// attribute's disposal deletes it)
+void ClearTextureKeepingLocation (API_Texture& texture)
+{
+    IO::Location* location = texture.fileLoc;
+    texture = {};
+    texture.fileLoc = location;
+}
+
 TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package, API_AttrTypeID typeID,
                       std::map<API_AttrTypeID, IndexMap>& maps, GuidMap& guids, bool updateExisting)
 {
@@ -475,7 +484,7 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
                 GSErrCode err = ACAPI_Attribute_ModifyExt (&attribute, &defs);
                 if (err != NoError && typeID == API_MaterialID && attribute.material.texture.texName[0] != 0) {
                     // deslab: the surface without its texture rather than no surface (the picture is not in the libraries)
-                    attribute.material.texture = {};
+                    ClearTextureKeepingLocation (attribute.material.texture);
                     err = ACAPI_Attribute_ModifyExt (&attribute, &defs);
                     if (err == NoError) {
                         result.failures.Push (name + " (texture not found)");
@@ -506,7 +515,7 @@ TypeResult ApplyType (const IO::Location& source, const GS::ObjectState* package
             Trace (GS::UniString ("  create: ") + name);
             GSErrCode err = ACAPI_Attribute_CreateExt (&attribute, &defs);
             if (err != NoError && typeID == API_MaterialID && attribute.material.texture.texName[0] != 0) {
-                attribute.material.texture = {};
+                ClearTextureKeepingLocation (attribute.material.texture);
                 err = ACAPI_Attribute_CreateExt (&attribute, &defs);
                 if (err == NoError) {
                     result.failures.Push (name + " (texture not found)");
