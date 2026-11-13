@@ -135,7 +135,7 @@ def test_balcony_door_swing_in_a_thick_wall():
              "slabs": [{"polygon": [{"x": -0.3, "y": -0.32}, {"x": 6.3, "y": -0.32}, {"x": 6.3, "y": 4.3}, {"x": -0.3, "y": 4.3}]}]}
     new, report = ai.apply_review(scene, {"openings": [{"id": "W3.2", "swing": {"hinge": "end", "opens": "into"}, "confidence": 0.8}]})
     door = new["walls"][0]["openings"][0]
-    assert door.get("reflected") is True and door.get("oSide") is True, (door, report)
+    assert door.get("hinge") == "end", (door, report)
 
 
 KV94_DOOR = {

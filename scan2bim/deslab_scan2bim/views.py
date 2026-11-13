@@ -70,7 +70,9 @@ def measure_thresholds(pts, scene, max_height=0.6, step=0.02, column=0.05, cover
             hi = float(o["centerOffset"]) + float(o["width"]) / 2 - 0.08
             if hi - lo < 0.2:
                 continue
-            m = (t > lo) & (t < hi) & (np.abs(d) < half + 0.02) & (pts[:, 2] > 0.02) & (pts[:, 2] < max_height)
+            # deslab: Nagornaya run 1, the threshold (about 0.2 m on the elevation) was missed: the outer wall has a default
+            # thickness and its real face stands 16 cm in front of the modelled one, outside the old 2 cm margin
+            m = (t > lo) & (t < hi) & (np.abs(d) < half + 0.25) & (pts[:, 2] > 0.02) & (pts[:, 2] < max_height)
             if not m.any():
                 continue
             cols = np.floor((t[m] - lo) / column).astype(int)
@@ -98,6 +100,35 @@ def measure_thresholds(pts, scene, max_height=0.6, step=0.02, column=0.05, cover
     return notes
 
 
+def mark_empty_doorways(pts, scene, cell=0.05, limit=0.15):
+    """deslab: Игорь 13.11.2026, «ты рисуешь двери, а в проекте дверей нет. Там проемы». A doorway the scanner looks
+    through (no points in the wall's plane inside the opening: no leaf, or the leaf stood open) is kind "opening"; a
+    closed leaf fills the opening with points and stays a door. Returns the notes."""
+    notes = []
+    for wall in scene.get("walls", []):
+        doors = [o for o in wall.get("openings", []) if o.get("kind") == "door"]
+        if not doors:
+            continue
+        t, d, _ = _wall_coords(pts, wall)
+        half = float(wall["thickness"]) / 2
+        for o in doors:
+            lo = float(o["centerOffset"]) - float(o["width"]) / 2 + 0.1
+            hi = float(o["centerOffset"]) + float(o["width"]) / 2 - 0.1
+            z0, z1 = float(o.get("sill", 0)) + 0.3, float(o.get("sill", 0)) + float(o["height"]) - 0.2
+            if hi - lo < 0.2 or z1 - z0 < 0.5:
+                continue
+            m = (t > lo) & (t < hi) & (np.abs(d) < half + 0.05) & (pts[:, 2] > z0) & (pts[:, 2] < z1)
+            n_cols, n_rows = int(math.ceil((hi - lo) / cell)), int(math.ceil((z1 - z0) / cell))
+            grid = np.zeros((n_rows, n_cols), dtype=bool)
+            grid[np.clip(((pts[m, 2] - z0) / cell).astype(int), 0, n_rows - 1), np.clip(((t[m] - lo) / cell).astype(int), 0, n_cols - 1)] = True
+            share = float(grid.mean())
+            o["leafShare"] = round(share, 2)
+            if share < limit:
+                o["kind"] = "opening"
+                notes.append(f"{o['id']}: a doorway without a leaf (the cloud looks through it)")
+    return notes
+
+
 def _without_other_walls(pts, scene, wall):
     """Points that are not the body of another wall (a wall that meets this one would stand out of its face)."""
     keep = np.ones(len(pts), dtype=bool)
@@ -120,6 +151,85 @@ def _hint(width, bottom, top, depth, height):
     if tall >= 0.7 * height and width > 0.3:
         return "box or shaft?"
     return ""
+
+
+def _components(front, out, tol=0.05):
+    """Cells of `out` joined into things: neighbours (one empty cell may lie between) belong together when they stand
+    about as far out of the wall. A radiator and the curtain over it, a pipe and the box behind it stay apart."""
+    h, w = out.shape
+    parent = np.arange(h * w)
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    index = np.arange(h * w).reshape(h, w)
+    for dy, dx in ((0, 1), (1, 0), (0, 2), (2, 0), (1, 1), (1, -1)):
+        ya, yb = slice(0, h - dy), slice(dy, h)
+        if dx >= 0:
+            xa, xb = slice(0, w - dx), slice(dx, w)
+        else:
+            xa, xb = slice(-dx, w), slice(0, w + dx)
+        ok = out[ya, xa] & out[yb, xb] & (np.abs(front[ya, xa] - front[yb, xb]) < tol)
+        for i, j in zip(index[ya, xa][ok].tolist(), index[yb, xb][ok].tolist()):
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[rj] = ri
+    cells = np.nonzero(out.ravel())[0]
+    roots = np.array([find(i) for i in cells.tolist()], dtype=np.int64)
+    order = np.argsort(roots, kind="stable")
+    cells, roots = cells[order], roots[order]
+    cuts = np.nonzero(np.diff(roots))[0] + 1
+    return [(part // w, part % w) for part in np.split(cells, cuts)] if len(cells) else []
+
+
+def _candidate(wall, side, a, u, n, half, t0, t1, z0, z1, stand, fill, height):
+    mid = (t0 + t1) / 2
+    at = a + u * mid + n * side * (half + stand / 2)
+    p0, p1 = a + u * t0 + n * side * half, a + u * t1 + n * side * half
+    return {"wallId": wall["id"], "side": "left" if side > 0 else "right",
+            "from": round(t0, 3), "to": round(t1, 3), "bottom": round(z0, 3), "top": round(z1, 3),
+            "depth": round(stand, 3), "fill": round(fill, 2),
+            "at": {"x": round(float(at[0]), 4), "y": round(float(at[1]), 4)},
+            "start": {"x": round(float(p0[0]), 4), "y": round(float(p0[1]), 4)},
+            "end": {"x": round(float(p1[0]), 4), "y": round(float(p1[1]), 4)},
+            "hint": _hint(t1 - t0, z0, z1, stand, height)}
+
+
+def _join_pipe_pieces(found, height):
+    """deslab: a thin riser is scanned in pieces (Nagornaya C4, C5, C6: three bits of one pipe at 0.2-0.44 m of W2). Narrow
+    pieces of one face that stand over each other at one depth are one pipe."""
+    found = list(found)
+    joined = True
+    while joined:
+        joined = False
+        for i, c in enumerate(found):
+            for j in range(i + 1, len(found)):
+                o = found[j]
+                if c["wallId"] != o["wallId"] or c["side"] != o["side"] or max(c["to"] - c["from"], o["to"] - o["from"]) > 0.3:
+                    continue
+                if min(c["to"], o["to"]) - max(c["from"], o["from"]) < 0.02 or abs(c["depth"] - o["depth"]) > 0.08:
+                    continue
+                if max(c["bottom"], o["bottom"]) - min(c["top"], o["top"]) > 1.0:
+                    continue
+                t0, t1 = min(c["from"], o["from"]), max(c["to"], o["to"])
+                z0, z1 = min(c["bottom"], o["bottom"]), max(c["top"], o["top"])
+                k = (t0 + t1) / 2 - (c["from"] + c["to"]) / 2
+                ux = (c["end"]["x"] - c["start"]["x"]) / max(c["to"] - c["from"], 1e-9)
+                uy = (c["end"]["y"] - c["start"]["y"]) / max(c["to"] - c["from"], 1e-9)
+                c.update({"from": t0, "to": t1, "bottom": z0, "top": z1, "depth": round(max(c["depth"], o["depth"]), 3),
+                          "at": {"x": round(c["at"]["x"] + ux * k, 4), "y": round(c["at"]["y"] + uy * k, 4)},
+                          "start": {"x": round(c["start"]["x"] + ux * (t0 - c["from"]), 4), "y": round(c["start"]["y"] + uy * (t0 - c["from"]), 4)},
+                          "end": {"x": round(c["end"]["x"] + ux * (t1 - c["to"]), 4), "y": round(c["end"]["y"] + uy * (t1 - c["to"]), 4)},
+                          "pieces": c.get("pieces", 1) + o.get("pieces", 1)})
+                c["hint"] = "riser?" if z1 - z0 >= 0.5 * height else _hint(t1 - t0, z0, z1, c["depth"], height)
+                del found[j]
+                joined = True
+                break
+            if joined:
+                break
+    return found
 
 
 def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
@@ -149,38 +259,32 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
             rows = np.clip((pts[idx][m, 2] / cell).astype(int), 0, int(height / cell))
             front = np.full((int(height / cell) + 1, int(length / cell) + 1), -9.0)
             np.maximum.at(front, (rows, cols), depth[m])
+            # deslab: 13.11.2026, Nagornaya run 1: whole walls came out as one «box» 15 cm deep (a wall with a default
+            # thickness stands off its modelled face). The face is where most of the cloud is: depths count from it
+            seen = front > -0.03
+            if seen.sum() >= 50:
+                hist, edges = np.histogram(front[seen], bins=np.arange(-0.03, REACH + 0.011, 0.01))
+                k = int(np.argmax(hist))
+                if hist[k] + hist[max(k - 1, 0)] + hist[min(k + 1, len(hist) - 1)] >= 0.35 * seen.sum() and edges[k] > 0.015:
+                    front = np.where(seen, front - (edges[k] + 0.005), front)
             out = front >= min_depth
-            # one gap cell does not split a thing
-            grown = out.copy()
-            grown[:, 1:] |= out[:, :-1]
-            grown[:, :-1] |= out[:, 1:]
-            grown[1:, :] |= out[:-1, :]
-            grown[:-1, :] |= out[1:, :]
-            labels, count = label(grown)
-            for k in range(1, count + 1):
-                ys, xs = np.nonzero((labels == k) & out)
+            for comp_y, comp_x in _components(front, out):
+                ys, xs = comp_y, comp_x
                 if len(ys) < 12:
                     continue
                 t0, t1 = float(xs.min()) * cell, float(xs.max() + 1) * cell
                 z0, z1 = float(ys.min()) * cell, float(ys.max() + 1) * cell
                 width, tall = t1 - t0, z1 - z0
-                if width * tall < 0.02 or max(width, tall) < 0.25:
+                if width * tall < 0.01 or max(width, tall) < 0.25:
                     continue
                 if z1 < 0.16 and tall < 0.14:
                     continue   # a skirting board
                 stand = float(np.percentile(front[ys, xs], 80))
                 fill = len(ys) / max(1.0, (width / cell) * (tall / cell))
-                mid = (t0 + t1) / 2
-                at = a + u * mid + n * side * (half + stand / 2)
-                found.append({
-                    "wallId": wall["id"], "side": "left" if side > 0 else "right",
-                    "from": round(t0, 3), "to": round(t1, 3), "bottom": round(z0, 3), "top": round(z1, 3),
-                    "depth": round(stand, 3), "fill": round(fill, 2),
-                    "at": {"x": round(float(at[0]), 4), "y": round(float(at[1]), 4)},
-                    "start": {"x": round(float((a + u * t0 + n * side * half)[0]), 4), "y": round(float((a + u * t0 + n * side * half)[1]), 4)},
-                    "end": {"x": round(float((a + u * t1 + n * side * half)[0]), 4), "y": round(float((a + u * t1 + n * side * half)[1]), 4)},
-                    "hint": _hint(width, z0, z1, stand, height),
-                })
+                if fill < 0.3 and width * tall > 0.5:
+                    continue   # a curtain, a ragged cloud: not a thing with a shape
+                found.append(_candidate(wall, side, a, u, n, half, t0, t1, z0, z1, stand, fill, height))
+    found = _join_pipe_pieces(found, height)
     # one thing near a corner is seen from both walls: it belongs to the wall it stands closer to
     drop = set()
     for i, c in enumerate(found):

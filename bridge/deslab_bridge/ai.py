@@ -212,7 +212,7 @@ REVIEW_SCHEMA = {
     "_panelNote": "a panel (щиток) may be given as a point `at` on the wall: the code makes the segment",
     "candidates": [{"id": "C1 (an id from the scene's `candidates`, every one must be answered)",
                     "kind": "radiator|heatingRiser|waterRiser|sewerRiser|shaft|box|panel|vent|clutter|furniture|windowBoard|other",
-                    "confidence": "0..1", "note": "short text"}],
+                    "confidence": "0..1 (0.4 and more is drawn; the candidate itself is real, you only doubt its name)", "note": "short text"}],
     "vents": [{"wallId": "W4", "side": "left|right (the face, as in the picture's title)", "along": "m along the wall, from the picture's axis",
                "height": "m over the floor", "confidence": "0..1"}],
     "clutter": [{"wallId": "W7", "reason": "short text"}],
@@ -459,10 +459,12 @@ def _carries_outline(scene, wall):
     return len(obmer.check_room_faces(without)) > len(obmer.check_room_faces(scene))
 
 
-def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
+def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candidate_confidence=0.4):
     """Applies the review to a COPY of the scene. Returns (new_scene, report) with report = {"applied": [...],
     "rejected": [...], "doubts": [...]}. Rules: an opening stays on its wall and does not overlap another; points are inside
-    the flat; a riser is inside a shaft; only short or tracing walls may be dropped; low confidence is not applied."""
+    the flat; a riser is inside a shaft; only short or tracing walls may be dropped; low confidence is not applied.
+    deslab: Nagornaya run 1, a candidate is a thing the helper measured in the cloud, the model only names it, so its bar is
+    lower (0.4: the risers at 0.4-0.45 were lost and the engineering sheet stayed half empty)."""
     new = copy.deepcopy(scene)
     applied, rejected = [], []
     walls = {w["id"]: w for w in new.get("walls", [])}
@@ -488,7 +490,11 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
                 opening["sashes"] = sashes
             else:
                 rejected.append(f"проём {oid}: створок {sashes} не принимается (окно уже 0.9 м только с одной створкой)")
-        if "swing" in item and opening.get("kind") != "window":
+        if "swing" in item and opening.get("kind") == "balconyDoor":
+            # deslab: the balcony door is a window: the bridge needs the jamb with the hinge only
+            if isinstance(item["swing"], dict) and item["swing"].get("hinge") in ("start", "end"):
+                opening["hinge"] = item["swing"]["hinge"]
+        elif "swing" in item and opening.get("kind") not in ("window", "opening"):
             flags = swing_flags(new, wall, item["swing"], opening.get("centerOffset"))
             if flags is None:
                 rejected.append(f"проём {oid}: открывание {item['swing']} не переводится (неизвестна сторона квартиры или неверные значения)")
@@ -587,7 +593,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3):
             continue
         if kind not in CANDIDATE_KINDS:
             rejected.append(f"кандидат {cid}: неизвестный тип {kind}")
-        elif not _confident(item, min_confidence):
+        elif not _confident(item, candidate_confidence):
             rejected.append(f"кандидат {cid} ({kind}): уверенность {item.get('confidence')} ниже порога")
         else:
             made = candidate_item(c, kind, cid[1:])

@@ -1553,6 +1553,22 @@ def set_layer(ac, guids, index, report, what):
         {"elementId": {"guid": g}, "details": {"layerIndex": index}} for g in guids]}), report, f"Слой «{what}»")
 
 
+def balcony_hinge(wall, door):
+    """deslab: the jamb with the hinge of a balcony door ("start"/"end" along the wall) from its window: the one away from
+    the window that touches the door. None when no window stands next to it or windows stand on both sides."""
+    lo, hi = door["centerOffset"] - door["width"] / 2, door["centerOffset"] + door["width"] / 2
+    sides = set()
+    for o in wall.get("openings", []):
+        if o is door or o.get("kind") != "window":
+            continue
+        a, b = o["centerOffset"] - o["width"] / 2, o["centerOffset"] + o["width"] / 2
+        if abs(a - hi) < 0.25:
+            sides.add("start")   # the window is past the door's end: the hinge at the start
+        if abs(b - lo) < 0.25:
+            sides.add("end")
+    return sides.pop() if len(sides) == 1 else None
+
+
 def analyze_scan(ac, e57_path, **helper_options):
     """Runs the scan helper on the drafting PC through the add-on, builds nothing. Returns the scene path."""
     params = {"e57Path": e57_path, "buildWalls": False, "buildOpenings": False, "buildSlabs": False, "buildZones": False}
@@ -1662,10 +1678,18 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         _check_details(ac.tapir("ModifyDoors", {"doorsWithDetails": swings}), report, "Открывание двери")
     # deslab: Игорь 13.11.2026, «открывание балконной двери не с той стороны»: the balcony door is a window, its hinge side
     # is the window's `reflected` (the model says the jamb with the hinge, ai.swing_flags)
+    # Without the model's word the hinge is at the jamb AWAY from the window of the balcony block (the leaf folds to the wall,
+    # not over the window and its radiator); with no window next to it the door stays as built.
     flip = bool(profile.get("windows", {}).get("balconyHingeFlip", False))
-    balcony = [{"elementId": {"guid": opening_guid[o["id"]]}, "reflected": bool(o["reflected"]) != flip}
-               for w in model_scene.get("walls", []) for o in w.get("openings", [])
-               if o.get("kind") == "balconyDoor" and o["id"] in opening_guid and "reflected" in o]
+    balcony = []
+    for w in model_scene.get("walls", []):
+        for o in w.get("openings", []):
+            if o.get("kind") != "balconyDoor" or o["id"] not in opening_guid:
+                continue
+            hinge = o.get("hinge") or balcony_hinge(w, o)
+            if hinge:
+                # run 1 (hinge at the window side) was built with reflected false: «start» is reflected
+                balcony.append({"elementId": {"guid": opening_guid[o["id"]]}, "reflected": (hinge == "start") != flip})
     if balcony:
         _check_details(ac.tapir("ModifyWindows", {"windowsWithDetails": balcony}), report, "Открывание балконной двери")
     report.step("открывание дверей", doors=len(swings), balconyDoors=len(balcony))

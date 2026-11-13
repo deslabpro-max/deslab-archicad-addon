@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from test_synthetic import H, box, cloud, plane_x, plane_y, plane_z  # noqa: E402
 from deslab_scan2bim.analyze import Options, analyze  # noqa: E402
-from deslab_scan2bim.views import find_candidates, measure_thresholds, model_points, write_views  # noqa: E402
+from deslab_scan2bim.views import find_candidates, mark_empty_doorways, measure_thresholds, model_points, write_views  # noqa: E402
 
 
 def test_candidates_and_views():
@@ -61,8 +61,21 @@ def test_threshold():
     assert measure_thresholds(flat, scene) == [] and scene["walls"][0]["openings"][0]["sill"] == 0.0
 
 
+def test_empty_doorway():
+    # two doors in one wall: one is looked through (kind "opening"), the other has its leaf shut (stays a door)
+    scene = {"walls": [{"id": "W1", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.2,
+                        "openings": [{"id": "W1.1", "kind": "door", "centerOffset": 1.5, "width": 0.9, "sill": 0.0, "height": 2.1},
+                                     {"id": "W1.2", "kind": "door", "centerOffset": 4.0, "width": 0.9, "sill": 0.0, "height": 2.1}]}]}
+    pts = np.concatenate([plane_y(0.1, 0, 1.05, 0, 2.7), plane_y(0.1, 1.95, 3.55, 0, 2.7), plane_y(0.1, 4.45, 6, 0, 2.7),
+                          plane_y(0.05, 3.55, 4.45, 0, 2.1)])
+    notes = mark_empty_doorways(pts, scene)
+    kinds = [o["kind"] for o in scene["walls"][0]["openings"]]
+    assert kinds == ["opening", "door"], (kinds, notes)
+
+
 if __name__ == "__main__":
     for c in test_candidates_and_views():
         print(c["id"], c["wallId"], c["side"], c["from"], c["to"], c["bottom"], c["top"], c["depth"], c["hint"])
     test_threshold()
+    test_empty_doorway()
     print("ok")

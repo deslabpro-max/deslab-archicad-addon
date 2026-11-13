@@ -52,9 +52,10 @@ def main(argv=None):
     # deslab: 13.11.2026, what the walls alone do not tell: the threshold of a balcony door and the things that stand at
     # the walls (candidates for radiators, risers, boxes), measured in the cloud; the pictures are for the model
     try:
-        from .views import find_candidates, measure_thresholds, model_points, write_views
+        from .views import find_candidates, mark_empty_doorways, measure_thresholds, model_points, write_views
         model = model_points(pts, scene)
         scene["assumptions"] += measure_thresholds(model, scene)
+        scene["assumptions"] += mark_empty_doorways(model, scene)
         scene["candidates"] = find_candidates(model, scene)
         if args.views:
             scene["views"] = [v["file"] for v in write_views(pts, scene, args.views)]
