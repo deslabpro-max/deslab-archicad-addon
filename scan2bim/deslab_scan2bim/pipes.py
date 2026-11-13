@@ -107,8 +107,21 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
         near = (np.abs(p[:, 0] - cx) < w / 2) & (np.abs(p[:, 1] - cy) < h / 2)
         if near.sum() >= 30:
             # the points themselves measure finer than the cells
-            wide = p[near][:, 0 if w >= h else 1]
-            d = max(float(np.percentile(wide, 98) - np.percentile(wide, 2)), 0.012)
+            # level by level, and the middle one of the sizes: the veil of stray points to the wall, a clamp or a
+            # branch widen the spot at some heights only
+            q = p[near]
+            lv = ((q[:, 2] - 0.05) / LEVEL).astype(np.int32)
+            order = np.argsort(lv, kind="stable")
+            q, lv = q[order], lv[order]
+            sizes = []
+            for part in np.split(q, np.flatnonzero(np.diff(lv)) + 1):
+                if len(part) >= 4:
+                    ex = np.percentile(part[:, 0], 98) - np.percentile(part[:, 0], 2)
+                    ey = np.percentile(part[:, 1], 98) - np.percentile(part[:, 1], 2)
+                    sizes.append(max(ex, ey))
+            wide = q[:, 0 if w >= h else 1]
+            d = float(np.median(sizes)) if len(sizes) >= 5 else float(np.percentile(wide, 98) - np.percentile(wide, 2))
+            d = max(d, 0.012)
             cx = float((np.percentile(p[near][:, 0], 98) + np.percentile(p[near][:, 0], 2)) / 2)
             cy = float((np.percentile(p[near][:, 1], 98) + np.percentile(p[near][:, 1], 2)) / 2)
         z_lo = 0.0 if z_lo < 0.2 else z_lo
