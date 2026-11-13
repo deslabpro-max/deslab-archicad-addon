@@ -448,8 +448,10 @@ def candidate_item(c, kind, number):
     a, b = c["start"], c["end"]
     polygon = [dict(a), dict(b), {"x": round(b["x"] + nx * depth, 4), "y": round(b["y"] + ny * depth, 4)},
                {"x": round(a["x"] + nx * depth, 4), "y": round(a["y"] + ny * depth, 4)}]
+    # deslab: Nagornaya run 3, a box 0.14 m wide with walls of 100 mm blocks gave a wall of zero length: a narrow box has
+    # thinner walls (a third of its smaller size)
     return {"kind": "shaft", "id": f"{'SH' if kind == 'shaft' else 'BX'}{number}", "candidate": c["id"], "polygon": polygon,
-            "thickness": 0.1, "label": OFFICE_LABELS[kind]}
+            "thickness": round(min(0.1, min(width, depth) / 3), 3), "label": OFFICE_LABELS[kind]}
 
 
 def _carries_outline(scene, wall):
@@ -532,6 +534,11 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
         if kind not in MEP_KINDS or not mid or mid in ids:
             rejected.append(f"инженерный элемент {mid}: неверный тип или повтор id")
             continue
+        if new.get("candidates") and kind != "panel":
+            # deslab: Nagornaya run 4, next to the measured candidates the model added radiators with sizes of its own: with a
+            # cloud the numbers come from the cloud only
+            rejected.append(f"инженерный элемент {mid}: размеры не из облака (есть кандидаты), не строю")
+            continue
         # deslab: risers need not stand in a shaft (kv94 K3 is 2.5 m from any), so the only hard check is «inside the flat»;
         # near a shaft (0.8 m) the confidence bar is lower, because the circles there are small and easy to read wrongly
         in_shaft = kind in ("sewerRiser", "waterRiser", "heatingRiser") and _is_point(item.get("at")) and any(
@@ -595,9 +602,8 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             rejected.append(f"кандидат {cid}: неизвестный тип {kind}")
         elif not _confident(item, candidate_confidence):
             rejected.append(f"кандидат {cid} ({kind}): уверенность {item.get('confidence')} ниже порога")
-        elif kind in ("shaft", "box") and min(float(c["to"]) - float(c["from"]), float(c["depth"])) < 0.25:
-            # deslab: Nagornaya run 3, a «box» 0.14 m wide gave a wall of zero length (its walls are 100 mm blocks)
-            rejected.append(f"кандидат {cid} ({kind}): уже 0.25 м, короб из блоков 100 мм не строится")
+        elif kind in ("shaft", "box") and min(float(c["to"]) - float(c["from"]), float(c["depth"])) < 0.1:
+            rejected.append(f"кандидат {cid} ({kind}): уже 0.1 м, это не короб")
         else:
             made = candidate_item(c, kind, cid[1:])
             if made["id"] in ids:
