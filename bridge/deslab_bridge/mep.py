@@ -638,6 +638,9 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                    for m in scene.get("mep", []) if m.get("kind") in RISERS]
     # deslab: nor on a panel, its own one included (kv94: «Щиток» lay on its own panel)
     riser_boxes += [(None, bx) for bx in panel_boxes(scene)]
+    # deslab: 13.11.2026, and not on the risers found in the cloud (scene "pipes")
+    riser_boxes += [(p["id"], _rect_of_segment(_pt(p["path"][0]), _pt(p["path"][0]), float(p.get("diameter", 0.05)) / 2 + 0.02))
+                    for p in scene.get("pipes", []) if p.get("system") and p.get("kind") == "riser"]
     labels = []
     leaders = []  # (start, end) of the leaders and shelves placed so far
     dirs = list(obstacles.get("dimDirs") or []) + [None] * len(obstacles["dims"])
@@ -692,11 +695,13 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     # across the hall chains; Игорь shortened it so that it fits between them). Only
                     # for the panel: in a small room the other labels would end up on a horizontal
                     # chain instead (the test room 4 x 3 m).
-                    cost += (150 if ident in panel_ids else 0) * sum(1 for i, w in enumerate(obstacles["dims"])
+                    # deslab: 13.11.2026, Nagornaya sheet 05: «Стояк отопления» crossed by a vertical equipment chain and
+                    # «Стояк канализации» by a witness line; the rule of 06.11 (no dimension line over a text) holds for
+                    # every label now, a little less hard than for the panel
+                    cost += (150 if ident in panel_ids else 120) * sum(1 for i, w in enumerate(obstacles["dims"])
                                       if not (dirs[i] is None or abs(dirs[i][0]) >= abs(dirs[i][1]))
                                       and _seg_box(((w[0] + w[2]) / 2, w[1]), ((w[0] + w[2]) / 2, w[3]), box))
-                    if ident in panel_ids:
-                        cost += 150 * sum(1 for a_, b_ in obstacles.get("witness", []) if _seg_box(a_, b_, box))
+                    cost += (150 if ident in panel_ids else 120) * sum(1 for a_, b_ in obstacles.get("witness", []) if _seg_box(a_, b_, box))
                     # and never right on a horizontal dimension line: its texts would have nowhere to go
                     cost += 300 * sum(1 for i, w in enumerate(obstacles["dims"])
                                       if (dirs[i] is None or abs(dirs[i][0]) >= abs(dirs[i][1]))
