@@ -21,6 +21,17 @@ def _dump(pts, prefix, part=2_000_000):
         np.savez_compressed(f"{prefix}.{i // part}.npz", xyz=cm[i:i + part], origin=origin)
 
 
+def _voxels(pts, path, size=0.01):
+    """deslab: the cloud thinned to one point per `size` cube, as int16 steps of `size` from `origin`: a file of a few MB
+    that shows pipes and joints, for debugging the helper away from the scan."""
+    import numpy as np
+    pts = np.asarray(pts, dtype=np.float64)
+    origin = np.floor(pts.min(axis=0))
+    cells = np.unique(np.round((pts - origin) / size).astype(np.int16), axis=0)
+    np.savez_compressed(path, xyz=cells, origin=origin, size=size)
+    return len(cells)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="deslab-scan2bim", description=__doc__)
     ap.add_argument("e57")
@@ -31,6 +42,7 @@ def main(argv=None):
     ap.add_argument("--default-thickness", type=float, default=Options.default_thickness)
     ap.add_argument("--dump", help="also write the read points as <DUMP>.N.npz parts "
                     "(centimetres, int16, up to 2M points each) for offline debugging")
+    ap.add_argument("--voxels", help="deslab: write the whole cloud thinned to 1 cm cubes into this .npz and stop")
     ap.add_argument("--views", help="deslab: folder for the pictures of the cloud for the reviewing model "
                     "(wall elevations, plan cuts) and views.json")
     ap.add_argument("--version", action="version", version=__version__)
@@ -39,6 +51,9 @@ def main(argv=None):
     opt = Options(step=args.step, exterior_thickness=args.exterior_thickness,
                   default_thickness=args.default_thickness)
     t0 = time.time()
+    if args.voxels:
+        print(_voxels(read_points(args.e57, step=1), args.voxels), "voxels")
+        return 0
     try:
         pts = read_points(args.e57, step=opt.step)
         if args.dump:
