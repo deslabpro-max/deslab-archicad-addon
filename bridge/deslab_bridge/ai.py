@@ -670,7 +670,13 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             pts = m.get("polygon") or [m.get("at")]
             cx, cy = sum(q["x"] for q in pts) / len(pts), sum(q["y"] for q in pts) / len(pts)
             reach = 0.15 + max((math.hypot(q["x"] - cx, q["y"] - cy) for q in pts), default=0.0)
-            if any(math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= reach for r in risers):
+            inside = [r for r in risers if math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= reach]
+            # deslab: 13.11.2026, Nagornaya: a box 0.3 x 0.65 m standing full height in the bathroom corner is a box
+            # of its own, the riser next to it does not explain it; only a box no longer than the risers in it is them
+            longest = max((math.dist((a["x"], a["y"]), (b["x"], b["y"])) for a, b in zip(pts, pts[1:] + pts[:1])), default=0.0)
+            if inside and longest > sum(float(r.get("diameter", 0.05)) for r in inside) + 0.3:
+                continue
+            if inside:
                 mep.remove(m)
                 applied[:] = [a for a in applied if f"из кандидата {m['candidate']}" not in a]
                 rejected.append(f"{m['kind']} {m['id']} из кандидата {m['candidate']}: на этом месте построены сами трубы")

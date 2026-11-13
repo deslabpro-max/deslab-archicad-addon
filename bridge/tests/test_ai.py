@@ -151,6 +151,10 @@ def test_pipes_from_the_cloud():
     assert len(pipe_objects(new, {})) == 2
     assert [(i, t) for i, t, _ in pipe_label_items(new)] == [("P1", "Стояк отопления")]
     assert "pipes" in ai.scene_for_model(scene, with_mep=False)
+    # a box 0.65 m long next to one riser is a box of its own (Nagornaya bathroom corner)
+    scene["candidates"][0].update({"from": 2.3, "to": 2.95, "start": {"x": 2.3, "y": 0.1}, "end": {"x": 2.95, "y": 0.1}})
+    new, report = ai.apply_review(scene, review)
+    assert [m["candidate"] for m in new["mep"]] == ["C1"], new["mep"]
 
 
 def test_balcony_door_swing_in_a_thick_wall():
