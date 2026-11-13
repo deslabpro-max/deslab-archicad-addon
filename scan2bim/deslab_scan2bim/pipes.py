@@ -207,10 +207,20 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
             runs = [r for r in runs if 0.15 <= r[2] <= height - 0.2]
             # four or more pieces one above another over the same stretch are the tiers of a flat thing standing
             # by the wall (the side of a box, a panel), not pipes
+            # (over a metre of height or more: the two pipes of a radiator and their doubles stay)
+            def over(o, r):
+                return min(o[1], r[1]) - max(o[0], r[0]) >= 0.7 * min(o[1] - o[0], r[1] - r[0])
+
             def stacked(r):
-                return sum(abs(o[3] - r[3]) < 0.1 and min(o[1], r[1]) - max(o[0], r[0]) >= 0.7 * min(o[1] - o[0], r[1] - r[0])
-                           for o in runs)
-            runs = [r for r in runs if stacked(r) < 4]
+                zs = [o[2] for o in runs if abs(o[3] - r[3]) < 0.1 and over(o, r)]
+                return len(zs) >= 4 and max(zs) - min(zs) >= 1.0
+            runs = [r for r in runs if not stacked(r)]
+            # one pipe seen as two spots a few centimetres apart: the longer piece stays
+            single = []
+            for r in sorted(runs, key=lambda r: -(r[1] - r[0])):
+                if not any(abs(o[2] - r[2]) < 0.06 and abs(o[3] - r[3]) < 0.06 and over(o, r) for o in single):
+                    single.append(r)
+            runs = single
             for t0, t1, zc, dc, dia in runs:
                 p0 = a + u * t0 + n * side * (half + dc)
                 p1 = a + u * t1 + n * side * (half + dc)
