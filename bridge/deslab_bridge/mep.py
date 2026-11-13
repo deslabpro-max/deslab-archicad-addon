@@ -69,7 +69,7 @@ def shaft_walls(scene, height=None):
     rooms = _rooms(scene)
     height = height or scene.get("levels", {}).get("ceiling") or 2.7
     walls = []
-    for s in (m for m in scene.get("mep", []) if m.get("kind") == "shaft"):
+    for s in (m for m in scene.get("mep", []) if m.get("kind") == "shaft" and not m.get("duct")):
         t = float(s.get("thickness", 0.1))
         if s.get("walls"):
             # deslab: the shaft's walls given by their axes, as drawn in Игорь's example (kv94: the
@@ -253,6 +253,36 @@ def pipe_objects(scene, profile):
         for _, d, params in out:
             d["pen"] = pen
             params.append({"name": "gs_cont_pen", "value": pen})
+    return out
+
+
+def duct_morphs(scene):
+    """deslab: 13.11.2026, rectangular vent ducts (scene mep shafts with "duct": true) as morphs from the floor (or their
+    bottom) to their top. A duct along the plan axes is a box (`size`); one along a skew wall is a prism over its
+    polygon (`body`: CreateMorphs builds a box only along the axes). Returns (item, CreateMorphs data)."""
+    height = scene.get("levels", {}).get("ceiling") or 2.7
+    out = []
+    for m in scene.get("mep", []):
+        if m.get("kind") != "shaft" or not m.get("duct") or len(m.get("polygon", [])) < 3:
+            continue
+        pts = [(float(p["x"]), float(p["y"])) for p in m["polygon"]]
+        z0 = float(m.get("elevation", 0.0))
+        tall = float(m.get("height", height - z0))
+        n = len(pts)
+        edges = [(pts[(i + 1) % n][0] - pts[i][0], pts[(i + 1) % n][1] - pts[i][1]) for i in range(n)]
+        if n == 4 and all(min(abs(dx), abs(dy)) < 0.002 for dx, dy in edges):
+            xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+            out.append((m, {"basePoint": {"x": min(xs), "y": min(ys), "z": z0},
+                            "size": {"x": max(xs) - min(xs), "y": max(ys) - min(ys), "z": tall}}))
+            continue
+        if sum(pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1] for i in range(n)) < 0:
+            pts = pts[::-1]   # counterclockwise seen from above
+        ox, oy = pts[0]
+        vertices = [{"x": round(x - ox, 4), "y": round(y - oy, 4), "z": z} for z in (0.0, tall) for x, y in pts]
+        polygons = [{"vertexIds": list(range(n))[::-1]}, {"vertexIds": list(range(n, 2 * n))}] + \
+                   [{"vertexIds": [i, (i + 1) % n, n + (i + 1) % n, n + i]} for i in range(n)]
+        out.append((m, {"basePoint": {"x": ox, "y": oy, "z": z0},
+                        "body": {"bodyType": "Solid", "vertices": vertices, "polygons": polygons}}))
     return out
 
 

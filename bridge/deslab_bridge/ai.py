@@ -195,7 +195,7 @@ def chat(messages, profile=None, model=None, json_mode=True):
 OPENING_KINDS = ("window", "door", "balconyDoor", "opening")  # deslab: "opening" is a doorway without a leaf
 MEP_KINDS = ("shaft", "sewerRiser", "waterRiser", "heatingRiser", "radiator", "panel")
 # deslab: 13.11.2026, what the model may call a numbered candidate of the scan helper (scene "candidates")
-CANDIDATE_KINDS = ("radiator", "heatingRiser", "waterRiser", "sewerRiser", "shaft", "box", "panel", "vent")
+CANDIDATE_KINDS = ("radiator", "heatingRiser", "waterRiser", "sewerRiser", "shaft", "box", "duct", "panel", "vent")
 CANDIDATE_SKIP = ("clutter", "furniture", "windowBoard", "other", "none")
 WET_KINDS = ("bathroom", "kitchen")
 
@@ -211,7 +211,7 @@ REVIEW_SCHEMA = {
              "start": "{x,y}", "end": "{x,y}", "depth": "m for a radiator", "confidence": "0..1"}],
     "_panelNote": "a panel (щиток) may be given as a point `at` on the wall: the code makes the segment",
     "candidates": [{"id": "C1 (an id from the scene's `candidates`, every one must be answered)",
-                    "kind": "radiator|heatingRiser|waterRiser|sewerRiser|shaft|box|panel|vent|clutter|furniture|windowBoard|other",
+                    "kind": "radiator|heatingRiser|waterRiser|sewerRiser|shaft|box|duct|panel|vent|clutter|furniture|windowBoard|other",
                     "confidence": "0..1 (0.4 and more is drawn; the candidate itself is real, you only doubt its name)", "note": "short text"}],
     "pipes": [{"id": "P1 (an id from the scene's `pipes`, every one must be answered)",
                "system": "heating|water|sewer|vent|clutter", "confidence": "0..1", "note": "short text"}],
@@ -243,7 +243,8 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   radiator: панель под окном или у стены, низ 0.05-0.3 м, верх до 1.2 м. heatingRiser: вертикальная труба 15-40 мм от пола до потолка
   рядом с радиатором или окном, обычно пара. sewerRiser: труба около 110 мм, обычно в санузле или шахте. waterRiser: трубы 25-50 мм
   рядом с канализационным стояком (ХВС и ГВС, обычно две). shaft: выступающий короб вентиляции на всю высоту с решёткой или отверстием.
-  box: короб без решётки (закрытые стояки). panel: электрощит. vent: решётка или отверстие вентиляции.
+  box: короб без решётки (закрытые стояки, гипсокартон). duct: открытый прямоугольный вентиляционный воздуховод от пола до потолка
+  (металл или пластик, поперечные стыки-фланцы); два воздуховода рядом это два кандидата, назови каждый duct. panel: электрощит. vent: решётка или отверстие вентиляции.
   Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
 - Трубы P1, P2… (раздел pipes сцены) алгоритм нашёл и измерил в облаке сам: kind riser это стояк (ось x, y, от z до z), run это труба
   вдоль стены (два конца оси, высота z), diameter в метрах, joins показывает, к какой трубе она присоединена, hint это догадка алгоритма.
@@ -460,6 +461,11 @@ def candidate_item(c, kind, number):
     a, b = c["start"], c["end"]
     polygon = [dict(a), dict(b), {"x": round(b["x"] + nx * depth, 4), "y": round(b["y"] + ny * depth, 4)},
                {"x": round(a["x"] + nx * depth, 4), "y": round(a["y"] + ny * depth, 4)}]
+    if kind == "duct":
+        # deslab: 13.11.2026, a rectangular vent duct is a solid box (a morph), laid out like a shaft (dimensions, label)
+        return {"kind": "shaft", "duct": True, "id": f"VD{number}", "candidate": c["id"], "polygon": polygon,
+                "elevation": round(float(c["bottom"]), 3) if float(c["bottom"]) > 0.15 else 0.0, "height": round(tall, 3),
+                "label": f"Воздуховод {int(round(width * 1000))}×{int(round(depth * 1000))}"}
     # deslab: Nagornaya run 3, a box 0.14 m wide with walls of 100 mm blocks gave a wall of zero length: a narrow box has
     # thinner walls (a third of its smaller size)
     return {"kind": "shaft", "id": f"{'SH' if kind == 'shaft' else 'BX'}{number}", "candidate": c["id"], "polygon": polygon,
@@ -666,7 +672,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
     # a box or a riser drawn from a candidate where the pipes themselves are built would draw the same thing twice
     risers = [p for p in pipes.values() if p.get("system") and p.get("kind") == "riser"]
     for m in list(mep):
-        if m.get("candidate") and m.get("kind") in ("box", "shaft", "heatingRiser", "waterRiser", "sewerRiser"):
+        if m.get("candidate") and m.get("kind") in ("box", "shaft", "heatingRiser", "waterRiser", "sewerRiser") and not m.get("duct"):
             pts = m.get("polygon") or [m.get("at")]
             cx, cy = sum(q["x"] for q in pts) / len(pts), sum(q["y"] for q in pts) / len(pts)
             reach = 0.15 + max((math.hypot(q["x"] - cx, q["y"] - cy) for q in pts), default=0.0)

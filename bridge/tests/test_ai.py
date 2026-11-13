@@ -157,6 +157,36 @@ def test_pipes_from_the_cloud():
     assert [m["candidate"] for m in new["mep"]] == ["C1"], new["mep"]
 
 
+def test_two_vent_ducts():
+    # deslab: 13.11.2026, Nagornaya bathroom corner (Игорь: «две квадратных трубы, одна широкая, другая узкая»): two
+    # candidates named duct are two solid morphs on the plan with their labels, no shaft walls, kept next to a riser
+    from deslab_bridge.mep import duct_morphs, shaft_walls
+    scene = json.loads(json.dumps(SCENE))
+    scene["mep"] = []
+    scene["candidates"] = [
+        {"id": "C1", "wallId": "W1", "side": "left", "from": 2.6, "to": 2.75, "bottom": 0.0, "top": 2.7, "depth": 0.275,
+         "at": {"x": 2.675, "y": 0.2375}, "start": {"x": 2.6, "y": 0.1}, "end": {"x": 2.75, "y": 0.1}, "hint": "riser?"},
+        {"id": "C2", "wallId": "W1", "side": "left", "from": 2.78, "to": 3.25, "bottom": 0.0, "top": 2.7, "depth": 0.265,
+         "at": {"x": 3.015, "y": 0.2325}, "start": {"x": 2.78, "y": 0.1}, "end": {"x": 3.25, "y": 0.1}, "hint": "box or shaft?"}]
+    scene["pipes"] = [{"id": "P1", "kind": "riser", "diameter": 0.04, "path": [{"x": 2.7, "y": 0.42, "z": 0.0}, {"x": 2.7, "y": 0.42, "z": 2.7}]}]
+    review = {"candidates": [{"id": "C1", "kind": "duct", "confidence": 0.8}, {"id": "C2", "kind": "duct", "confidence": 0.8}],
+              "pipes": [{"id": "P1", "system": "water", "confidence": 0.7}]}
+    new, report = ai.apply_review(scene, review)
+    ducts = [m for m in new["mep"] if m.get("duct")]
+    assert [m["label"] for m in ducts] == ["Воздуховод 150×275", "Воздуховод 470×265"], (ducts, report)
+    assert shaft_walls(new) == []
+    morphs = duct_morphs(new)
+    assert [round(d["size"]["x"], 3) for _, d in morphs] == [0.15, 0.47] and all(d["size"]["z"] == 2.7 for _, d in morphs), morphs
+    assert abs(morphs[0][1]["size"]["y"] - 0.275) < 1e-6 and morphs[0][1]["basePoint"]["z"] == 0.0
+    # a duct along a skew wall is a prism over its polygon
+    skew = {"mep": [{"kind": "shaft", "duct": True, "id": "VD1", "elevation": 0.0, "height": 2.5,
+                     "polygon": [{"x": 0, "y": 0}, {"x": 0.3, "y": 0.1}, {"x": 0.25, "y": 0.25}, {"x": -0.05, "y": 0.15}]}]}
+    (_, data), = duct_morphs(skew)
+    body = data["body"]
+    assert "size" not in data and len(body["vertices"]) == 8 and len(body["polygons"]) == 6, data
+    assert body["vertices"][4]["z"] == 2.5 and body["polygons"][1]["vertexIds"] == [4, 5, 6, 7]
+
+
 def test_balcony_door_swing_in_a_thick_wall():
     # Nagornaya: the slab runs to the outer outline, the wall is 0.64 m thick; the rooms tell the flat's side
     scene = {"walls": [{"id": "W3", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.64, "kind": "exterior",

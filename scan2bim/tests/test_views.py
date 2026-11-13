@@ -42,6 +42,30 @@ def test_candidates_and_views():
     return found
 
 
+def test_two_ducts_side_by_side():
+    # deslab: 13.11.2026, Nagornaya bathroom corner: a narrow and a wide rectangular vent duct stand side by side from
+    # floor to ceiling, 27 cm out of the wall face (y 0.15), with a 3 cm groove between them: two candidates
+    scene = {"transform": {"rotationDeg": 0, "offset": [0, 0, 0]}, "levels": {"ceiling": 2.7},
+             "walls": [{"id": "W1", "start": {"x": 0, "y": 0}, "end": {"x": 4, "y": 0}, "thickness": 0.3, "openings": []}]}
+    # the wall face behind the ducts is hidden from the scanner, the bottom of the groove is not
+    face = [plane_y(0.15, 0, 1.0, 0, 2.7), plane_y(0.15, 1.65, 4, 0, 2.7), plane_y(0.15, 1.15, 1.18, 0, 2.7),
+            plane_z(0, 0, 4, 0.15, 2), plane_z(2.7, 0, 4, 0.15, 2)]
+    narrow = [plane_y(0.42, 1.0, 1.15, 0, 2.7), plane_x(1.0, 0.15, 0.42, 0, 2.7), plane_x(1.15, 0.15, 0.42, 0, 2.7)]
+    wide = [plane_y(0.415, 1.18, 1.65, 0, 2.7), plane_x(1.18, 0.15, 0.415, 0, 2.7), plane_x(1.65, 0.15, 0.415, 0, 2.7)]
+    pts = np.concatenate(face + narrow + wide)
+    pts += np.random.default_rng(3).normal(0, 0.002, pts.shape)
+    found = [c for c in find_candidates(pts, scene) if c["top"] - c["bottom"] > 2.0]
+    spans = sorted((c["from"], c["to"]) for c in found)
+    assert len(found) == 2, found
+    assert abs(spans[0][0] - 1.0) <= 0.03 and abs(spans[0][1] - 1.15) <= 0.03, found
+    assert abs(spans[1][0] - 1.18) <= 0.03 and abs(spans[1][1] - 1.65) <= 0.03, found
+    assert all(abs(c["depth"] - 0.27) < 0.02 for c in found), found
+    # the same two ducts pressed together without a groove are one thing
+    pts = np.concatenate(face[:2] + face[3:] + [plane_y(0.42, 1.0, 1.65, 0, 2.7), plane_x(1.0, 0.15, 0.42, 0, 2.7), plane_x(1.65, 0.15, 0.42, 0, 2.7)])
+    assert len([c for c in find_candidates(pts, scene) if c["top"] - c["bottom"] > 2.0]) == 1
+    return found
+
+
 def test_threshold():
     # a wall along x with a balcony door 0.8 wide at 2.0, a threshold of 180 mm under it
     scene = {"transform": {"rotationDeg": 0, "offset": [0, 0, 0]}, "levels": {"ceiling": 2.7},
@@ -88,6 +112,8 @@ def test_empty_doorway():
 if __name__ == "__main__":
     for c in test_candidates_and_views():
         print(c["id"], c["wallId"], c["side"], c["from"], c["to"], c["bottom"], c["top"], c["depth"], c["hint"])
+    for c in test_two_ducts_side_by_side():
+        print(c["id"], c["from"], c["to"], c["depth"], c["hint"])
     test_threshold()
     test_empty_doorway()
     print("ok")

@@ -1770,7 +1770,25 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         for vent, key in ((True, "ducts"), (False, "pipes")):
             set_layer(ac, [g for (m, _, _), g in zip(pipes, guids) if g and (m.get("system") == "vent") == vent],
                       idx.get(L.get(key)) or idx.get(L.get("risers")) or mep_layer, report, "трубы")
-    report.step("шахты, трассировка, стояки, радиаторы, трубы", walls=len(extra_walls), objects=len(objects), pipes=len(pipes))
+    # deslab: rectangular vent ducts as box morphs on the duct layer, in the vent surface
+    from .mep import duct_morphs
+    ducts = duct_morphs(scene)
+    if ducts:
+        vent_surface = profile.get("mep", {}).get("pipeSurfaces", {}).get("vent")
+        sid = None
+        if vent_surface:
+            for a in ac.tapir("GetAttributesByType", {"attributeType": "Surface"}).get("attributes", []):
+                if a.get("name") == vent_surface and a.get("attributeId"):
+                    sid = a["attributeId"]
+        if sid:
+            for _, d in ducts:
+                d["surfaceId"] = sid
+                for face in d.get("body", {}).get("polygons", []):
+                    face["surfaceId"] = sid
+        guids = _created(ac.tapir("CreateMorphs", {"morphsData": [d for _, d in ducts]}), "elements", report, "Воздуховод")
+        set_layer(ac, guids, idx.get(L.get("ducts")) or mep_layer, report, "воздуховоды")
+    report.step("шахты, трассировка, стояки, радиаторы, трубы", walls=len(extra_walls), objects=len(objects), pipes=len(pipes),
+                ducts=len(ducts))
 
     partitions = [wall_guid[w["id"]] for w in scene.get("walls", []) if is_partition(w, profile) and w["id"] in wall_guid]
     set_layer(ac, partitions, idx.get(L["partitions"]), report, "перегородки")

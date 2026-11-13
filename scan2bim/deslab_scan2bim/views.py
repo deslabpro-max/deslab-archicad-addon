@@ -281,6 +281,43 @@ def _join_pipe_pieces(found, height):
     return found
 
 
+def _split_at_grooves(tm, zm, dm, t0, t1, z0, z1, height, step=0.01, min_part=0.1, max_groove=0.06, dip=0.03):
+    """deslab: 13.11.2026, Nagornaya bathroom corner: two rectangular vent ducts stand side by side from floor to ceiling
+    (Игорь: «две квадратных трубы, одна широкая, другая узкая») and came out as one box. Where they meet the scanner
+    looks into the seam: on the plan a short line going into the box (x 2.82-2.92 at y 8.29-8.33). The frontmost point of
+    a 2 cm cell hides it, the middle depth of the points of a 1 cm column does not: in the seam most points lie deeper
+    than the face. A tall thing is cut in the middle of such a seam (at most 6 cm wide, at least 10 cm on both sides).
+    `tm`, `zm`, `dm`: the points' place along the wall, height and depth. Returns the ranges along the wall."""
+    whole = [(t0, t1)]
+    if z1 - z0 < 0.7 * height or t1 - t0 < 2 * min_part + step:
+        return whole
+    sel = (tm >= t0) & (tm < t1) & (zm >= z0) & (zm < z1)
+    n = int(round((t1 - t0) / step))
+    cols = np.clip(((tm[sel] - t0) / step).astype(int), 0, n - 1)
+    order = np.argsort(cols, kind="stable")
+    counts = np.bincount(cols, minlength=n)
+    level = np.array([np.median(v) if len(v) >= 10 else np.nan for v in np.split(dm[sel][order], np.cumsum(counts)[:-1])])
+    if np.isnan(level).all():
+        return whole
+    face = float(np.nanmedian(level))
+    low = np.nan_to_num(level, nan=face) < face - dip
+    cuts, k, last = [], 0, 0
+    while k < n:
+        if not low[k]:
+            k += 1
+            continue
+        j = k
+        while j < n and low[j]:
+            j += 1
+        if (j - k) * step <= max_groove and (k - last) * step >= min_part and (n - j) * step >= min_part and \
+                np.nanmedian(level[last:k]) >= face - dip and np.nanmedian(level[j:]) >= face - dip:
+            cuts.append(t0 + (k + j) / 2 * step)
+            last = j
+        k = j
+    edges = [t0] + cuts + [t1]
+    return list(zip(edges[:-1], edges[1:]))
+
+
 def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
     """deslab: what stands in front of a wall face, as numbered candidates (Set-of-Mark: the model names the candidate,
     the numbers stay the cloud's). One candidate is a patch of the face where the cloud stands 3.5..45 cm out of it:
@@ -334,7 +371,11 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
                 fill = len(ys) / max(1.0, (width / cell) * (tall / cell))
                 if fill < 0.3 and width * tall > 0.5:
                     continue   # a curtain, a ragged cloud: not a thing with a shape
-                found.append(_candidate(wall, side, a, u, n, half, t0, t1, z0, z1, stand, fill, height))
+                for p0, p1 in _split_at_grooves(t[idx][m], pts[idx][m, 2], depth[m], t0, t1, z0, z1, height):
+                    sub = ((xs + 0.5) * cell >= p0) & ((xs + 0.5) * cell < p1)
+                    part = front[ys[sub], xs[sub]] if sub.any() else front[ys, xs]
+                    found.append(_candidate(wall, side, a, u, n, half, p0, p1, z0, z1,
+                                            float(np.percentile(part, 80)), fill, height))
     found = _join_pipe_pieces(found, height)
     # one thing near a corner is seen from both walls: it belongs to the wall it stands closer to
     drop = set()
