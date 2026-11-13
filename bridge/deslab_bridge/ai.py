@@ -672,6 +672,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             reach = 0.15 + max((math.hypot(q["x"] - cx, q["y"] - cy) for q in pts), default=0.0)
             if any(math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= reach for r in risers):
                 mep.remove(m)
+                applied[:] = [a for a in applied if f"из кандидата {m['candidate']}" not in a]
                 rejected.append(f"{m['kind']} {m['id']} из кандидата {m['candidate']}: на этом месте построены сами трубы")
     for n, item in enumerate(review.get("vents", []) or [], 1):
         wall = walls.get(item.get("wallId"))
