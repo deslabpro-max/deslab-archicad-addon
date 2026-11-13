@@ -212,8 +212,15 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
                 return min(o[1], r[1]) - max(o[0], r[0]) >= 0.7 * min(o[1] - o[0], r[1] - r[0])
 
             def stacked(r):
-                zs = [o[2] for o in runs if abs(o[3] - r[3]) < 0.1 and over(o, r)]
-                return len(zs) >= 4 and max(zs) - min(zs) >= 1.0
+                zs = sorted(o[2] for o in runs if abs(o[3] - r[3]) < 0.1 and over(o, r))
+                # the pieces around this one that follow each other within half a metre of height
+                k = zs.index(r[2])
+                lo = hi = k
+                while lo > 0 and zs[lo] - zs[lo - 1] <= 0.5:
+                    lo -= 1
+                while hi < len(zs) - 1 and zs[hi + 1] - zs[hi] <= 0.5:
+                    hi += 1
+                return hi - lo + 1 >= 4 and zs[hi] - zs[lo] >= 1.0
             runs = [r for r in runs if not stacked(r)]
             # one pipe seen as two spots a few centimetres apart: the longer piece stays
             single = []
@@ -327,7 +334,12 @@ def find_pipes(pts, scene):
     for k, p in enumerate(pipes, 1):
         p["id"] = f"P{k}"
         p["hint"] = _hint(p, height)
-    return join_pipes(pipes)
+    pipes = join_pipes(pipes)
+    # a short piece between two risers that stand side by side is the risers themselves, seen from a wall
+    def between_risers(p):
+        a, b = p["path"][0], p["path"][-1]
+        return p["kind"] == "run" and a.get("joins") and b.get("joins") and math.dist((a["x"], a["y"]), (b["x"], b["y"])) < 0.3
+    return [p for p in pipes if not between_risers(p)]
 
 
 def render(pts, scene, pipes, path, scale=100):
