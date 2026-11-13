@@ -203,6 +203,14 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
                     same[0][0], same[0][1] = min(same[0][0], p[0]), max(same[0][1], p[1])
                 else:
                     runs.append(p)
+            # the joints of the wall with the floor and the ceiling (skirting, cornice) are no pipes
+            runs = [r for r in runs if 0.15 <= r[2] <= height - 0.2]
+            # four or more pieces one above another over the same stretch are the tiers of a flat thing standing
+            # by the wall (the side of a box, a panel), not pipes
+            def stacked(r):
+                return sum(abs(o[3] - r[3]) < 0.1 and min(o[1], r[1]) - max(o[0], r[0]) >= 0.7 * min(o[1] - o[0], r[1] - r[0])
+                           for o in runs)
+            runs = [r for r in runs if stacked(r) < 4]
             for t0, t1, zc, dc, dia in runs:
                 p0 = a + u * t0 + n * side * (half + dc)
                 p1 = a + u * t1 + n * side * (half + dc)
@@ -261,6 +269,23 @@ def join_pipes(pipes, reach=0.15):
             if best:
                 end["x"], end["y"] = best[1]["path"][0]["x"], best[1]["path"][0]["y"]
                 end["joins"] = best[1].get("id")
+    # a run that passes a riser close to its end (it was followed on into the corner) ends at the riser
+    for run in runs:
+        for k in (0, -1):
+            end, other = run["path"][k], run["path"][0 if k else -1]
+            if "joins" in end:
+                continue
+            vx, vy = other["x"] - end["x"], other["y"] - end["y"]
+            length = math.hypot(vx, vy)
+            for r in risers:
+                a, b = r["path"]
+                if length < 1e-6 or not a["z"] - 0.05 <= end["z"] <= b["z"] + 0.05:
+                    continue
+                along = ((a["x"] - end["x"]) * vx + (a["y"] - end["y"]) * vy) / length
+                across = abs((a["x"] - end["x"]) * vy - (a["y"] - end["y"]) * vx) / length
+                if 0 < along <= min(0.5, length / 2) and across <= reach + r["diameter"]:
+                    end["x"], end["y"], end["joins"] = a["x"], a["y"], r.get("id")
+                    break
     ends = [(run, k) for run in runs for k in (0, -1) if "joins" not in run["path"][k]]
     for i, (ra, ka) in enumerate(ends):
         for rb, kb in ends[i + 1:]:
