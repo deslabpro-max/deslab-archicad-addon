@@ -1875,7 +1875,7 @@ static GS::Optional<GS::ObjectState> ResolveLibraryPartName (API_Element& elemen
     API_LibPart libPart = {};
     GS::ucscpy (libPart.docu_UName, uName.ToUStr ());
 
-    GSErrCode err = ACAPI_LibraryPart_Search (&libPart, false, true);
+    GSErrCode err = SearchLibraryPartAnyVersion (libPart);  // deslab: another library version too
     delete libPart.location;
 
     if (err != NoError) {

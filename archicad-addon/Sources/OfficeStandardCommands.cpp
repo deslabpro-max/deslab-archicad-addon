@@ -1678,7 +1678,7 @@ GSErrCode CreateCapturedObject (const GS::ObjectState& item, API_AttributeIndex 
     item.Get ("libraryPartName", name);
     API_LibPart libPart = {};
     GS::ucsncpy (libPart.docu_UName, name.ToUStr ().Get (), API_UniLongNameLen - 1);
-    GSErrCode err = ACAPI_LibraryPart_Search (&libPart, false, true);
+    GSErrCode err = SearchLibraryPartAnyVersion (libPart);  // deslab: another library version too
     delete libPart.location;
     if (err != NoError) {
         return err;

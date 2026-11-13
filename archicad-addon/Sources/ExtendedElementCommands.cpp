@@ -4822,7 +4822,7 @@ static GSErrCode ApplyWindowOrDoorLibraryPartToDefaults (const GS::ObjectState& 
     API_LibPart libPart = {};
     libPart.typeID = (typeId == API_DoorID) ? APILib_DoorID : APILib_WindowID;
     GS::ucscpy (libPart.docu_UName, libName.ToUStr ());
-    GSErrCode err = ACAPI_LibraryPart_Search (&libPart, false, true);
+    GSErrCode err = SearchLibraryPartAnyVersion (libPart);  // deslab: another library version too
     delete libPart.location;
     if (err != NoError) {
         return err;
