@@ -949,8 +949,12 @@ GSErrCode ApplyDimensionTextLeaders (
         note.leaderPen = point.leaderPen > 0 ? point.leaderPen : note.notePen;
         // deslab: 11.11.2026, a new project's dimension defaults gave the leader a blue arrowhead (pen 45); the
         // office leader starts with a small dot like the opening labels (Игорь), or with nothing when no dot is asked.
+#ifdef ServerMainVers_2900
+        note.arrowData.arrowVisibility = point.leaderDot;  // deslab: Archicad 29 has one visibility flag
+#else
         note.arrowData.begArrow = point.leaderDot;
         note.arrowData.endArrow = false;
+#endif
         note.arrowData.arrowType = APIArr_FullCirc;
         note.arrowData.arrowPen = point.leaderDot && point.leaderDotPen > 0 ? point.leaderDotPen : note.leaderPen;
         if (point.leaderDot && point.leaderDotSize > 0) {
