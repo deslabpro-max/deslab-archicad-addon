@@ -6,6 +6,8 @@ The template already has the layouts «04 ОБМЕРНЫЙ ПЛАН» (view «О
 so each plan Drawing is re-created with CreateDrawings: same source view, own scale, own frame (clip polygon)
 and a position that puts the flat in the middle of the frame. Everything else on the layout (stamp, explication,
 axonometry, notes) is not touched. Layout and view names come from office-profile.json, "layouts"."""
+import time
+
 from .archicad import ArchicadError
 
 SCALES = (20, 25, 30, 40, 45, 50, 60, 75, 100)
@@ -393,6 +395,70 @@ def axonometry_spot(plan, frame, cfg, aspect):
     return best
 
 
+def _fit_3d(ac, matrix, source_id, away_id, tries=5):
+    """deslab: 13.11.2026 (Игорь: «криво встает»): the first FitInWindow after the model is built works on the old 3D
+    model (zoom 143 instead of 93, a corner of the flat in the frame), and two fits in a row agree on the wrong zoom.
+    Leaving the 3D window for a layout and coming back rebuilds it: repeated until two passes give the same zoom."""
+    previous = None
+    for _ in range(tries):
+        ac.tapir("ChangeWindow", {"navigatorItemId": source_id})
+        ac.tapir("Set3DProjectionSettings", {"axonometric": {"transformationMatrix": [float(v) for v in matrix]}})
+        ac.tapir("FitInWindow", {})
+        try:
+            state = ac.tapir("Get3DWindowSettings", {})
+            zoom = (round(float(state["zoomScaleX"]), 2), round(float(state["zoomDispX"]), 0), round(float(state["zoomDispY"]), 0))
+        except (ArchicadError, KeyError, TypeError, ValueError):
+            zoom = None
+        if zoom is not None and zoom == previous:
+            return True
+        previous = zoom
+        if away_id:
+            ac.tapir("ChangeWindow", {"navigatorItemId": away_id})
+        time.sleep(1.0)
+    return False
+
+
+def _compass_and_signature(ac, cfg):
+    """deslab: 12.11.2026 (Игорь: компас выше и меньше, подпись ниже, над экспликацией): on the layout that is open,
+    the north sign goes to the top of the right column at its smaller size and the approval block sits right above
+    the explication. Absolute targets, so a second run moves nothing. Returns the top of the approval block."""
+    col = cfg.get("column") or {}
+    notes, sig_top = [], None
+    if not col:
+        return sig_top, notes
+    drawings = ac.tapir("GetElementsByType", {"elementType": "Drawing"}).get("elements", [])
+    details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
+    expl = [d["details"]["bounds"] for d in details
+            if "кспликац" in str(_flat(d).get("customName") or "") and "bounds" in d["details"]]
+    for t in ac.tapir("GetElementsByType", {"elementType": "Text"}).get("elements", []):
+        d = ac.tapir("GetDetailsOfElements", {"elements": [t]})["detailsOfElements"][0]["details"]
+        if "согласен" not in str(d.get("text", "")):
+            continue
+        height = float(d["style"]["boxHeight"]) / 1000
+        top = float(d["position"]["y"])
+        if expl:
+            want = max(b["yMax"] for b in expl) + float(col.get("signatureGap", 0.004)) + height
+            if abs(want - top) > 0.0002:
+                ac.tapir("MoveElements", {"elementsWithMoveVectors": [{"elementId": t["elementId"], "moveVector": {"x": 0, "y": want - top, "z": 0}, "copy": False}]})
+            top = want
+        sig_top = top
+    for o in ac.tapir("GetElementsByType", {"elementType": "Object"}).get("elements", []):
+        d = ac.tapir("GetDetailsOfElements", {"elements": [o]})["detailsOfElements"][0]["details"]
+        if "Знак Севера" not in str((d.get("libPart") or {}).get("name", "")):
+            continue
+        size = 2.0 * float(col.get("compassScale", 0.7))
+        centre = col.get("compassCentre") or {"x": 0.40, "y": 0.2755}
+        dx, dy = centre["x"] - d["origin"]["x"], centre["y"] - d["origin"]["y"]
+        if abs(dx) > 0.0002 or abs(dy) > 0.0002:
+            ac.tapir("MoveElements", {"elementsWithMoveVectors": [{"elementId": o["elementId"], "moveVector": {"x": dx, "y": dy, "z": 0}, "copy": False}]})
+        if abs(float(d["dimensions"]["x"]) - size) > 0.001:
+            # the schema takes an object's size only under typeSpecificDetails
+            done = ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [{"elementId": o["elementId"], "details": {"typeSpecificDetails": {"dimensions": {"x": size, "y": size, "z": d["dimensions"]["z"]}}}}]})
+            if not all(r.get("success", True) for r in done.get("executionResults", [])):
+                notes.append(f"компас {size:g}: {done}")
+    return sig_top, notes
+
+
 def axonometry_view(ac, profile):
     """Makes the 3D view of the template again from the project's own axonometry: the template's projection, the view's
     layers, overrides, scale and 3D style. The old view of this name goes first (its zoom is of the previous flat)."""
@@ -411,7 +477,12 @@ def axonometry_view(ac, profile):
         notes.append(f"проекция не задана ({done})")
     # only the layers of the view's combination in the 3D window, then the flat fills it: the saved view keeps this zoom
     settings = dict(cfg.get("viewSettings") or {})
-    ac.tapir("FitInWindow", {})
+    leave = next((i for i in _tree(ac, "LayoutBook") if i.get("type") == "LayoutItem"), None)
+    if not _fit_3d(ac, cfg["matrix"], source["navigatorItemId"], leave["navigatorItemId"] if leave else None):
+        notes.append("кадр 3D-окна не устоялся")
+    # the project map item keeps the zoom of its window when the window is left
+    if leave:
+        ac.tapir("ChangeWindow", {"navigatorItemId": leave["navigatorItemId"]})
     made = ac.tapir("CloneProjectMapItemToViewMap", {"viewsData": [{"navigatorItemId": source["navigatorItemId"], "parentNavigatorItemId": folder}]})["navigatorItems"][0]
     if "navigatorItemId" not in made:
         return None, [f"вид не создан ({made})"]
@@ -472,7 +543,21 @@ def place_axonometry(ac, profile):
         box = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": probe["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
         ac.tapir("DeleteElements", {"elements": [{"elementId": probe["elementId"]}]})
         full_w, full_h = box["xMax"] - box["xMin"], box["yMax"] - box["yMin"]
-        spot = axonometry_spot(plan, frame, cfg, full_w / full_h) if full_w > 0 and full_h > 0 else None
+        spot = None
+        if full_w > 0 and full_h > 0:
+            sig_top, col_notes = _compass_and_signature(ac, cfg)
+            out.extend("Аксонометрия: " + n for n in col_notes)
+            column = cfg.get("column")
+            if column and sig_top is not None:
+                # deslab: 12.11.2026 (Игорь: «всё размещать в одну линию»): the right column of the sheet, from the
+                # approval block up, from the sheet's right edge left to the plan
+                right, left = float(column.get("right", 0.415)), plan["xMax"] + float(cfg.get("gap", 0.005))
+                bottom, top = sig_top + float(cfg.get("gap", 0.005)) - 0.001, float(column.get("top", 0.287))
+                w = min(right - left, (top - bottom) * full_w / full_h)
+                if w >= float(cfg.get("minWidth", 0.045)):
+                    spot = (right - w, bottom, w, w * full_h / full_w)
+            if spot is None:
+                spot = axonometry_spot(plan, frame, cfg, full_w / full_h)
         if not spot:
             out.append(f"Аксонометрия: на листе «{name}» рядом с планом нет места")
             continue

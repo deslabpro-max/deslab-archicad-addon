@@ -36,7 +36,8 @@
                    "matrix": [0.740609859, -0.975447089, 0.0, 0.0, 0.585431413, 0.444489794, 0.97954154, 0.0, -0.424718498, -0.32246824, 0.400164134, 0.0],
                    "viewSettings": {"layerCombination": "002 Инженерные узлы", "graphicOverrideCombination": "0011 Обмерный план Аксонометрия",
                                     "penSetName": "02 Архитектурный М 1:50", "drawingScale": 50, "d3styleName": "Детализированная Окраска с Тенями"},
-                   "right": 0.3085, "bottom": 0.0494, "maxWidth": 0.119, "maxHeight": 0.130, "minWidth": 0.045, "gap": 0.005},
+                   "right": 0.3085, "bottom": 0.0494, "maxWidth": 0.119, "maxHeight": 0.130, "minWidth": 0.045, "gap": 0.005,
+                   "column": {"right": 0.415, "top": 0.287, "signatureGap": 0.003, "compassScale": 0.7, "compassCentre": {"x": 0.400, "y": 0.268}}},
     "items": [
       {"layout": "ОБМЕРНЫЙ ПЛАН", "view": "Обмерный план"},
       {"layout": "ИНЖЕНЕРНЫЕ УЗЛЫ", "view": "Инженерные узлы"}
