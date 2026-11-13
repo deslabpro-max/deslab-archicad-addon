@@ -59,11 +59,18 @@ def test_threshold():
     scene["walls"][0]["openings"][0].update(sill=0.0, height=2.4)
     flat = np.concatenate([plane_y(0.15, 0, 1.6, 0, 2.7), plane_y(0.15, 2.4, 4, 0, 2.7), plane_z(0, 0, 4, -0.15, 3)])
     assert measure_thresholds(flat, scene) == [] and scene["walls"][0]["openings"][0]["sill"] == 0.0
+    # the door shut: its leaf 10 cm back in the wall fills the opening, the threshold stands in front of it
+    shut = np.concatenate([plane_y(0.15, 0, 1.6, 0, 2.7), plane_y(0.15, 2.4, 4, 0, 2.7), plane_y(0.05, 1.6, 2.4, 0.2, 2.4),
+                           plane_y(0.15, 1.6, 2.4, 0, 0.2), plane_z(0.2, 1.6, 2.4, 0.05, 0.15), plane_z(0, 0, 4, 0.15, 3)])
+    measure_thresholds(shut, scene)
+    assert abs(scene["walls"][0]["openings"][0]["sill"] - 0.2) < 0.03, scene["walls"][0]["openings"][0]
 
 
 def test_empty_doorway():
     # two doors in one wall: one is looked through (kind "opening"), the other has its leaf shut (stays a door)
-    scene = {"walls": [{"id": "W1", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.2,
+    scene = {"rooms": [{"polygon": [{"x": 0, "y": 0.1}, {"x": 6, "y": 0.1}, {"x": 6, "y": 4}, {"x": 0, "y": 4}]},
+                       {"polygon": [{"x": 0, "y": -0.1}, {"x": 3, "y": -0.1}, {"x": 3, "y": -4}, {"x": 0, "y": -4}]}],
+             "walls": [{"id": "W1", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.2,
                         "openings": [{"id": "W1.1", "kind": "door", "centerOffset": 1.5, "width": 0.9, "sill": 0.0, "height": 2.1},
                                      {"id": "W1.2", "kind": "door", "centerOffset": 4.0, "width": 0.9, "sill": 0.0, "height": 2.1}]}]}
     pts = np.concatenate([plane_y(0.1, 0, 1.05, 0, 2.7), plane_y(0.1, 1.95, 3.55, 0, 2.7), plane_y(0.1, 4.45, 6, 0, 2.7),
@@ -71,6 +78,11 @@ def test_empty_doorway():
     notes = mark_empty_doorways(pts, scene)
     kinds = [o["kind"] for o in scene["walls"][0]["openings"]]
     assert kinds == ["opening", "door"], (kinds, notes)
+    # an open entrance door (no room behind it) stays a door
+    scene["walls"][0]["openings"][1]["centerOffset"] = 4.0
+    scene["walls"][0]["openings"][0]["kind"] = "door"
+    mark_empty_doorways(np.concatenate([plane_y(0.1, 0, 1.05, 0, 2.7), plane_y(0.1, 1.95, 3.55, 0, 2.7)]), scene)
+    assert [o["kind"] for o in scene["walls"][0]["openings"]] == ["opening", "door"]
 
 
 if __name__ == "__main__":

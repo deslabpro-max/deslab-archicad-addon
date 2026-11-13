@@ -90,6 +90,23 @@ def measure_thresholds(pts, scene, max_height=0.6, step=0.02, column=0.05, cover
                     break
                 top = level
             height = round(0.02 + top * step, 3) if top else 0.0
+            if height > max_height - step:
+                # deslab: Nagornaya run 2, the door stood shut: its leaf fills the opening with points to the top, so every
+                # column was «solid». The leaf is set back in the wall and the threshold stands in front of it: the rows
+                # where the cloud stands at least 5 cm off the leaf's plane, counted from the floor, are the threshold
+                ref = (t > lo) & (t < hi) & (np.abs(d) < half + 0.25) & (pts[:, 2] > 0.9) & (pts[:, 2] < 1.8)
+                if ref.sum() >= 50:
+                    plane = float(np.median(d[ref]))
+                    off = np.abs(d[m] - plane) > 0.05
+                    grid2 = np.zeros((n_rows, n_cols), dtype=bool)
+                    ok2 = ok & off
+                    grid2[rows[ok2], cols[ok2]] = True
+                    top = 0
+                    for level in range(n_rows):
+                        if grid2[level].mean() < cover:
+                            break
+                        top = level + 1
+                    height = round(0.02 + top * step, 3) if top else 0.0
             if height < 0.04 or height > max_height - step:
                 continue
             head = float(o.get("sill", 0)) + float(o["height"])
@@ -98,6 +115,34 @@ def measure_thresholds(pts, scene, max_height=0.6, step=0.02, column=0.05, cover
             o["threshold"] = height
             notes.append(f"{o['id']}: balcony door threshold {int(round(height * 1000))} mm from the cloud")
     return notes
+
+
+def _inside(polygon, p):
+    x, y, inside = float(p[0]), float(p[1]), False
+    for a, b in zip(polygon, polygon[1:] + polygon[:1]):
+        if (a["y"] > y) != (b["y"] > y) and x < (b["x"] - a["x"]) * (y - a["y"]) / (b["y"] - a["y"]) + a["x"]:
+            inside = not inside
+    return inside
+
+
+def _without_thin_runs(out, rows=4, cols=8):
+    """deslab: Nagornaya run 2: a pipe along the wall tied the riser in the corner to the radiator under the window into
+    one ragged thing, which was dropped, and the edge of the ceiling gave fifty strips. Cells of a horizontal line
+    thinner than 8 cm (a pipe, the ceiling's edge, a skirting) are taken out before the things are told apart."""
+    h, w = out.shape
+    up = np.zeros((h, w), dtype=np.int32)
+    for y in range(h):
+        up[y] = np.where(out[y], (up[y - 1] if y else 0) + 1, 0)
+    run = up.copy()
+    for y in range(h - 2, -1, -1):
+        run[y] = np.where(out[y] & out[y + 1], run[y + 1], run[y])
+    left = np.zeros((h, w), dtype=np.int32)
+    for x in range(w):
+        left[:, x] = np.where(out[:, x], (left[:, x - 1] if x else 0) + 1, 0)
+    wide = left.copy()
+    for x in range(w - 2, -1, -1):
+        wide[:, x] = np.where(out[:, x] & out[:, x + 1], wide[:, x + 1], wide[:, x])
+    return out & ~((run < rows) & (wide >= cols))
 
 
 def mark_empty_doorways(pts, scene, cell=0.05, limit=0.15):
@@ -123,7 +168,11 @@ def mark_empty_doorways(pts, scene, cell=0.05, limit=0.15):
             grid[np.clip(((pts[m, 2] - z0) / cell).astype(int), 0, n_rows - 1), np.clip(((t[m] - lo) / cell).astype(int), 0, n_cols - 1)] = True
             share = float(grid.mean())
             o["leafShare"] = round(share, 2)
-            if share < limit:
+            # the entrance door (no room behind the wall) stays a door even when it stood open during the scan
+            a, u, n, _ = _frame(wall)
+            c = a + u * float(o["centerOffset"])
+            between = all(any(_inside(r.get("polygon") or [], c + n * k * (half + 0.3)) for r in scene.get("rooms", [])) for k in (1, -1))
+            if share < limit and between:
                 o["kind"] = "opening"
                 notes.append(f"{o['id']}: a doorway without a leaf (the cloud looks through it)")
     return notes
@@ -136,7 +185,7 @@ def _without_other_walls(pts, scene, wall):
         if other is wall:
             continue
         t, d, length = _wall_coords(pts, other)
-        keep &= ~((np.abs(d) < float(other["thickness"]) / 2 + 0.04) & (t > -0.05) & (t < length + 0.05))
+        keep &= ~((np.abs(d) < float(other["thickness"]) / 2 + 0.02) & (t > -0.05) & (t < length + 0.05))
     return keep
 
 
@@ -267,7 +316,7 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
                 k = int(np.argmax(hist))
                 if hist[k] + hist[max(k - 1, 0)] + hist[min(k + 1, len(hist) - 1)] >= 0.35 * seen.sum() and edges[k] > 0.015:
                     front = np.where(seen, front - (edges[k] + 0.005), front)
-            out = front >= min_depth
+            out = _without_thin_runs(front >= min_depth)
             for comp_y, comp_x in _components(front, out):
                 ys, xs = comp_y, comp_x
                 if len(ys) < 12:
@@ -279,6 +328,8 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
                     continue
                 if z1 < 0.16 and tall < 0.14:
                     continue   # a skirting board
+                if z0 > height - 0.3:
+                    continue   # the edge of the ceiling
                 stand = float(np.percentile(front[ys, xs], 80))
                 fill = len(ys) / max(1.0, (width / cell) * (tall / cell))
                 if fill < 0.3 and width * tall > 0.5:
