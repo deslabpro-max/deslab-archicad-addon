@@ -252,12 +252,21 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   во всю высоту. heatingRiser, waterRiser, sewerRiser давай только кандидату, который по форме может быть трубой: прямоугольный код не построит.
   seam у кандидата: по облаку там слабый стык (seamStrength в м, seamDepths глубины двух сторон). Если на снимках кандидат в этом месте
   это две вещи рядом (два воздуховода, воздуховод и короб), добавь parts: 2, код разрежет его по seam, kind относится к обеим частям.
+  face кандидата: грань по высоте, измеренная в полосах по 10 см. cover это доля полос, где предмет закрывает больше 60 % своей ширины,
+  flat это разброс выступа полос в метрах. У воздуховода, короба и шахты cover около 1 и flat до 0.02; если cover меньше 0.6 или flat
+  больше 0.04 (hint «wires or clutter?»), это не duct, не box и не shaft (код такое не построит), а провода, мусор или мебель: clutter.
+  Старая электропроводка и её остатки: свисающие со стены или потолка провода и пучки, гофра, распаечные коробки, маленький старый щиток
+  или коробка 20-40 см, из которой висят провода: clutter, на чертёж не идут. panel это только квартирный электрощит: ровный ящик
+  с дверцей, без висящих вокруг проводов.
   Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
 - Трубы P1, P2… (раздел pipes сцены) алгоритм нашёл и измерил в облаке сам: kind riser это стояк (ось x, y, от z до z), run это труба
   вдоль стены (два конца оси, высота z), diameter в метрах, joins показывает, к какой трубе она присоединена, hint это догадка алгоритма.
   Назови систему каждой трубы в разделе pipes: heating (пара тонких стояков у окна и трубы от них к радиатору), water (тонкие стояки и
   отводы в санузле или кухне), sewer (около 110 мм, отводы 50 мм у пола), vent (круглый воздуховод 100-160 мм под потолком или стояк).
-  Не труба (косяк, наличник, кабель-канал, кромка радиатора, карниз, плинтус, мебель): clutter. Труба с joins почти всегда той же
+  Не труба (косяк, наличник, кабель-канал, провод, кромка радиатора, карниз, плинтус, мебель): clutter. Код не построит трубу тоньше
+  16 мм вдали от санузла, кухни, радиаторов и стояков отопления (это провод), отопление без радиатора или стояка отопления рядом и
+  воду или канализацию вдали от санузла, кухни и их стояков: такие трубы в прихожей или комнате обычно провода, обувь, сумки или
+  мебель, называй их clutter. Поэтому обязательно назови санузел и кухню в rooms, а кухонную зону в комнате дай в wetZones. Труба с joins почти всегда той же
   системы, что и труба, к которой она присоединена. Геометрию труб не меняй. Кандидата C…, который стоит на месте стояков P…
   (группа труб, принятая за короб), называй clutter: трубы будут построены сами.
 - Вентиляционные отверстия и решётки в стене, у которых нет номера кандидата, выдай в vents: стена, грань, расстояние вдоль стены и высота
@@ -484,6 +493,67 @@ def _round_shape(c):
     return width - 0.04 <= depth <= width + 0.1
 
 
+# deslab: 14.11.2026, Nagornaya hall: old wiring hanging down by the entrance door was built as a duct 260x150 and its
+# 12 mm wires as heating pipes (Игорь: «маленький щиток, и остатки старой проводки висят… такие вещи нужно, чтобы ты
+# распознавал»). A duct or a box has a face at every height (the helper's `face`: cover, the share of 10 cm bands it
+# fills over 60 % of its width; flat, the spread of the bands' fronts); a pipe thinner than a heating pipe that stands
+# neither in a wet room nor by a radiator or a heating riser is a cable.
+FACE_COVER = 0.6
+FACE_FLAT = 0.04
+CABLE_DIAMETER = 0.016
+WET_WORDS = ("сануз", "с/у", "ванн", "туалет", "уборн", "кухн", "постироч", "bath", "kitchen", "wc")
+
+
+def _without_face(c):
+    face = c.get("face")
+    return isinstance(face, dict) and (float(face.get("cover", 1)) < FACE_COVER or float(face.get("flat", 0)) > FACE_FLAT)
+
+
+def _wet_polygons(scene, review):
+    """Rooms named as wet ones (by the model's names, or the scene's) and the model's wet zones."""
+    names = {r["id"]: r.get("name", "") for r in scene.get("rooms", [])}
+    for item in review.get("rooms", []) or []:
+        if item.get("id") in names and isinstance(item.get("name"), str):
+            names[item["id"]] = item["name"]
+    polys = [r["polygon"] for r in scene.get("rooms", [])
+             if r.get("polygon") and any(w in str(names.get(r["id"], "")).lower() for w in WET_WORDS)]
+    polys += [z["polygon"] for z in review.get("wetZones", []) or []
+              if isinstance(z.get("polygon"), list) and len(z["polygon"]) >= 3 and all(_is_point(q) for q in z["polygon"])]
+    return polys
+
+
+def _to_segment(p, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    k = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy or 1.0)))
+    return math.hypot(p[0] - a[0] - k * dx, p[1] - a[1] - k * dy)
+
+
+def _misplaced(p, wet, radiators, heating, wet_risers, near_radiator=1.0, near_riser=0.6, near_wet=1.0):
+    """deslab: 14.11.2026, why a pipe of the helper cannot be what the model named it, or None. A pipe thinner than 16 mm away
+    from wet rooms, radiators and heating risers is a cable; a heating pipe needs a radiator or a heating riser by it, a
+    water or a sewer pipe a wet room or a water or sewer riser (Nagornaya hall: 50 mm «pipes» at 0.33 and 1.66 m under the old
+    panel). A riser of 16 mm and more is a riser wherever it stands."""
+    system, d = p.get("system"), float(p.get("diameter", 0))
+    ends = [(float(q["x"]), float(q["y"])) for q in p.get("path", [])]
+    if not ends or system not in ("heating", "water", "sewer"):
+        return None
+    in_wet = any(_by_polygon(e, poly, 0.15) for e in ends for poly in wet) or any(
+        math.hypot(e[0] - r["path"][0]["x"], e[1] - r["path"][0]["y"]) <= near_wet for e in ends for r in wet_risers if r is not p)
+    by_radiator = any(_to_segment(e, (r["start"]["x"], r["start"]["y"]), (r["end"]["x"], r["end"]["y"])) <= near_radiator
+                      for e in ends for r in radiators)
+    by_heating = any(math.hypot(e[0] - h["path"][0]["x"], e[1] - h["path"][0]["y"]) <= near_riser
+                     for e in ends for h in heating if h is not p)
+    if d < CABLE_DIAMETER and system in ("heating", "water") and not (in_wet or by_radiator or by_heating):
+        return "кабель"
+    if p.get("kind") == "riser" and d >= CABLE_DIAMETER:
+        return None
+    if system == "heating" and not (by_radiator or by_heating):
+        return "отопление без радиатора и стояка рядом"
+    if system in ("water", "sewer") and not in_wet:
+        return "вода или канализация вдали от санузла, кухни и стояков"
+    return None
+
+
 def candidate_item(c, kind, number):
     """deslab: 13.11.2026, a numbered candidate of the scan helper named by the model becomes an engineering item. Every
     number is the cloud's (the helper measured the candidate), the model gives the name only."""
@@ -674,6 +744,17 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             rejected.append(f"кандидат {cid} ({kind}): уверенность {item.get('confidence')} ниже порога")
         elif kind in ("shaft", "box") and min(float(c["to"]) - float(c["from"]), float(c["depth"])) < 0.1:
             rejected.append(f"кандидат {cid} ({kind}): уже 0.1 м, это не короб")
+        elif (kind == "panel" or kind in ("shaft", "box", "duct") and float(c["top"]) - float(c["bottom"]) >= 1.5) and _without_face(c):
+            # deslab: 14.11.2026, Nagornaya hall: the old wiring by the entrance door was named a duct, the old panel it hangs
+            # from could be named a panel; a duct over risers (no face where they stand apart) is said nothing about: it is them
+            face = c["face"]
+            rejected.append(f"кандидат {cid} ({kind}): нет ровной грани (cover {face.get('cover')}, flat {face.get('flat')}), "
+                            "это провода или мусор")
+            outline = candidate_item(c, "box", "")["polygon"]
+            if not any(p.get("kind") == "riser" and _by_polygon((p["path"][0]["x"], p["path"][0]["y"]), outline, 0.0)
+                       for p in new.get("pipes", [])):
+                doubts.append(f"Кандидат {cid} модель назвала {kind}, а по облаку у него нет ровной грани: "
+                              "похоже на висящие провода или мусор. Не построен.")
         elif kind in ("heatingRiser", "waterRiser", "sewerRiser") and not _round_shape(c):
             # deslab: 14.11.2026, Nagornaya: the narrow vent duct (16 cm wide, 30 cm out of the wall) named a sewer riser
             # became a pipe of 160 mm; a pipe stands out of the wall by its own size and a clamp's gap
@@ -722,6 +803,26 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
     for pid in pipes:
         if pid not in named:
             rejected.append(f"труба {pid}: модель не ответила")
+    # deslab: 14.11.2026, Nagornaya hall: wires of the old wiring by the entrance door were built as heating and sewer pipes
+    wet = _wet_polygons(new, review)
+    radiators = [m for m in mep if m.get("kind") == "radiator" and m.get("start") and m.get("end")]
+    big = [p for p in pipes.values() if p.get("kind") == "riser" and float(p.get("diameter", 0)) >= CABLE_DIAMETER]
+    heating = [p for p in big if p.get("system") == "heating"]
+    wet_risers = [p for p in big if p.get("system") in ("water", "sewer")]
+    misplaced = []
+    for p in pipes.values():
+        why = _misplaced(p, wet, radiators, heating, wet_risers)
+        if why:
+            d = int(round(float(p["diameter"]) * 1000))
+            rejected.append(f"труба {p['id']} ({p['system']}, {d} мм): {why}, не построена")
+            if why != "кабель":
+                misplaced.append(f"{p['id']} ({p['system']}, {d} мм)")
+            del p["system"]
+            p.pop("label", None)
+            applied[:] = [a for a in applied if not a.startswith(f"труба {p['id']}:")]
+    if misplaced:
+        doubts.append("Не построены, потому что рядом нет санузла, кухни, радиатора или стояка: " + ", ".join(misplaced)
+                      + ". Если это трубы, скажи, где кухня или мокрая зона.")
     # a box or a riser drawn from a candidate where the pipes themselves are built would draw the same thing twice
     risers = [p for p in pipes.values() if p.get("system") and p.get("kind") == "riser"]
     for m in list(mep):

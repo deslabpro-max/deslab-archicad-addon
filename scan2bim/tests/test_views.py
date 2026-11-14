@@ -106,6 +106,7 @@ def test_wiring_is_no_duct():
     duct, wires = found[1], found[3]
     assert duct["face"]["cover"] >= 0.9 and duct["face"]["flat"] <= 0.01, duct
     assert wires["face"]["cover"] <= 0.5, wires
+    assert duct["hint"] == "duct or box?" and wires["hint"] == "wires or clutter?", (duct, wires)
     return [duct, wires]
 
 

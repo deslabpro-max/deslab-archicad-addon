@@ -242,6 +242,10 @@ def _components(front, out, tol=0.05):
     return [(part // w, part % w) for part in np.split(cells, cuts)] if len(cells) else []
 
 
+FACE_COVER = 0.6   # deslab: 14.11.2026, Nagornaya: the bathroom ducts 1.0, the hanging wiring by the entrance 0.78 and less
+FACE_FLAT = 0.04   # the ducts 0.007 and 0.021, the wiring 0.064
+
+
 def _face(rows, cols, depth, c0, c1, r0, r1, bin_rows=5, span=0.6):
     """deslab: 14.11.2026, Nagornaya hall: old wiring hanging down the wall by the entrance door (Игорь: «остатки старой
     проводки висят») came out as a box 26x15 cm from floor to ceiling and was built as a vent duct. A duct or a box has
@@ -499,8 +503,10 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
                     part = front[ys[sub], xs[sub]]
                     found.append(_candidate(wall, side, a, u, n, half, p0, p1, z0, z1,
                                             float(np.percentile(part, 80)), fill, height))
-                    found[-1]["face"] = _face(ys[sub], xs[sub], part, int(round(p0 / cell)), int(round(p1 / cell)),
-                                              int(round(z0 / cell)), int(round(z1 / cell)))
+                    face = found[-1]["face"] = _face(ys[sub], xs[sub], part, int(round(p0 / cell)), int(round(p1 / cell)),
+                                                     int(round(z0 / cell)), int(round(z1 / cell)))
+                    if found[-1]["hint"] in ("duct or box?", "box or shaft?") and (face["cover"] < FACE_COVER or face["flat"] > FACE_FLAT):
+                        found[-1]["hint"] = "wires or clutter?"
                     if seam is not None:
                         # deslab: a faint seam for the model; the depths of the two sides as the candidate's own
                         sides = [front[ys[k], xs[k]] for k in (sub & (along < seam[0]), sub & (along >= seam[0]))]

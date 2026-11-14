@@ -230,6 +230,65 @@ def test_two_vent_ducts():
     assert all(next(p for p in new["pipes"] if p["id"] == i).get("system") == "heating" for i in ("P1", "P2"))
 
 
+def test_old_wiring():
+    # deslab: 14.11.2026, Nagornaya hall (Игорь: «маленький щиток, и остатки старой проводки висят. Это не надо учитывать»):
+    # a tall candidate named a duct without a face by height is not built; 12 mm «pipes» away from wet rooms, radiators and
+    # heating risers are cables
+    scene = json.loads(json.dumps(SCENE))
+    scene["mep"] = []
+    tall = {"wallId": "W1", "side": "left", "bottom": 0.0, "top": 2.7, "depth": 0.15, "hint": "duct or box?"}
+    scene["candidates"] = [
+        dict(tall, id="C1", **{"from": 0.4, "to": 0.66}, at={"x": 0.53, "y": 0.175}, start={"x": 0.4, "y": 0.1}, end={"x": 0.66, "y": 0.1},
+             face={"flat": 0.017, "cover": 0.33}),
+        dict(tall, id="C2", **{"from": 3.0, "to": 3.26}, at={"x": 3.13, "y": 0.175}, start={"x": 3.0, "y": 0.1}, end={"x": 3.26, "y": 0.1},
+             face={"flat": 0.004, "cover": 0.97}),
+        {"id": "C3", "wallId": "W1", "side": "left", "from": 1.0, "to": 2.0, "bottom": 0.2, "top": 0.7, "depth": 0.1, "hint": "radiator?",
+         "at": {"x": 1.5, "y": 0.15}, "start": {"x": 1.0, "y": 0.1}, "end": {"x": 2.0, "y": 0.1}}]
+    riser = lambda i, x, y, d: {"id": i, "kind": "riser", "diameter": d, "path": [{"x": x, "y": y, "z": 0.0}, {"x": x, "y": y, "z": 2.7}]}  # noqa: E731
+    run = lambda i, a, b, d: {"id": i, "kind": "run", "diameter": d, "path": [{"x": a[0], "y": a[1], "z": 1.6}, {"x": b[0], "y": b[1], "z": 1.6}]}  # noqa: E731
+    scene["pipes"] = [riser("P1", 5.5, 3.8, 0.012), run("P2", (5.5, 3.8), (5.9, 3.0), 0.012), riser("P3", 4.5, 1.0, 0.012),
+                      run("P4", (1.2, 0.12), (1.2, 0.9), 0.012), riser("P5", 3.0, 3.8, 0.02), run("P6", (3.1, 3.8), (3.5, 3.8), 0.012),
+                      run("P7", (0.5, 3.0), (0.5, 3.5), 0.05), run("P8", (0.5, 2.0), (0.5, 2.5), 0.05), riser("P9", 0.3, 3.8, 0.11),
+                      run("P10", (4.6, 1.5), (3.6, 1.5), 0.05)]
+    review = {"candidates": [{"id": "C1", "kind": "duct", "confidence": 0.6}, {"id": "C2", "kind": "duct", "confidence": 0.6},
+                             {"id": "C3", "kind": "radiator", "confidence": 0.8}],
+              "pipes": [{"id": i, "system": sy, "confidence": 0.7} for i, sy in
+                        (("P1", "heating"), ("P2", "heating"), ("P3", "water"), ("P4", "heating"), ("P5", "heating"), ("P6", "heating"),
+                         ("P7", "heating"), ("P8", "sewer"), ("P9", "sewer"), ("P10", "sewer"))],
+              "wetZones": [{"kind": "bathroom", "polygon": [{"x": 4, "y": 0.5}, {"x": 5.5, "y": 0.5}, {"x": 5.5, "y": 2}, {"x": 4, "y": 2}]}]}
+    new, report = ai.apply_review(scene, review)
+    assert [m["candidate"] for m in new["mep"] if m.get("duct")] == ["C2"], (new["mep"], report)
+    assert any("провода" in d and "C1" in d for d in report["doubts"]), report["doubts"]
+    systems = {p["id"]: p.get("system") for p in new["pipes"]}
+    # P7, a heating pipe with no radiator or heating riser by it, and P8, a sewer pipe away from wet rooms and risers, are
+    # no pipes either; the sewer riser P9 stands where it stands, the pipe P10 from the bathroom is a pipe
+    assert systems == {"P1": None, "P2": None, "P3": "water", "P4": "heating", "P5": "heating", "P6": "heating",
+                       "P7": None, "P8": None, "P9": "sewer", "P10": "sewer"}, (systems, report)
+    assert not next(p for p in new["pipes"] if p["id"] == "P1").get("label")
+    assert sum("кабель" in r for r in report["rejected"]) == 2, report["rejected"]
+    assert "P7 (heating, 50 мм)" in report["doubts"][-1] and "P8 (sewer, 50 мм)" in report["doubts"][-1], report["doubts"]
+    # the wiring by the Nagornaya entrance: about as wide as it should be, but its front goes in and out by height
+    scene["candidates"][1]["face"] = {"flat": 0.064, "cover": 0.78}
+    new, _ = ai.apply_review(scene, review)
+    assert not [m for m in new["mep"] if m.get("duct")], new["mep"]
+    scene["candidates"][1]["face"] = {"flat": 0.021, "cover": 1.0}   # the wide bathroom duct
+    # the small old panel the wiring hangs from has no flat front either, a flat panel box is built
+    small = {"wallId": "W2", "side": "right", "from": 1.0, "to": 1.26, "bottom": 1.64, "top": 1.92, "depth": 0.18, "hint": "",
+             "at": {"x": 5.81, "y": 1.13}, "start": {"x": 5.9, "y": 1.0}, "end": {"x": 5.9, "y": 1.26}}
+    scene["candidates"] += [dict(small, id="C4", face={"flat": 0.012, "cover": 0.0}),
+                            dict(small, id="C5", **{"from": 2.0, "to": 2.3}, start={"x": 5.9, "y": 2.0}, end={"x": 5.9, "y": 2.3},
+                                 face={"flat": 0.002, "cover": 1.0})]
+    new, report = ai.apply_review(scene, dict(review, candidates=review["candidates"] + [{"id": "C4", "kind": "panel", "confidence": 0.6},
+                                                                                       {"id": "C5", "kind": "panel", "confidence": 0.6}]))
+    assert [m["candidate"] for m in new["mep"] if m["kind"] == "panel"] == ["C5"], (new["mep"], report)
+    scene["candidates"] = scene["candidates"][:3]
+    # a room the model names a kitchen keeps its thin water pipe
+    review["rooms"] = [{"id": "R1", "name": "Кухня-гостиная"}]
+    review["pipes"][0]["system"] = "water"
+    new, report = ai.apply_review(scene, review)
+    assert next(p for p in new["pipes"] if p["id"] == "P1").get("system") == "water", report
+
+
 def test_balcony_door_swing_in_a_thick_wall():
     # Nagornaya: the slab runs to the outer outline, the wall is 0.64 m thick; the rooms tell the flat's side
     scene = {"walls": [{"id": "W3", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.64, "kind": "exterior",
