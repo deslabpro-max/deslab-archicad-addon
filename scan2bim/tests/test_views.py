@@ -81,6 +81,34 @@ def test_two_ducts_side_by_side():
     return found
 
 
+def _cable(x0, amp, out0, out1, z0, z1, k, phase):
+    """a cable 12 mm thick hanging down the wall face (y 0.15) in loose waves, `out0`..`out1` out of it"""
+    z = np.arange(z0, z1, 0.004)
+    x = x0 + amp * np.sin(k * z + phase)
+    y = 0.15 + out0 + (out1 - out0) * (0.5 + 0.5 * np.sin(0.7 * k * z + 2 * phase))
+    return np.concatenate([np.stack([x + 0.006 * np.cos(r), y + 0.006 * np.sin(r), z], 1)
+                           for r in np.linspace(0, 2 * np.pi, 8, endpoint=False)])
+
+
+def test_wiring_is_no_duct():
+    # deslab: 14.11.2026, Nagornaya hall: old wiring hanging down by the entrance door was built as a duct 260x150.
+    # A duct 26x15 cm has a face at every height; five cables in loose waves over a band as wide have none
+    scene = {"transform": {"rotationDeg": 0, "offset": [0, 0, 0]}, "levels": {"ceiling": 2.7},
+             "walls": [{"id": "W1", "start": {"x": 0, "y": 0}, "end": {"x": 4, "y": 0}, "thickness": 0.3, "openings": []}]}
+    face = [plane_y(0.15, 0, 4, 0, 2.7), plane_z(0, 0, 4, 0.15, 2), plane_z(2.7, 0, 4, 0.15, 2)]
+    duct = [plane_y(0.30, 1.0, 1.26, 0, 2.7), plane_x(1.0, 0.15, 0.30, 0, 2.7), plane_x(1.26, 0.15, 0.30, 0, 2.7)]
+    wires = [_cable(2.6 + 0.05 * i, 0.04 + 0.02 * i, 0.03 + 0.02 * i, 0.12 + 0.01 * i, 0.1 + 0.3 * (i % 2), 2.7, 2.5 + i, i)
+             for i in range(5)]
+    pts = np.concatenate(face + duct + wires)
+    pts += np.random.default_rng(7).normal(0, 0.002, pts.shape)
+    found = {round(c["from"]): c for c in find_candidates(pts, scene) if c["top"] - c["bottom"] > 2.0}
+    assert sorted(found) == [1, 3], found
+    duct, wires = found[1], found[3]
+    assert duct["face"]["cover"] >= 0.9 and duct["face"]["flat"] <= 0.01, duct
+    assert wires["face"]["cover"] <= 0.5, wires
+    return [duct, wires]
+
+
 def test_threshold():
     # a wall along x with a balcony door 0.8 wide at 2.0, a threshold of 180 mm under it
     scene = {"transform": {"rotationDeg": 0, "offset": [0, 0, 0]}, "levels": {"ceiling": 2.7},
@@ -129,6 +157,8 @@ if __name__ == "__main__":
         print(c["id"], c["wallId"], c["side"], c["from"], c["to"], c["bottom"], c["top"], c["depth"], c["hint"])
     for c in test_two_ducts_side_by_side():
         print(c["id"], c["from"], c["to"], c["depth"], c["hint"])
+    for c in test_wiring_is_no_duct():
+        print(c["id"], c["from"], c["to"], c["depth"], c["fill"], c["hint"], c["face"])
     test_threshold()
     test_empty_doorway()
     print("ok")

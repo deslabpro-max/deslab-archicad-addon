@@ -242,6 +242,28 @@ def _components(front, out, tol=0.05):
     return [(part // w, part % w) for part in np.split(cells, cuts)] if len(cells) else []
 
 
+def _face(rows, cols, depth, c0, c1, r0, r1, bin_rows=5, span=0.6):
+    """deslab: 14.11.2026, Nagornaya hall: old wiring hanging down the wall by the entrance door (Игорь: «остатки старой
+    проводки висят») came out as a box 26x15 cm from floor to ceiling and was built as a vent duct. A duct or a box has
+    a face: at every height it is about as far out and covers its whole width. The cells of a candidate (`rows`, `cols`
+    of 2 cm, `depth` out of the wall) are looked at in bands 10 cm high: `flat` is the spread (p75 - p25, m) of the
+    bands' fronts, `cover` the share of the bands, empty ones too, whose cells reach over 60 % of the width."""
+    bands = np.arange(r0 // bin_rows, (r1 - 1) // bin_rows + 1)
+    if not len(bands) or not len(rows):
+        return {"flat": 0.0, "cover": 0.0}
+    width = max(1, c1 - c0)
+    which = rows // bin_rows
+    levels, covered = [], 0
+    for b in bands.tolist():
+        m = which == b
+        if not m.any():
+            continue
+        levels.append(float(np.percentile(depth[m], 80)))
+        covered += len(np.unique(cols[m])) >= span * width
+    flat = float(np.percentile(levels, 75) - np.percentile(levels, 25)) if len(levels) > 1 else 0.0
+    return {"flat": round(flat, 3), "cover": round(covered / len(bands), 2)}
+
+
 def _candidate(wall, side, a, u, n, half, t0, t1, z0, z1, stand, fill, height):
     mid = (t0 + t1) / 2
     at = a + u * mid + n * side * (half + stand / 2)
@@ -472,9 +494,13 @@ def find_candidates(pts, scene, cell=0.02, min_depth=0.035):
                 for p0, p1, seam in _split_at_seams(t[idx][m], pts[idx][m, 2], depth[m], t0, t1, z0, z1, height):
                     along = (xs + 0.5) * cell
                     sub = (along >= p0) & (along < p1)
-                    part = front[ys[sub], xs[sub]] if sub.any() else front[ys, xs]
+                    if not sub.any():
+                        sub = np.ones(len(ys), dtype=bool)
+                    part = front[ys[sub], xs[sub]]
                     found.append(_candidate(wall, side, a, u, n, half, p0, p1, z0, z1,
                                             float(np.percentile(part, 80)), fill, height))
+                    found[-1]["face"] = _face(ys[sub], xs[sub], part, int(round(p0 / cell)), int(round(p1 / cell)),
+                                              int(round(z0 / cell)), int(round(z1 / cell)))
                     if seam is not None:
                         # deslab: a faint seam for the model; the depths of the two sides as the candidate's own
                         sides = [front[ys[k], xs[k]] for k in (sub & (along < seam[0]), sub & (along >= seam[0]))]
