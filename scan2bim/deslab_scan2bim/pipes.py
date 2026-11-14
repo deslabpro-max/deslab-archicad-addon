@@ -229,11 +229,13 @@ def _merge_arcs(spots, p, x0, y0, max_size, gap=2, far=8):
     return out, circles
 
 
-def _main_circle(q, lv, least=8, share=0.6):
+def _main_circle(q, lv, least=8, share=0.6, core=0.4, alike=0.15):
     """deslab: level by level the biggest connected piece of the points (1 cm cells, corners touching) and its circle.
     Returns (diameter, (x, y) of the centre) when, at most levels, that piece holds `share` of the points or more, is an
-    arc of 3 cm or more and goes round one circle closely, the same at every level; None otherwise (a pipe seen in two
-    pieces, a flat thing)."""
+    arc of 3 cm or more, and at `core` of the levels or more it goes round one circle closely (sizes within `alike` of
+    each other, centres on one straight line); None otherwise (a pipe seen in two pieces, a flat thing). 14.11.2026,
+    Nagornaya bathroom: the water riser 56-60 mm at 36 levels of 61; at the rest a meter, valves at 1.1-1.4 m and a
+    wire by it made circles of 85-186 mm, and the middle of all the levels was no steady circle."""
     radii, errors, centres, shares, zs = [], [], [], [], []
     for part in np.split(q, np.flatnonzero(np.diff(lv)) + 1):
         if len(part) < least:
@@ -273,12 +275,18 @@ def _main_circle(q, lv, least=8, share=0.6):
         if TRACE is not None:
             TRACE.append({"kind": "main", "box": box, "levels": len(radii), "share": round(float(np.median(shares)), 3) if shares else None, "result": None})
         return None
-    r, err = float(np.median(radii)), float(np.median(errors))
-    iqr = float(np.subtract(*np.percentile(radii, [75, 25])))
-    line, c, moved = _straight(centres, zs, r)
-    ok = iqr <= 0.25 * r and line and err <= 0.1 * r and 0.015 <= r <= 0.11
+    radii, errors, zs = np.array(radii), np.array(errors), np.array(zs)
+    centres = np.array(centres)
+    best = max((np.abs(radii - v) <= alike * v for v in radii), key=lambda k: int(k.sum()))
+    if best.sum() < max(5, core * len(radii)):
+        best = np.ones(len(radii), dtype=bool)
+    r, err = float(np.median(radii[best])), float(np.median(errors[best]))
+    iqr = float(np.subtract(*np.percentile(radii[best], [75, 25])))
+    line, c, moved = _straight(centres[best], zs[best], r)
+    # (the 1 cm cubes of the cloud leave their points 3-4 mm off a thin pipe's circle whatever its size)
+    ok = iqr <= 0.25 * r and line and err <= max(0.1 * r, 0.0045) and 0.015 <= r <= 0.11
     if TRACE is not None:
-        TRACE.append({"kind": "main", "box": box, "levels": len(radii), "share": round(float(np.median(shares)), 3), "d": round(2 * r, 4),
+        TRACE.append({"kind": "main", "box": box, "levels": len(radii), "core": int(best.sum()), "share": round(float(np.median(shares)), 3), "d": round(2 * r, 4),
                       "err": round(err, 4), "iqr": round(iqr, 4), "moved": round(moved, 4), "result": round(2 * r, 3) if ok else None,
                       "each": [[round(z, 2), round(2 * rr, 4), round(e, 4), round(x, 3), round(y, 3)]
                                for z, rr, e, (x, y) in zip(zs, radii, errors, centres)]})

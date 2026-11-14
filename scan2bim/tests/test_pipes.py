@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from test_synthetic import H, cloud, plane_x, plane_y  # noqa: E402
 from deslab_scan2bim.analyze import Options, analyze  # noqa: E402
-from deslab_scan2bim.pipes import CELL, _merge_arcs, find_pipes, find_runs  # noqa: E402
+from deslab_scan2bim.pipes import CELL, LEVEL, _main_circle, _merge_arcs, find_pipes, find_runs  # noqa: E402
 from deslab_scan2bim.views import model_points  # noqa: E402
 
 
@@ -225,8 +225,9 @@ def test_bathroom_risers():
              cylinder((0.12, 3.12), "z", 0, H, 0.050, 0.0), veil(0.0, 0.095, 3.12, 0.35, 4),
              # (Nagornaya v21 trace: the sewer riser stands 1-2 cm per metre off vertical)
              arcs((0.16, 3.27), 0.110, ((-100, -40), (40, 100)), tilt=(0.012, 0.008)),
-             # a wire touching the first riser at its side
+             # a wire touching the first riser at its side, and a meter with its valves on it at 1.07-1.45 m
              cylinder((0.12 + 0.028 + 0.006, 3.00 - 0.01), "z", 0, H, 0.012, 0.0),
+             cylinder((0.13, 2.98), "z", 1.07, 1.45, 0.14, 0.0),
              # two wires 9 cm apart in the middle of the room are no riser
              cylinder((2.0, 3.0), "z", 0, H, 0.012, 0.0), cylinder((2.0, 3.09), "z", 0, H, 0.012, 0.0)]
     for z in (1.0, 1.5):
@@ -267,7 +268,29 @@ def test_merge_arcs():
     assert len(_merge_arcs(spots, p, x0, y0, 0.22)[0]) == 2
 
 
+def test_main_circle_core():
+    # deslab: Nagornaya v21 on the PC: the water riser 56-60 mm on 36 levels of 61, standing 1 cm per metre off vertical;
+    # at the rest a meter, valves and a wire touching it made circles of 85-186 mm
+    rng = np.random.default_rng(3)
+    parts = []
+    for k, z in enumerate(np.arange(0.07, 3.1, LEVEL)):
+        c = (1.42 + 0.01 * z, 6.49 - 0.005 * z)
+        a = np.radians(rng.uniform(-80, 80, 120))
+        part = [np.stack([c[0] + 0.029 * np.cos(a), c[1] + 0.029 * np.sin(a)], 1)]
+        if k % 5 in (1, 3):   # something on the pipe at two levels of five: one piece with it
+            b = np.radians(rng.uniform(-50, 50, 160))
+            part.append(np.stack([c[0] + 0.02 + 0.07 * np.cos(b), c[1] - 0.03 + 0.07 * np.sin(b)], 1))
+        xy = np.concatenate(part)
+        xy = xy + rng.normal(0, 0.002, xy.shape)   # the scan's noise
+        parts.append(np.column_stack([xy, np.full(len(xy), z)]))
+    q = np.concatenate(parts)
+    lv = ((q[:, 2] - 0.05) / LEVEL).astype(np.int32)
+    d, (x, y) = _main_circle(q, lv)
+    assert abs(d - 0.058) <= 0.008 and abs(x - (1.42 + 0.01 * 1.55)) < 0.01 and abs(y - (6.49 - 0.005 * 1.55)) < 0.01, (d, x, y)
+
+
 if __name__ == "__main__":
+    test_main_circle_core()
     test_merge_arcs()
     for p in test_pipes():
         print(p["id"], p["kind"], p["diameter"], p["path"], p["hint"])

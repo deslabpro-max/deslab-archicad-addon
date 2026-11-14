@@ -554,6 +554,9 @@ def _round_shape(c):
 # or an artefact (the helper gives 12 mm to whatever is thinner than it can measure).
 GOST_MIN = {"riser": {"heating": 0.018, "water": 0.018, "sewer": 0.045, "vent": 0.09},
             "run": {"heating": 0.014, "water": 0.014, "sewer": 0.036, "vent": 0.09}}
+# deslab: 14.11.2026, Nagornaya bathroom: the sewer riser measured 111-125 mm by its arcs; risers are PVC 110 (GOST 32414)
+# or cast iron DN100 (GOST 6942, 110-118 mm): drawn at 110 when measured 90-135 mm
+SEWER_RISER = (0.09, 0.135, 0.11)
 RADIATOR_LEAST = 0.12   # deslab: the lowest radiator, m (a skirting convector on the floor aside)
 FACE_COVER = 0.6
 FACE_FLAT = 0.04
@@ -873,7 +876,11 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             p["system"] = system
             if p.get("kind") == "riser":
                 p["label"] = PIPE_SYSTEMS[system]
-            applied.append(f"труба {pid}: {system}, d {int(round(float(p.get('diameter', 0)) * 1000))} мм")
+            size = f"d {int(round(float(p.get('diameter', 0)) * 1000))} мм"
+            if system == "sewer" and p.get("kind") == "riser" and SEWER_RISER[0] <= float(p.get("diameter", 0)) <= SEWER_RISER[1]:
+                p["measured"], p["diameter"] = p["diameter"], SEWER_RISER[2]
+                size += f" по облаку, построен {int(SEWER_RISER[2] * 1000)}"
+            applied.append(f"труба {pid}: {system}, {size}")
     for pid in pipes:
         if pid not in named:
             rejected.append(f"труба {pid}: модель не ответила")
