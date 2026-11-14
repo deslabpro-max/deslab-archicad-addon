@@ -310,6 +310,35 @@ def test_old_wiring():
     assert not next(p for p in new["pipes"] if p["id"] == "P1").get("system"), report
 
 
+def test_square_pipes():
+    # deslab: Nagornaya v21, the two pipes from the risers by the window to the radiator: slanted by 2 cm over a metre
+    # (the riser end moved onto the riser's axis) and ending in front of the radiator, not in it
+    from deslab_bridge.mep import square_pipes
+    scene = {"levels": {"ceiling": 3.32},
+             "walls": [{"id": "W3", "start": {"x": 8.31, "y": 0.0}, "end": {"x": 8.31, "y": 9.0}, "thickness": 0.2, "openings": []},
+                       {"id": "W9", "start": {"x": 6.0, "y": 1.18}, "end": {"x": 8.31, "y": 1.18}, "thickness": 0.2, "openings": []}],
+             "mep": [{"kind": "radiator", "id": "RD6", "start": {"x": 8.21, "y": 2.42}, "end": {"x": 8.21, "y": 3.34},
+                      "depth": 0.08, "height": 0.38, "elevation": 0.26}],
+             "pipes": [{"id": "P10", "kind": "riser", "system": "heating", "diameter": 0.03,
+                        "path": [{"x": 8.092, "y": 1.507, "z": 0.0}, {"x": 8.092, "y": 1.507, "z": 3.32}]},
+                       {"id": "P14", "kind": "run", "system": "heating", "diameter": 0.025, "wallId": "W3", "side": "right",
+                        "path": [{"x": 8.092, "y": 1.507, "z": 0.348, "joins": "P10"}, {"x": 8.111, "y": 2.478, "z": 0.348}]},
+                       {"id": "P20", "kind": "run", "branch": True, "system": "heating", "diameter": 0.03,
+                        "path": [{"x": 8.092, "y": 1.507, "z": 0.721, "joins": "P10"}, {"x": 8.086, "y": 1.292, "z": 0.721}]}]}
+    assert set(square_pipes(scene)) == {"P14", "P20"}
+    run = scene["pipes"][1]["path"]
+    # every leg along or across the wall
+    for a, b in zip(run, run[1:]):
+        assert min(abs(a["x"] - b["x"]), abs(a["y"] - b["y"])) < 1e-6, run
+    assert run[0]["joins"] == "P10" and (run[0]["x"], run[0]["y"]) == (8.092, 1.507), run
+    # the run at its measured distance from the wall (the free end), and into the radiator's side at its middle
+    assert abs(run[1]["x"] - 8.111) < 1e-6 and abs(run[1]["y"] - 1.507) < 1e-6, run
+    assert abs(run[-1]["x"] - (8.21 - 0.015 - 0.04)) < 1e-6 and abs(run[-1]["y"] - 2.45) < 1e-6, run
+    assert abs(run[-2]["y"] - 2.37) < 1e-6 and abs(run[-3]["x"] - 8.111) < 1e-6 and abs(run[-3]["y"] - 2.37) < 1e-6, run
+    branch = scene["pipes"][2]["path"]
+    assert branch[0]["x"] == branch[1]["x"] == 8.092 and abs(branch[1]["y"] - 1.292) < 0.001, branch
+
+
 def test_balcony_door_swing_in_a_thick_wall():
     # Nagornaya: the slab runs to the outer outline, the wall is 0.64 m thick; the rooms tell the flat's side
     scene = {"walls": [{"id": "W3", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.64, "kind": "exterior",

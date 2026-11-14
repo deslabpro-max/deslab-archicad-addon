@@ -919,6 +919,10 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
                         "label": OFFICE_LABELS["vent"], "approximate": True})
             applied.append(f"вент. отверстие VO{n} на {wall['id']}")
     new["mep"] = mep
+    # deslab: 14.11.2026 (Игорь: «не надо их криво рисовать, надо тоже усреднять и по 90 градусов все делать»; «трубы не
+    # попадают в радиатор»): the runs along the walls straight and square, into the radiators' sides
+    from .mep import square_pipes
+    square_pipes(new)
 
     for item in review.get("clutter", []) or []:
         wall = walls.get(item.get("wallId"))

@@ -256,6 +256,136 @@ def pipe_objects(scene, profile):
     return out
 
 
+def _wall_frame(wall):
+    a, b = _pt(wall["start"]), _pt(wall["end"])
+    u = _unit(_sub(b, a))
+    return a, u, _left(u)
+
+
+def _square_point(a, u, n, t, s, z):
+    q = _add(_add(a, _mul(u, t)), _mul(n, s))
+    return {"x": round(q[0], 4), "y": round(q[1], 4), "z": round(z, 4)}
+
+
+def square_pipes(scene, reach=0.3, bend=0.05, into=0.03):
+    """deslab: 14.11.2026, Игорь on Nagornaya v21: «трубы не попадают в радиатор… не надо их криво рисовать, надо тоже
+    усреднять и по 90 градусов все делать». A named run along a wall is drawn parallel to its wall, at its measured
+    distance from it and height (the end that was moved onto a riser's axis is not counted); where the riser stands off
+    that line, a leg at 90 degrees joins them. A heating run whose end is within `reach` of a radiator on its wall, at its
+    height, ends in the radiator's side: it stops `bend` before it, turns at 90 degrees to the radiator's middle and goes
+    `into` it. Two runs that meet in a corner meet where their lines cross. A branch keeps its length and points along
+    or across the wall nearest to its riser. Changes the scene in place; returns the ids of the pipes changed."""
+    walls = {w["id"]: w for w in scene.get("walls", [])}
+    risers = {p["id"]: p for p in scene.get("pipes", []) if p.get("kind") == "riser"}
+    radiators = [m for m in scene.get("mep", []) if m.get("kind") == "radiator" and m.get("start") and m.get("end")]
+    changed = []
+    lines = {}
+    for pipe in scene.get("pipes", []):
+        if not pipe.get("system") or pipe.get("kind") != "run" or len(pipe.get("path", [])) < 2:
+            continue
+        ends = (pipe["path"][0], pipe["path"][-1])
+        if pipe.get("branch"):
+            start, tip = ends
+            r = risers.get(start.get("joins"))
+            o = _pt(r["path"][0]) if r else _pt(start)
+            v = _sub(_pt(tip), o)
+            length = _len(v)
+            near = min(walls.values(), key=lambda w: _dist_to_segment(o, _pt(w["start"]), _pt(w["end"])), default=None)
+            if near is None or length < 1e-6:
+                continue
+            _, u, n = _wall_frame(near)
+            d = max((u, _mul(u, -1), n, _mul(n, -1)), key=lambda e: _dot(e, v))
+            z = sum(float(e.get("z", 0.0)) for e in ends) / 2
+            q = _add(o, _mul(d, _dot(v, d)))
+            pipe["path"] = [dict(start, x=round(o[0], 4), y=round(o[1], 4), z=round(z, 4)),
+                            {"x": round(q[0], 4), "y": round(q[1], 4), "z": round(z, 4)}]
+            changed.append(pipe["id"])
+            continue
+        wall = walls.get(pipe.get("wallId"))
+        if wall is None:
+            continue
+        a, u, n = _wall_frame(wall)
+        ts = [_dot(_sub(_pt(e), a), u) for e in ends]
+        free = [_dot(_sub(_pt(e), a), n) for e in ends if not e.get("joins")]
+        offset = sum(free) / len(free) if free else sum(_dot(_sub(_pt(e), a), n) for e in ends) / 2
+        z = sum(float(e.get("z", 0.0)) for e in pipe["path"]) / len(pipe["path"])
+        head, tail = [], []
+        side = 1.0 if offset >= 0 else -1.0   # the face of the wall the run lies by
+        face = side * float(wall.get("thickness", 0.2)) / 2
+        for k, (e, t) in enumerate(zip(ends, ts)):
+            legs = []
+            r = risers.get(e.get("joins"))
+            if r is not None:
+                rs = _dot(_sub(_pt(r["path"][0]), a), n)
+                rt = _dot(_sub(_pt(r["path"][0]), a), u)
+                if abs(rs - offset) > 0.005:
+                    legs = [_square_point(a, u, n, rt, rs, z)]
+                legs.append(_square_point(a, u, n, rt, offset, z))
+                legs[0]["joins"] = e["joins"]
+            elif not e.get("joins") and pipe.get("system") == "heating":
+                legs = _into_radiator(a, u, n, face, side, t, ts[1 - k], offset, z, radiators, reach, bend, into)
+            if not legs:
+                legs = [dict(_square_point(a, u, n, t, offset, z), **({"joins": e["joins"]} if e.get("joins") else {}))]
+            if k == 0:
+                head = legs
+            else:
+                tail = legs[::-1]
+        pipe["path"] = head + tail
+        lines[pipe["id"]] = (a, u, n, offset)
+        changed.append(pipe["id"])
+    # two runs that meet in a corner: both end where their lines cross
+    for pipe in scene.get("pipes", []):
+        if pipe["id"] not in lines:
+            continue
+        for k in (0, -1):
+            e = pipe["path"][k]
+            other = e.get("joins")
+            if other not in lines or other in risers:
+                continue
+            a1, u1, n1, s1 = lines[pipe["id"]]
+            a2, u2, n2, s2 = lines[other]
+            c = _meet(_add(a1, _mul(n1, s1)), u1, _add(a2, _mul(n2, s2)), u2)
+            if c is not None:
+                e["x"], e["y"] = round(c[0], 4), round(c[1], 4)
+    return changed
+
+
+def _dist_to_segment(p, a, b):
+    ab = _sub(b, a)
+    k = max(0.0, min(1.0, _dot(_sub(p, a), ab) / (_dot(ab, ab) or 1.0)))
+    return _len(_sub(p, _add(a, _mul(ab, k))))
+
+
+def _into_radiator(a, u, n, face, side, t, t_other, offset, z, radiators, reach, bend, into):
+    """The end of a heating run at t (the run comes from t_other) into the side of a radiator on its wall face."""
+    ahead = 1.0 if t >= t_other else -1.0
+    best = None
+    for m in radiators:
+        rt = sorted(_dot(_sub(_pt(m[k]), a), u) for k in ("start", "end"))
+        rs = [_dot(_sub(_pt(m[k]), a), n) for k in ("start", "end")]
+        if any(abs(v - face) > 0.05 for v in rs):
+            continue   # not on this face of the wall
+        lo = float(m.get("elevation", 0.1))
+        if not lo - 0.1 <= z <= lo + float(m.get("height", 0.6)) + 0.1:
+            continue
+        edge = rt[0] if ahead > 0 else rt[1]
+        if (edge - t) * ahead > reach or (t - (rt[1] if ahead > 0 else rt[0])) * ahead > 0:
+            continue   # too far before it, or past its far end
+        gap = abs((edge - t))
+        if best is None or gap < best[0]:
+            mid = face + side * (float(m.get("gap", 0.015)) + float(m.get("depth", 0.07)) / 2)
+            inner = sorted((face + side * float(m.get("gap", 0.015)), face + side * (float(m.get("gap", 0.015)) + float(m.get("depth", 0.07)))))
+            best = (gap, edge, mid, inner)
+    if best is None:
+        return []
+    _, edge, mid, inner = best
+    if inner[0] <= offset <= inner[1]:
+        return [_square_point(a, u, n, edge + ahead * into, offset, z)]
+    turn = edge - ahead * bend
+    # (listed from the end of the run inwards, as the legs at a riser)
+    return [_square_point(a, u, n, edge + ahead * into, mid, z), _square_point(a, u, n, turn, mid, z), _square_point(a, u, n, turn, offset, z)]
+
+
 def duct_morphs(scene):
     """deslab: 13.11.2026, rectangular vent ducts (scene mep shafts with "duct": true) as morphs from the floor (or their
     bottom) to their top. A duct along the plan axes is a box (`size`); one along a skew wall is a prism over its
