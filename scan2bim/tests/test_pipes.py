@@ -203,6 +203,46 @@ def test_runs_from_radiator():
     return runs
 
 
+def arcs(c, d, spans, lo=0.0, hi=H, step=0.004):
+    """The parts of a riser's surface seen between the angles of `spans` (degrees)."""
+    out = []
+    for a0, a1 in spans:
+        angles = np.radians(np.arange(a0, a1, math.degrees(step / (d / 2))))
+        a, z = np.meshgrid(angles, np.arange(lo, hi, step))
+        out.append(np.stack([c[0] + d / 2 * np.cos(a.ravel()), c[1] + d / 2 * np.sin(a.ravel()), z.ravel()], 1))
+    return np.concatenate(out)
+
+
+def test_bathroom_risers():
+    # deslab: 14.11.2026, Nagornaya bathroom (Игорь: «там идет два стояка горячая и холодная вода. И следом идет стояк
+    # канализации»): along the wall a water riser 56 mm, a water riser 50 mm and the sewer riser 110 mm, which the
+    # scanner saw on its two sides only (the middle of its front hidden): it fell apart into two thin arcs and was
+    # lost, while a thin pipe across the three at two heights and the veil to the wall made the first riser 110 mm
+    extra = [cylinder((0.12, 3.00), "z", 0, H, 0.056, 0.0), veil(0.0, 0.09, 3.00, 0.35, 3),
+             cylinder((0.10, 2.935), "z", 0, H, 0.012, 0.0),
+             cylinder((0.12, 3.12), "z", 0, H, 0.050, 0.0), veil(0.0, 0.095, 3.12, 0.35, 4),
+             arcs((0.16, 3.27), 0.110, ((-100, -40), (40, 100))),
+             # two wires 9 cm apart in the middle of the room are no riser
+             cylinder((2.0, 3.0), "z", 0, H, 0.012, 0.0), cylinder((2.0, 3.09), "z", 0, H, 0.012, 0.0)]
+    for z in (1.0, 1.5):
+        extra.append(cylinder((0.20, z), "y", 2.98, 3.29, 0.02, 0.0))
+    pts = cloud(extra)
+    scene = analyze(pts, Options(step=1))
+    model = model_points(pts, scene)
+    risers = [p for p in find_pipes(model, scene) if p["kind"] == "riser"]
+    # (the model frame is the synthetic flat's, moved: the group stands by the wall with the smallest x)
+    left = min(q["path"][0]["x"] for q in risers)
+    group = sorted([p for p in risers if p["diameter"] >= 0.03 and p["path"][0]["x"] - left < 0.2], key=lambda p: p["path"][0]["y"])
+    assert [round(p["diameter"], 2) for p in group] in ([0.06, 0.05, 0.11], [0.06, 0.06, 0.11], [0.05, 0.05, 0.11]), group
+    a, w, k = group
+    assert abs(a["diameter"] - 0.056) <= 0.006 and abs(w["diameter"] - 0.05) <= 0.006 and abs(k["diameter"] - 0.11) <= 0.012, group
+    assert abs(math.dist((a["path"][0]["x"], a["path"][0]["y"]), (k["path"][0]["x"], k["path"][0]["y"])) - math.hypot(0.04, 0.27)) < 0.02, group
+    assert not [p for p in risers if p["diameter"] >= 0.03 and p not in group], risers
+    return group
+
+
+
+
 def test_merge_arcs():
     # deslab: three pieces of one riser 108 mm are one spot; two thin pipes 3 cm apart stay two
     def spots_of(pieces, p):
@@ -230,6 +270,8 @@ if __name__ == "__main__":
         print(p["diameter"], p["path"])
     for p in test_runs_from_radiator():
         print(p["diameter"], p["path"])
+    for p in test_bathroom_risers():
+        print(p["id"], p["diameter"], p["path"][0])
     for p in test_branches():
         print(p["id"], p["diameter"], p["path"], p["hint"])
     print("ok")
