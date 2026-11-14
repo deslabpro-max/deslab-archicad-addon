@@ -271,6 +271,11 @@ GS::Optional<GS::UniString> BuildSlabMemoFromGeometry (
 // ExtendedElementCommands.cpp, next to the Window/Door specific variant.
 GSErrCode ApplyFavoriteToElementDefaults (const GS::UniString& favoriteName, API_ElemTypeID expectedTypeId);
 
+// deslab: 13.11.2026, ACAPI_LibraryPart_Search by docu_UName (useDocuName). When a part named «Base NN» is not in the
+// loaded libraries, the same part of another library version is taken, newest first: the office standard names the
+// parts of the Archicad 27 library («Цилиндр 27», «Окно 27»), Archicad 29 has its own. Defined in CommandBase.cpp.
+GSErrCode SearchLibraryPartAnyVersion (API_LibPart& libPart);
+
 bool LoadElementHeaderByGuid (const API_Guid& elementGuid, API_Elem_Head& elementHeader);
 bool DoesElementExist (const API_Guid& elementGuid, API_ElemTypeID expectedTypeId);
 

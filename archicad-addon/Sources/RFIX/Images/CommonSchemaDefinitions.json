@@ -3927,6 +3927,33 @@
             "nodeId": {
                 "type": "number",
                 "minimum": 0.0
+            },
+            "textAt": {
+                "$ref": "#/Coordinate2D",
+                "description": "deslab: the wanted middle of the text of the segment ENDING at this point, on the dimension line (absolute); the text slides along the line to it, set after creation."
+            },
+            "textLeader": {
+                "type": "object",
+                "description": "deslab: put the text of the segment ending at this point on a leader line (beg, mid, end), as the office template does for texts that do not fit.",
+                "properties": {
+                    "beg": { "$ref": "#/Coordinate2D" },
+                    "mid": { "$ref": "#/Coordinate2D" },
+                    "end": { "$ref": "#/Coordinate2D" },
+                    "pen": { "type": "integer", "description": "Leader pen; the text pen when left out." },
+                    "anchorAtTextEnd": { "type": "boolean", "description": "Leader attached at the text end (default true, as in the office template)." },
+                    "dot": {
+                        "type": "object",
+                        "description": "deslab: a filled dot where the leader starts, as on the opening labels; no arrowhead when left out.",
+                        "properties": { "pen": { "type": "integer" }, "size": { "type": "number", "description": "Dot size, mm." } },
+                        "additionalProperties": false
+                    }
+                },
+                "additionalProperties": false,
+                "required": ["beg", "mid", "end"]
+            },
+            "textPosition": {
+                "$ref": "#/Coordinate2D",
+                "description": "deslab: optional fixed position of the text of the segment that ENDS at this witness point (as if moved by hand), given as an offset from the middle of that segment on the dimension line (tested in Archicad 27). Reliable on the last segment of a dimension. Not read for a static (coordinate) point."
             }
         },
         "additionalProperties": false
@@ -4003,6 +4030,10 @@
             "nodeId": {
                 "type": "number",
                 "description": "Polygon vertex id of the base element, from its memo's vertexIDs, for elements with a polygon."
+            },
+            "note": {
+                "type": "object",
+                "description": "deslab: the text of the segment ending at this point: fixPos, pos, angle, useLeaderLine and, with a leader, leaderBeg/leaderMid/leaderEnd, anchorAtTextEnd, anchorPoint, leaderShape, leaderPen."
             }
         }
     },
@@ -8857,6 +8888,10 @@
                 "type": "boolean",
                 "description": "Whether the drawing is included in the automatic drawing numbering sequence."
             },
+            "includeInScaleAutoTexts": {
+                "type": "boolean",
+                "description": "deslab: whether the drawing's scale goes into the Drawing Scale autotexts of the layout (off for a schedule, so the stamp shows only the plan's scale)."
+            },
             "hasBorderLine": {
                 "type": "boolean",
                 "description": "Whether the drawing shows a printable border (Drawing Settings > Frame > Add Printable Border)."
@@ -10456,6 +10491,10 @@
             "isInNumbering": {
                 "type": "boolean",
                 "description": "Whether the drawing is included in the automatic drawing numbering sequence."
+            },
+            "includeInScaleAutoTexts": {
+                "type": "boolean",
+                "description": "deslab: whether the drawing's scale goes into the Drawing Scale autotexts of the layout (off for a schedule, so the stamp shows only the plan's scale)."
             },
             "hasBorderLine": {
                 "type": "boolean",

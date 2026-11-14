@@ -21,6 +21,23 @@ def _dump(pts, prefix, part=2_000_000):
         np.savez_compressed(f"{prefix}.{i // part}.npz", xyz=cm[i:i + part], origin=origin)
 
 
+def _cells(pts, size=0.01):
+    """The cloud thinned to one point per `size` cube: (int16 steps of `size` from `origin`, origin)."""
+    import numpy as np
+    pts = np.asarray(pts, dtype=np.float64)
+    origin = np.floor(pts.min(axis=0))
+    return np.unique(np.round((pts - origin) / size).astype(np.int16), axis=0), origin
+
+
+def _voxels(pts, path, size=0.01):
+    """deslab: the cloud thinned to one point per `size` cube, as int16 steps of `size` from `origin`: a file of a few MB
+    that shows pipes and joints, for debugging the helper away from the scan."""
+    import numpy as np
+    cells, origin = _cells(pts, size)
+    np.savez_compressed(path, xyz=cells, origin=origin, size=size)
+    return len(cells)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="deslab-scan2bim", description=__doc__)
     ap.add_argument("e57")
@@ -31,14 +48,22 @@ def main(argv=None):
     ap.add_argument("--default-thickness", type=float, default=Options.default_thickness)
     ap.add_argument("--dump", help="also write the read points as <DUMP>.N.npz parts "
                     "(centimetres, int16, up to 2M points each) for offline debugging")
+    ap.add_argument("--voxels", help="deslab: write the whole cloud thinned to 1 cm cubes into this .npz and stop")
+    ap.add_argument("--views", help="deslab: folder for the pictures of the cloud for the reviewing model "
+                    "(wall elevations, plan cuts) and views.json")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
 
     opt = Options(step=args.step, exterior_thickness=args.exterior_thickness,
                   default_thickness=args.default_thickness)
     t0 = time.time()
+    if args.voxels:
+        print(_voxels(read_points(args.e57, step=1), args.voxels), "voxels")
+        return 0
     try:
-        pts = read_points(args.e57, step=opt.step)
+        # deslab: 14.11.2026, the pipes are measured on every point of the scan thinned to 1 cm cubes (as the --voxels dev
+        # file): every 4th point left holes in a pipe and the sewer riser of Nagornaya was lost or came out 44-56 mm
+        pts, cubes = read_points(args.e57, step=opt.step, cube=0.01)
         if args.dump:
             _dump(pts, args.dump)
         scene = analyze(pts, opt, source=args.e57)
@@ -47,6 +72,26 @@ def main(argv=None):
                   open(args.output, "w", encoding="utf-8"), ensure_ascii=False)
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    # deslab: 13.11.2026, what the walls alone do not tell: the threshold of a balcony door and the things that stand at
+    # the walls (candidates for radiators, risers, boxes), measured in the cloud; the pictures are for the model
+    try:
+        from .views import find_candidates, mark_empty_doorways, measure_thresholds, model_points, write_views
+        model = model_points(pts, scene)
+        scene["assumptions"] += measure_thresholds(model, scene)
+        scene["assumptions"] += mark_empty_doorways(model, scene)
+        scene["candidates"] = find_candidates(model, scene)
+        if args.views:
+            scene["views"] = [v["file"] for v in write_views(pts, scene, args.views)]
+    except Exception as exc:  # the walls are still good without it
+        scene["warnings"].append(f"cloud views and candidates failed: {exc}")
+    # deslab: 13.11.2026 (Игорь: трубы «по диаметрам, по направлению, как в облаке»): the pipes themselves, P1…; the
+    # reviewing model says what each one carries
+    try:
+        from .pipes import find_pipes
+        from .views import model_points as _model_points
+        scene["pipes"] = find_pipes(_model_points(cubes, scene), scene)
+    except Exception as exc:
+        scene["warnings"].append(f"pipes failed: {exc}")
     scene["source"]["seconds"] = round(time.time() - t0, 1)
     scene["source"]["version"] = __version__
     with open(args.output, "w", encoding="utf-8") as f:

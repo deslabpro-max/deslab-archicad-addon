@@ -13,6 +13,7 @@
 #include "Process.hpp"
 #include "ElementGDLParameterCommands.hpp"
 
+#include <cmath>
 #include <initializer_list>
 
 namespace {
@@ -71,7 +72,8 @@ GS::UniString DefaultHelperPath ()
 
 GS::Optional<GS::UniString> RunHelper (const GS::UniString& helperPath, const GS::UniString& e57Path, const GS::UniString& scenePath, const GS::ObjectState& parameters)
 {
-    GS::Array<GS::UniString> arguments = { e57Path, "-o", scenePath };
+    // deslab: 13.11.2026, the helper also draws the cloud for the reviewing model (wall elevations, plan cuts) next to the scene
+    GS::Array<GS::UniString> arguments = { e57Path, "-o", scenePath, "--views", scenePath + ".views" };
     double value = 0.0;
     if (parameters.Get ("exteriorThickness", value)) {
         arguments.Push ("--exterior-thickness");
@@ -205,6 +207,13 @@ GS::Optional<API_Attr_Head> FindAttributeLike (API_AttrTypeID typeID, std::initi
     return GS::NoValue;
 }
 
+// deslab: the layer named in layers[group], if any.
+GS::Optional<API_Attr_Head> LayerOf (const GS::ObjectState& layers, const char* group)
+{
+    const GS::UniString name = GetString (layers, group);
+    return name.IsEmpty () ? GS::Optional<API_Attr_Head> () : FindAttribute (API_LayerID, name);
+}
+
 // deslab: walls and slabs are concrete unless a material is given (never the default brick).
 GS::Optional<API_Attr_Head> MaterialOrConcrete (const GS::UniString& name)
 {
@@ -223,6 +232,118 @@ GS::Optional<API_Attr_Head> WindowSurface (const GS::UniString& name)
     }
     return FindAttributeLike (API_MaterialID,
         { "\xD0\x9F\xD0\x92\xD0\xA5 - \xD0\x91\xD0\xB5\xD0\xBB\xD1\x8B\xD0\xB9", "\xD0\x9F\xD0\xBB\xD0\xB0\xD1\x81\xD1\x82\xD0\xB8\xD0\xBA - \xD0\x91\xD0\xB5\xD0\xBB\xD1\x8B\xD0\xB9" }, { "\xD0\xBF\xD0\xB2\xD1\x85", "pvc", "\xD0\xBF\xD0\xBB\xD0\xB0\xD1\x81\xD1\x82\xD0\xB8\xD0\xBA - \xD0\xB1\xD0\xB5\xD0\xBB", "\xD0\xBA\xD1\x80\xD0\xB0\xD1\x81\xD0\xBA\xD0\xB0 - \xD0\xB3\xD0\xBB\xD1\x8F\xD0\xBD\xD1\x86\xD0\xB5\xD0\xB2\xD0\xB0\xD1\x8F \xD0\xB1\xD0\xB5\xD0\xBB\xD0\xB0\xD1\x8F", "\xD0\xB1\xD0\xB5\xD0\xBB\xD0\xB8\xD0\xBB\xD0\xB0" });
+}
+
+// deslab: new elements of a type go straight onto a layer through the tool defaults, which are
+// given back afterwards. A wall created on a hidden default layer can be neither moved to another
+// layer nor take doors and windows (Archicad refuses changes on hidden layers).
+class DefaultLayerScope {
+public:
+    DefaultLayerScope (API_ElemTypeID typeID, const GS::Optional<API_Attr_Head>& layer)
+    {
+        if (!layer.HasValue ()) {
+            return;
+        }
+#ifdef ServerMainVers_2600
+        defaults.header.type = typeID;
+#else
+        defaults.header.typeID = typeID;
+#endif
+        if (ACAPI_Element_GetDefaults (&defaults, nullptr) != NoError) {
+            return;
+        }
+        oldLayer = defaults.header.layer;
+        defaults.header.layer = layer.Get ().index;
+        active = Change ();
+    }
+    ~DefaultLayerScope ()
+    {
+        if (active) {
+            defaults.header.layer = oldLayer;
+            Change ();
+        }
+    }
+
+private:
+    bool Change ()
+    {
+        API_Element mask;
+        ACAPI_ELEMENT_MASK_CLEAR (mask);
+        ACAPI_ELEMENT_MASK_SET (mask, API_Elem_Head, layer);
+        return ACAPI_Element_ChangeDefaults (&defaults, nullptr, &mask) == NoError;
+    }
+
+    API_Element defaults = {};
+    API_AttributeIndex oldLayer = {};
+    bool active = false;
+};
+
+// deslab: Archicad cleans a wall junction (one outline, one hatch) only when the ends meet
+// exactly: an L corner needs the same end point, a T joint the end on the other wall's reference
+// line. The scene is rounded to 0.1 mm, so ends that should meet miss by a hair and the walls
+// overlap with two hatches (run 6, Игорь fixed it by hand). Ends within `tol` of each other
+// become one point; an end within `tol` of another wall's line goes exactly onto it.
+void SnapWallEnds (GS::Array<API_Coord>& beg, GS::Array<API_Coord>& end, double tol = 0.005)
+{
+    const UIndex count = beg.GetSize ();
+    auto at = [&] (UIndex k) -> API_Coord& { return (k % 2 == 0) ? beg[k / 2] : end[k / 2]; };
+    auto dist = [] (const API_Coord& a, const API_Coord& b) { return std::hypot (a.x - b.x, a.y - b.y); };
+    // L corners and collinear joints: one common point (the mean of the cluster)
+    GS::Array<bool> done;
+    for (UIndex k = 0; k < 2 * count; ++k) {
+        done.Push (false);
+    }
+    for (UIndex k = 0; k < 2 * count; ++k) {
+        if (done[k]) {
+            continue;
+        }
+        GS::Array<UIndex> group;
+        group.Push (k);
+        for (UIndex m = k + 1; m < 2 * count; ++m) {
+            if (!done[m] && m / 2 != k / 2 && dist (at (k), at (m)) < tol) {
+                group.Push (m);
+            }
+        }
+        if (group.GetSize () < 2) {
+            continue;
+        }
+        API_Coord mean = { 0.0, 0.0 };
+        for (UIndex m : group) {
+            mean.x += at (m).x / group.GetSize ();
+            mean.y += at (m).y / group.GetSize ();
+        }
+        for (UIndex m : group) {
+            at (m) = mean;
+            done[m] = true;
+        }
+    }
+    // T joints: a free end onto the reference line of the wall it stops at
+    for (UIndex k = 0; k < 2 * count; ++k) {
+        if (done[k]) {
+            continue;
+        }
+        API_Coord& p = at (k);
+        for (UIndex w = 0; w < count; ++w) {
+            if (w == k / 2) {
+                continue;
+            }
+            const API_Coord a = beg[w];
+            const API_Coord b = end[w];
+            const double len2 = (b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y);
+            if (len2 < 1e-12) {
+                continue;
+            }
+            const double t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2;
+            if (t <= 0.0 || t >= 1.0) {
+                continue;
+            }
+            const API_Coord q = { a.x + t * (b.x - a.x), a.y + t * (b.y - a.y) };
+            if (dist (p, q) < tol) {
+                p = q;
+                break;
+            }
+        }
+    }
 }
 
 } // namespace
@@ -275,6 +396,7 @@ GS::Optional<GS::UniString> BuildModelFromScanCommand::GetInputParametersSchema 
                 "properties": {
                     "wall": { "type": "string" },
                     "door": { "type": "string" },
+                    "opening": { "type": "string", "description": "For doorways without a leaf (opening kind \"opening\"). Default: the library part of the empty door opening." },
                     "window": { "type": "string" },
                     "slab": { "type": "string" },
                     "zone": { "type": "string" }
@@ -418,6 +540,36 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             layerJobs.Push (GS::Pair<API_Guid, GS::UniString> (guid, name));
         }
     };
+    // Sets the collected layers and empties the list. A missing layer is reported once.
+    GS::HashTable<GS::UniString, Int32> layerIndices;
+    auto applyLayers = [&] () {
+        if (layerJobs.IsEmpty ()) {
+            return;
+        }
+        GS::ObjectState detailParameters;
+        const auto& elementsWithDetails = detailParameters.AddList<GS::ObjectState> ("elementsWithDetails");
+        for (const auto& job : layerJobs) {
+            if (!layerIndices.ContainsKey (job.second)) {
+                const auto layer = FindAttribute (API_LayerID, job.second);
+                layerIndices.Add (job.second, layer.HasValue () ? GetAttributeIndex (layer.Get ().index) : -1);
+                if (!layer.HasValue ()) {
+                    errorList (GS::UniString ("Layer not found: ") + job.second);
+                }
+            }
+            const Int32 layerIndex = layerIndices[job.second];
+            if (layerIndex < 0) {
+                continue;
+            }
+            GS::ObjectState details;
+            details.Add ("layerIndex", layerIndex);
+            GS::ObjectState item;
+            item.Add ("elementId", CreateGuidObjectState (job.first));
+            item.Add ("details", details);
+            elementsWithDetails (item);
+        }
+        layerJobs.Clear ();
+        SetDetailsOfElementsCommand ().Execute (detailParameters, processControl);
+    };
 
     // 3. Walls, in scene order.
     GS::Array<API_Guid> wallGuids;
@@ -429,7 +581,19 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         const auto assumedMaterial = MaterialOrConcrete (GetString (materials, "assumedWalls"));
         GS::ObjectState wallParameters;
         const auto& wallsData = wallParameters.AddList<GS::ObjectState> ("wallsData");
+        // deslab: wall ends that meet are made to meet exactly (clean junctions)
+        GS::Array<API_Coord> wallBeg;
+        GS::Array<API_Coord> wallEnd;
         for (const GS::ObjectState& wall : sceneWalls) {
+            const GS::ObjectState* start = wall.Get ("start");
+            const GS::ObjectState* end = wall.Get ("end");
+            wallBeg.Push ({ start ? GetNumber (*start, "x", 0.0) + dx : 0.0, start ? GetNumber (*start, "y", 0.0) + dy : 0.0 });
+            wallEnd.Push ({ end ? GetNumber (*end, "x", 0.0) + dx : 0.0, end ? GetNumber (*end, "y", 0.0) + dy : 0.0 });
+        }
+        SnapWallEnds (wallBeg, wallEnd);
+        UIndex wallIndex = 0;
+        for (const GS::ObjectState& wall : sceneWalls) {
+            const UIndex thisWall = wallIndex++;
             GS::ObjectState data;
             const GS::UniString favorite = GetString (favorites, "wall");
             if (!favorite.IsEmpty ()) {
@@ -440,8 +604,14 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             if (start == nullptr || end == nullptr) {
                 continue;
             }
-            data.Add ("begCoordinate", Coordinate (*start, dx, dy));
-            data.Add ("endCoordinate", Coordinate (*end, dx, dy));
+            GS::ObjectState begC;
+            begC.Add ("x", wallBeg[thisWall].x);
+            begC.Add ("y", wallBeg[thisWall].y);
+            GS::ObjectState endC;
+            endC.Add ("x", wallEnd[thisWall].x);
+            endC.Add ("y", wallEnd[thisWall].y);
+            data.Add ("begCoordinate", begC);
+            data.Add ("endCoordinate", endC);
             data.Add ("floorIndex", floorIndex);
             data.Add ("zCoordinate", GetNumber (wall, "bottom", 0.0));
             data.Add ("height", GetNumber (wall, "height", 2.7));
@@ -456,6 +626,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             }
             wallsData (data);
         }
+        const DefaultLayerScope defaultLayerWall (API_WallID, LayerOf (layers, "walls"));
         const GS::Array<GS::ObjectState> results = ResultItems (CreateWallsCommand ().Execute (wallParameters, processControl));
         for (UIndex i = 0; i < results.GetSize () && i < sceneWalls.GetSize (); ++i) {
             const GS::UniString id = GetString (sceneWalls[i], "id");
@@ -472,6 +643,10 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         }
     }
 
+    // deslab: walls go onto their layer before the openings. A wall left on a hidden layer of the
+    // Wall tool defaults refuses every door and window ("Failed to create window").
+    applyLayers ();
+
     // 4. Doors and windows in their walls.
     if (GetFlag (parameters, "buildOpenings", true)) {
         GS::ObjectState doorParameters;
@@ -479,8 +654,12 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         GS::ObjectState windowParameters;
         const auto& windowsData = windowParameters.AddList<GS::ObjectState> ("windowsData");
         GS::Array<GS::UniString> doorIds;
+        GS::Array<GS::ObjectState> emptyDoorsData;
+        GS::Array<GS::UniString> emptyDoorIds;
         GS::Array<GS::UniString> windowIds;
         GS::Array<bool> windowIsDoor;
+        GS::Array<GS::Array<GS::ObjectState>> windowGdl;  // deslab: GDL parameters from the scene, per window
+        GS::Array<bool> windowThreeSash;                  // deslab: built as «Трехстворчатое Окно 27»
         for (UIndex i = 0; i < sceneWalls.GetSize (); ++i) {
             if (wallGuids[i] == APINULLGuid) {
                 continue;
@@ -501,28 +680,59 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 data.Add ("width", GetNumber (opening, "width", 0.9));
                 data.Add ("height", GetNumber (opening, "height", 2.1));
                 data.Add ("sillHeight", GetNumber (opening, "sill", 0.0));
-                const GS::UniString favorite = GetString (favorites, isWindow ? "window" : "door");
-                if (!favorite.IsEmpty ()) {
+                // deslab: 13.11.2026 (Игорь: «ты рисуешь двери, а в проекте дверей нет. Там проемы»): a doorway without a
+                // leaf (kind "opening") is the template's empty door opening, not a door with a leaf
+                const bool isEmptyOpening = kind == "opening";
+                const GS::UniString favorite = GetString (favorites, isWindow ? "window" : (isEmptyOpening ? "opening" : "door"));
+                const GS::UniString ownPart = GetString (opening, "libraryPartName");
+                if (!ownPart.IsEmpty ()) {
+                    data.Add ("libraryPartName", ownPart);
+                } else if (!favorite.IsEmpty ()) {
                     data.Add ("favoriteName", favorite);
+                } else if (isEmptyOpening) {
+                    // «Простой Проем Двери»
+                    data.Add ("libraryPartName", GS::UniString ("\xD0\x9F\xD1\x80\xD0\xBE\xD1\x81\xD1\x82\xD0\xBE\xD0\xB9 \xD0\x9F\xD1\x80\xD0\xBE\xD0\xB5\xD0\xBC \xD0\x94\xD0\xB2\xD0\xB5\xD1\x80\xD0\xB8", CC_UTF8));
                 } else if (isWindow) {
                     // deslab: one sash up to 0.9 m, two up to 1.9 m, three above
                     const double width = GetNumber (opening, "width", 0.9);
                     data.Add ("libraryPartName", GS::UniString (width <= 0.9 ? "\xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27" : (width <= 1.9 ? "\xD0\x94\xD0\xB2\xD1\x83\xD1\x81\xD1\x82\xD0\xB2\xD0\xBE\xD1\x80\xD1\x87\xD0\xB0\xD1\x82\xD0\xBE\xD0\xB5 \xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27" : "\xD0\xA2\xD1\x80\xD0\xB5\xD1\x85\xD1\x81\xD1\x82\xD0\xB2\xD0\xBE\xD1\x80\xD1\x87\xD0\xB0\xD1\x82\xD0\xBE\xD0\xB5 \xD0\x9E\xD0\xBA\xD0\xBD\xD0\xBE 27"), CC_UTF8));
                 }
                 if (isWindow) {
+                    // deslab: a corner window (Archicad's own corner window pair, Игорь
+                    // 04.11.2026: one window round the corner, not two with a column between)
+                    bool cornerWindow = false;
+                    if (opening.Get ("cornerWindow", cornerWindow) && cornerWindow) {
+                        data.Add ("cornerWindow", true);
+                    }
+                    GS::Array<GS::ObjectState> gdl;
+                    opening.Get ("gdlParameters", gdl);
+                    windowGdl.Push (gdl);
+                    windowThreeSash.Push (favorite.IsEmpty () && GetNumber (opening, "width", 0.9) > 1.9);
                     // deslab: a one-sided wall has the scanned room on its left, and the sashes
                     // open to the left side with oSide set
                     data.Add ("oSide", true);
                     windowsData (data);
                     windowIds.Push (GetString (opening, "id"));
                     windowIsDoor.Push (isBalconyDoor);
+                } else if (isEmptyOpening) {
+                    // deslab: 13.11.2026, Nagornaya run 3: a library part named for one door stays in the Door tool for the
+                    // doors after it, and the entrance door, created after two empty doorways, lost its leaf. The doors
+                    // with a leaf go first, the empty doorways after them
+                    emptyDoorsData.Push (data);
+                    emptyDoorIds.Push (GetString (opening, "id"));
                 } else {
                     doorsData (data);
                     doorIds.Push (GetString (opening, "id"));
                 }
             }
         }
+        for (UIndex d = 0; d < emptyDoorsData.GetSize (); ++d) {
+            doorsData (emptyDoorsData[d]);
+            doorIds.Push (emptyDoorIds[d]);
+        }
         GS::Array<GS::Pair<API_Guid, bool>> createdWindows;  // the window and whether it is a balcony door
+        GS::Array<GS::Array<GS::ObjectState>> createdGdl;    // deslab: and its GDL parameters from the scene
+        GS::Array<bool> createdThreeSash;
         auto collect = [&] (const GS::ObjectState& response, const GS::Array<GS::UniString>& ids, const auto& list, const char* what, bool windows) {
             const GS::Array<GS::ObjectState> results = ResultItems (response);
             for (UIndex i = 0; i < results.GetSize () && i < ids.GetSize (); ++i) {
@@ -534,20 +744,40 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     layerFor (guid, "openings");
                     if (windows) {
                         createdWindows.Push (GS::Pair<API_Guid, bool> (guid, windowIsDoor[i]));
+                        createdGdl.Push (windowGdl[i]);
+                        createdThreeSash.Push (windowThreeSash[i]);
                     }
                 } else {
                     errorList (GS::UniString (what) + " " + ids[i] + ": " + ErrorMessage (results[i]));
                 }
             }
         };
+        const DefaultLayerScope defaultLayerDoor (API_DoorID, LayerOf (layers, "openings"));
         if (!doorIds.IsEmpty ()) {
+            // deslab: the Door tool is left as it was (the empty doorway's library part would stay as its default, and the
+            // next build in this project would give the entrance door no leaf)
+            API_Element doorDefaults = {};
+            API_ElementMemo doorDefaultsMemo = {};
+#ifdef ServerMainVers_2600
+            doorDefaults.header.type = API_DoorID;
+#else
+            doorDefaults.header.typeID = API_DoorID;
+#endif
+            const bool haveDoorDefaults = !emptyDoorIds.IsEmpty () && ACAPI_Element_GetDefaults (&doorDefaults, &doorDefaultsMemo) == NoError;
             collect (CreateDoorsCommand ().Execute (doorParameters, processControl), doorIds, doorList, "Door", false);
+            if (haveDoorDefaults) {
+                API_Element restoreMask;
+                ACAPI_ELEMENT_MASK_SETFULL (restoreMask);
+                ACAPI_Element_ChangeDefaults (&doorDefaults, &doorDefaultsMemo, &restoreMask);
+                ACAPI_DisposeElemMemoHdls (&doorDefaultsMemo);
+            }
         }
+        const DefaultLayerScope defaultLayerWindow (API_WindowID, LayerOf (layers, "openings"));
         if (!windowIds.IsEmpty ()) {
             collect (CreateWindowsCommand ().Execute (windowParameters, processControl), windowIds, windowList, "Window", true);
         }
         // deslab: unless a window favorite brings its own look, windows sit back from the facade
-        // (outer reveal), have white plastic frames and sashes, handles, an outer sill and an
+        // (outer reveal), have white plastic frames and sashes, handles and an outer sill, but no
         // inner board; a balcony door has no sills
         const GS::UniString windowSurfaceName = GetString (parameters, "windowSurface");
         const bool defaultLook = GetString (favorites, "window").IsEmpty ();
@@ -562,14 +792,19 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                 }
             }
         };
-        if (!createdWindows.IsEmpty () && (defaultLook || !windowSurfaceName.IsEmpty ())) {
-            const auto surface = WindowSurface (windowSurfaceName);
-            if (!surface.HasValue ()) {
+        bool sceneGdl = false;
+        for (const auto& gdl : createdGdl) {
+            sceneGdl = sceneGdl || !gdl.IsEmpty ();
+        }
+        if (!createdWindows.IsEmpty () && (defaultLook || !windowSurfaceName.IsEmpty () || sceneGdl)) {
+            const auto surface = (defaultLook || !windowSurfaceName.IsEmpty ()) ? WindowSurface (windowSurfaceName) : GS::Optional<API_Attr_Head> ();
+            if ((defaultLook || !windowSurfaceName.IsEmpty ()) && !surface.HasValue ()) {
                 errorList (GS::UniString ("Window surface not found: ") + (windowSurfaceName.IsEmpty () ? GS::UniString ("white plastic") : windowSurfaceName));
             }
             GS::ObjectState gdlParameters;
             const auto& elements = gdlParameters.AddList<GS::ObjectState> ("elementsWithGDLParameters");
-            for (const auto& window : createdWindows) {
+            for (UIndex w = 0; w < createdWindows.GetSize (); ++w) {
+                const auto& window = createdWindows[w];
                 GS::ObjectState element;
                 element.Add ("elementId", CreateGuidObjectState (window.first));
                 const auto& values = element.AddList<GS::ObjectState> ("gdlParameters");
@@ -582,7 +817,17 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
                     const bool balconyDoor = window.second;
                     values (GS::ObjectState ("name", GS::UniString ("gs_window_handle"), "value", true));
                     values (GS::ObjectState ("name", GS::UniString ("gs_sill_outside"), "value", !balconyDoor));
-                    values (GS::ObjectState ("name", GS::UniString ("gs_board_inside"), "value", !balconyDoor));
+                    values (GS::ObjectState ("name", GS::UniString ("gs_board_inside"), "value", false)); // deslab: no inner board in a concrete flat (Игорь, 03.11.2026)
+                    if (createdThreeSash[w]) {
+                        // deslab: three even sashes, not a small, a middle and a huge one (Игорь,
+                        // 04.11.2026): «По Горизонтали» = 1 «Единые Размеры Остекления»
+                        values (GS::ObjectState ("name", GS::UniString ("gs_iPanesConfig"), "value", 1));
+                    }
+                }
+                // deslab: the scene's own GDL parameters last (sash widths of a three-sash window
+                // even, Игорь 04.11.2026; the corner window's joint)
+                for (const GS::ObjectState& parameter : createdGdl[w]) {
+                    values (parameter);
                 }
                 elements (element);
             }
@@ -643,6 +888,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             }
             slabsData (data);
         }
+        const DefaultLayerScope defaultLayerSlab (API_SlabID, LayerOf (layers, "slabs"));
         const GS::Array<GS::ObjectState> results = ResultItems (CreateSlabsCommand ().Execute (slabParameters, processControl));
         for (UIndex i = 0; i < results.GetSize () && i < sceneSlabs.GetSize (); ++i) {
             const GS::UniString id = GetString (sceneSlabs[i], "id");
@@ -679,6 +925,7 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             data.Add ("geometry", geometry);
             zonesData (data);
         }
+        const DefaultLayerScope defaultLayerZone (API_ZoneID, LayerOf (layers, "zones"));
         const GS::Array<GS::ObjectState> results = ResultItems (CreateZonesCommand ().Execute (zoneParameters, processControl));
         for (UIndex i = 0; i < results.GetSize () && i < sceneRooms.GetSize (); ++i) {
             const GS::UniString id = GetString (sceneRooms[i], "id");
@@ -694,32 +941,8 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
         }
     }
 
-    // 6. Layers.
-    if (!layerJobs.IsEmpty ()) {
-        GS::ObjectState detailParameters;
-        const auto& elementsWithDetails = detailParameters.AddList<GS::ObjectState> ("elementsWithDetails");
-        GS::HashTable<GS::UniString, Int32> layerIndices;
-        for (const auto& job : layerJobs) {
-            if (!layerIndices.ContainsKey (job.second)) {
-                const auto layer = FindAttribute (API_LayerID, job.second);
-                layerIndices.Add (job.second, layer.HasValue () ? GetAttributeIndex (layer.Get ().index) : -1);
-                if (!layer.HasValue ()) {
-                    errorList (GS::UniString ("Layer not found: ") + job.second);
-                }
-            }
-            const Int32 layerIndex = layerIndices[job.second];
-            if (layerIndex < 0) {
-                continue;
-            }
-            GS::ObjectState details;
-            details.Add ("layerIndex", layerIndex);
-            GS::ObjectState item;
-            item.Add ("elementId", CreateGuidObjectState (job.first));
-            item.Add ("details", details);
-            elementsWithDetails (item);
-        }
-        SetDetailsOfElementsCommand ().Execute (detailParameters, processControl);
-    }
+    // 6. Layers of the other elements.
+    applyLayers ();
 
     return response;
 }

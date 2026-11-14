@@ -25,7 +25,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: DeslabTapir AddOn AC27 Win
-        path: archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx
+        path: archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC27_Win.apx
     - name: Publish to the "ac27-latest" release (main only)
       if: github.ref == 'refs/heads/main'
       env:
@@ -34,7 +34,7 @@ jobs:
       run: |
         gh release view ac27-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
           gh release create ac27-latest -R "$GITHUB_REPOSITORY" --prerelease --title "AC27 Win, latest main build" --notes "Built from main by build_ac27_win.yml."
-        gh release upload ac27-latest -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx
+        gh release upload ac27-latest -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC27_Win.apx
     # deslab: other branches go to the "ac27-dev" pre-release, so a branch build can be tried on the drafting PC
     # (Actions artifacts cannot be downloaded there).
     - name: Publish to the "ac27-dev" release (other branches)
@@ -45,7 +45,7 @@ jobs:
       run: |
         gh release view ac27-dev -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
           gh release create ac27-dev -R "$GITHUB_REPOSITORY" --prerelease --title "AC27 Win, latest branch build" --notes "Built from a non-main branch by build_ac27_win.yml. For testing only." || true
-        gh release upload ac27-dev -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/TapirAddOn_AC27_Win.apx
+        gh release upload ac27-dev -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC27_Win.apx
 
   # deslab: the point cloud helper (scan2bim/) as a Windows program, so the PC needs no Python.
   build_scan2bim_win:
@@ -60,7 +60,13 @@ jobs:
     - name: Install dependencies
       run: python -m pip install numpy pillow pyinstaller
     - name: Test
-      run: python scan2bim/tests/test_synthetic.py
+      run: |
+        python scan2bim/tests/test_synthetic.py
+        python scan2bim/tests/test_fit.py
+        python scan2bim/tests/test_clutter.py
+        python scan2bim/tests/test_views.py
+        python scan2bim/tests/test_pipes.py
+        python scan2bim/tests/test_e57_cubes.py
     - name: Build deslab-scan2bim.exe
       run: pyinstaller --noconfirm --onedir --name deslab-scan2bim --paths scan2bim --distpath scan2bim/dist --workpath scan2bim/build scan2bim/run_scan2bim.py
     - name: Smoke test

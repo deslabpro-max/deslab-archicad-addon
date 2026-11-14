@@ -396,6 +396,14 @@ GS::ObjectState GetSectionElementsCommand::Execute (const GS::ObjectState& param
 template <typename ListProxyType>
 static GSErrCode GetElementsInDrawOrderFromCurrentDatabase (const GS::ObjectState& parameters, ListProxyType& elementsListProxy)
 {
+    // deslab: walking the drawing order of a layout or a master layout database brought Archicad 27 down;
+    // those databases are refused, GetAllElements lists their elements.
+    API_DatabaseInfo currentDatabase = {};
+    if (ACAPI_Database_GetCurrentDatabase (&currentDatabase) == NoError &&
+        (currentDatabase.typeID == APIWind_LayoutID || currentDatabase.typeID == APIWind_MasterLayoutID)) {
+        return APIERR_NOTSUPPORTED;
+    }
+
     API_ElemTypeID elemType = API_ZombieElemID;
     GS::UniString elementTypeStr;
     if (parameters.Get ("elementType", elementTypeStr)) {
@@ -1902,6 +1910,9 @@ GS::ObjectState GetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                     typeSpecificDetails.Add ("customNumber", GS::UniString (elem.drawing.customNumber));
                 }
                 typeSpecificDetails.Add ("isInNumbering", elem.drawing.isInNumbering);
+                // deslab: 12.11.2026, Drawing Settings > «include in the Drawing Scale autotexts»: a schedule on the layout
+                // added its 1:1 to the scale in the stamp («1:40, 1:1»)
+                typeSpecificDetails.Add ("includeInScaleAutoTexts", elem.drawing.includeInAutoTextsAndIES);
                 typeSpecificDetails.Add ("hasBorderLine",       elem.drawing.hasBorderLine);
                 typeSpecificDetails.Add ("borderLineTypeIndex", GetAttributeIndex (elem.drawing.borderLineType));
                 typeSpecificDetails.Add ("borderPenIndex",      (Int32)elem.drawing.borderPen);
@@ -2550,6 +2561,10 @@ GS::ObjectState SetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                         }
                         if (typeSpecificDetails->Get ("isInNumbering", elem.drawing.isInNumbering)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_DrawingType, isInNumbering);
+                        }
+                        // deslab: 12.11.2026, see GetDetailsOfElements
+                        if (typeSpecificDetails->Get ("includeInScaleAutoTexts", elem.drawing.includeInAutoTextsAndIES)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_DrawingType, includeInAutoTextsAndIES);
                         }
                         if (typeSpecificDetails->Get ("hasBorderLine", elem.drawing.hasBorderLine)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_DrawingType, hasBorderLine);

@@ -1875,7 +1875,7 @@ static GS::Optional<GS::ObjectState> ResolveLibraryPartName (API_Element& elemen
     API_LibPart libPart = {};
     GS::ucscpy (libPart.docu_UName, uName.ToUStr ());
 
-    GSErrCode err = ACAPI_LibraryPart_Search (&libPart, false, true);
+    GSErrCode err = SearchLibraryPartAnyVersion (libPart);  // deslab: another library version too
     delete libPart.location;
 
     if (err != NoError) {
@@ -3708,6 +3708,13 @@ static GS::Optional<GS::ObjectState> GetFontIndexFromDetails (const GS::ObjectSt
     if (details.Get ("fontName", fontName)) {
         fontIndex = GetFontIndexFromName (fontName);
         if (!fontIndex.HasValue ()) {
+            // deslab: 12.11.2026, the office standard draws layout texts captured in another file; a run in a font
+            // this project does not have (the approval block of layout 04) takes the text's own font instead of
+            // losing the whole text. Only on the internal "fontFallback" flag, the command's own behaviour stays.
+            bool fallback = false;
+            if (details.Get ("fontFallback", fallback) && fallback) {
+                return {};
+            }
             return CreateErrorResponse (APIERR_BADNAME, GS::UniString::Printf ("No loaded font is named '%T'. fontName takes the name of a Font attribute, as GetDetailsOfElements reports it in fontName; use fontIndex to give the font by its index instead.", fontName.ToPrintf ()));
         }
         return {};
@@ -3928,6 +3935,48 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
         text = NormalizeLineBreaks (text);
     }
 
+    // deslab: 12.11.2026, with "paragraphs" (below) an empty line gets a space: a paragraph of no characters is
+    // suspected of making Archicad drop the whole run table (the text came out in one font). "padEmptyLines": false
+    // keeps the lines as they are.
+    {
+        GS::Array<GS::ObjectState> paragraphsCheck;
+        bool pad = true;
+        parameters.Get ("padEmptyLines", pad);
+        if (pad && parameters.Get ("paragraphs", paragraphsCheck) && !paragraphsCheck.IsEmpty ()) {
+            if (!hasRuns) {
+                runTexts.Push (text);
+            }
+            bool lineEmpty = true;
+            for (UIndex r = 0; r < runTexts.GetSize (); ++r) {
+                GS::UniString padded;
+                const GS::UniString& source = runTexts[r];
+                for (UIndex c = 0; c < source.GetLength (); ++c) {
+                    const GS::UniChar ch = source[c];
+                    if (ch == GS::UniChar ('\n')) {
+                        if (lineEmpty) {
+                            padded += " ";
+                        }
+                        lineEmpty = true;
+                    } else {
+                        lineEmpty = false;
+                    }
+                    padded += source.GetSubstring (c, 1);
+                }
+                if (r + 1 == runTexts.GetSize () && lineEmpty) {
+                    padded += " ";
+                }
+                runTexts[r] = padded;
+            }
+            text.Clear ();
+            for (const GS::UniString& runText : runTexts) {
+                text += runText;
+            }
+            if (!hasRuns) {
+                runTexts.Clear ();
+            }
+        }
+    }
+
     // 'memo' may already carry content: the Create path gets its memo from ACAPI_Element_GetDefaults,
     // and a modify may pass one fetched via ACAPI_Element_GetMemo. Replace, never leak.
 #ifdef ServerMainVers_2800
@@ -3950,6 +3999,119 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
 
     const GS::UniChar newlineChar = GS::UniChar (char ('\n'));
     textData.nLine = text.Count (newlineChar) + 1;
+
+    // deslab: 12.11.2026, internal "paragraphs" (the office standard's layout texts): one paragraph per line, each
+    // with its own justification, indents and spacing, as the text was in the template. With one centred paragraph
+    // for the whole block the «подпись / ФИО» line of the approval block stood off its lines. Only when the list has
+    // exactly one entry per line; anything else takes the usual single paragraph below.
+    GS::Array<GS::ObjectState> paragraphsData;
+    if (parameters.Get ("paragraphs", paragraphsData) && static_cast<Int32> (paragraphsData.GetSize ()) == textData.nLine) {
+        if (!hasRuns) {
+            runTexts.Push (text);
+            runPens.Push (textData.pen);
+            runFonts.Push (textData.font);
+            runFaceBits.Push (textData.faceBits);
+            runEffects.Push (textData.effectsBits);
+            runSizes.Push (textData.size);
+        }
+        if (memo.paragraphs != nullptr) {
+            ACAPI_DisposeParagraphsHdl (&memo.paragraphs);
+            memo.paragraphs = nullptr;
+        }
+        if (memo.textLineStarts != nullptr) {
+            BMKillHandle (reinterpret_cast<GSHandle*> (&memo.textLineStarts));
+        }
+        const Int32 count = textData.nLine;
+        const Int32 length = static_cast<Int32> (text.GetLength ());
+        // LF separates the paragraphs, as in the DevKit's Element_Test example; "paragraphSeparator": "CR" writes CR
+        // instead (Archicad's own texts read back with CR)
+        GS::UniString separator;
+        if (parameters.Get ("paragraphSeparator", separator) && separator == "CR") {
+            GS::UniString separated = text;
+            separated.ReplaceAll ("\n", "\r");
+#ifdef ServerMainVers_2800
+            *memo.textContent = separated;
+#else
+            GS::ucscpy (reinterpret_cast<GS::uchar_t*> (*memo.textContent), separated.ToUStr ());
+#endif
+        }
+        memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAllClear (count * sizeof (API_ParagraphType)));
+        Int32 from = 0;
+        for (Int32 p = 0; p < count; ++p) {
+            const UIndex found = (from <= length) ? text.FindFirst (newlineChar, static_cast<UIndex> (from)) : MaxUIndex;
+            const Int32 end = (found != MaxUIndex) ? static_cast<Int32> (found) : length;
+            const Int32 range = GS::Max (end - from, 0);
+            // the runs that lie in [from, end); an empty line takes the run at its position
+            GS::Array<Int32> runIndex, runStart, runLength;
+            Int32 runFrom = 0;
+            Int32 atPosition = 0;
+            for (Int32 i = 0; i < static_cast<Int32> (runTexts.GetSize ()); ++i) {
+                const Int32 runEnd = runFrom + static_cast<Int32> (runTexts[static_cast<UIndex> (i)].GetLength ());
+                if (runFrom <= from) {
+                    atPosition = i;
+                }
+                const Int32 lo = GS::Max (runFrom, from), hi = GS::Min (runEnd, end);
+                if (hi > lo) {
+                    runIndex.Push (i);
+                    runStart.Push (lo - from);
+                    runLength.Push (hi - lo);
+                }
+                runFrom = runEnd;
+            }
+            if (runIndex.IsEmpty ()) {
+                runIndex.Push (atPosition);
+                runStart.Push (0);
+                runLength.Push (0);
+            }
+            const GS::ObjectState& data = paragraphsData[static_cast<UIndex> (p)];
+            GS::Array<double> tabs;
+            GS::Array<GS::ObjectState> tabsData;
+            data.Get ("tabs", tabsData);
+            for (const GS::ObjectState& tab : tabsData) {
+                double pos = 0.0;
+                tab.Get ("pos", pos);
+                tabs.Push (pos);
+            }
+            SetParagraph (memo.paragraphs, static_cast<UInt32> (p), from, range, GS::Max (static_cast<Int32> (tabs.GetSize ()), 1), static_cast<Int32> (runIndex.GetSize ()), 1);
+            API_ParagraphType& paragraph = (*memo.paragraphs)[p];
+            for (UIndex t = 0; t < tabs.GetSize (); ++t) {
+                paragraph.tab[t].type = APITab_Left;
+                paragraph.tab[t].pos = tabs[t];
+            }
+            GS::UniString just;
+            paragraph.just = data.Get ("justification", just) ? ParseJustificationString (just) : textData.just;
+            paragraph.spacing = textData.spacing;
+            data.Get ("spacing", paragraph.spacing);
+            data.Get ("firstIndent", paragraph.firstIndent);
+            data.Get ("indent", paragraph.indent);
+            data.Get ("rightIndent", paragraph.rightIndent);
+            for (UIndex r = 0; r < runIndex.GetSize (); ++r) {
+                const UIndex i = static_cast<UIndex> (runIndex[r]);
+                SetRun (memo.paragraphs, static_cast<UInt32> (p), static_cast<UInt32> (r), runStart[r], runLength[r], runPens[i], runFaceBits[i], runFonts[i], runEffects[i], runSizes[i]);
+            }
+            SetEOL (memo.paragraphs, static_cast<UInt32> (p), 0, GS::Max (range - 1, 0));
+            from = end + 1;
+        }
+        textData.width = 0;
+        textData.height = 0;
+        textData.nonBreaking = true;
+        textData.useEolPos = true;
+        // deslab: 12.11.2026, internal "wrapWidth": the text block's width in the template; Archicad breaks the lines
+        // itself. Set here, at creation: a later change of the width alone rebuilt the text with one run per line
+        // in the element's font, and «подпись» / «ФИО» lost their small font and their place under the lines.
+        double wrapWidth = 0.0;
+        if (parameters.Get ("wrapWidth", wrapWidth) && wrapWidth > 0.0) {
+            textData.width = wrapWidth;
+            textData.nonBreaking = false;
+            textData.useEolPos = false;
+        }
+        // deslab: 12.11.2026, API_TextType::multiStyle (input only): without it Archicad does not read the paragraphs
+        // and runs of a new text at all and writes it in the element's one font (found on the approval block)
+        textData.multiStyle = true;
+        parameters.Get ("multiStyle", textData.multiStyle);
+        return {};
+    }
+
     const Int32 numOfParagraphs = 1;
     const Int32 numOfRuns = hasRuns ? static_cast<Int32> (runTexts.GetSize ()) : 1;
 
@@ -3969,11 +4131,15 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
         BMKillHandle (reinterpret_cast<GSHandle*> (&memo.textLineStarts));
     }
 
-    memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAll (numOfParagraphs * sizeof (API_ParagraphType)));
+    // deslab: cleared, so indents and line spacing do not start as garbage
+    memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAllClear (numOfParagraphs * sizeof (API_ParagraphType)));
     SetParagraph (memo.paragraphs, 0, 0, text.GetLength (), 1, numOfRuns, textData.nLine);
     // A paragraph carries its own justification (API_ParagraphType::just, see the DevKit's
     // Element_Test example); keep it in step with the element-level setting.
     (*memo.paragraphs)[0].just = textData.just;
+    // deslab: and its own line spacing; without it a label's style.spacing never reached the
+    // text (Игорь 04.11.2026: «hокна» hung high over the shelf, it must sit close to it)
+    (*memo.paragraphs)[0].spacing = textData.spacing;
 
     if (hasRuns) {
         // Each run carries its own pen/face/font/size/effects; a field a run does not give
@@ -4000,6 +4166,8 @@ GS::Optional<GS::ObjectState> ApplyTextContent (API_ElementMemo& memo, API_TextT
     textData.height = 0;
     textData.nonBreaking = true;
     textData.useEolPos = true;
+    // deslab: 12.11.2026, only on request here ("multiStyle": true), the command's own behaviour stays
+    parameters.Get ("multiStyle", textData.multiStyle);
 
     return {};
 }
@@ -4603,6 +4771,15 @@ GS::Optional<GS::UniString> CreateTextsCommand::GetInputParametersSchema () cons
                         "items": { "$ref": "#/TextRunDetails" },
                         "minItems": 1
                     },
+                    "paragraphs": {
+                        "type": "array",
+                        "description": "deslab: one entry per line (justification, spacing, firstIndent, indent, rightIndent, tabs [{pos}]): every line becomes a paragraph of its own. Used when the count equals the number of lines.",
+                        "items": { "type": "object" }
+                    },
+                    "wrapWidth": { "type": "number", "description": "deslab: with paragraphs, the width of the text block; Archicad breaks the lines." },
+                    "paragraphSeparator": { "type": "string", "enum": ["LF", "CR"], "description": "deslab: with paragraphs, the character between them. Default LF." },
+                    "padEmptyLines": { "type": "boolean", "description": "deslab: with paragraphs, an empty line gets a space. Default true." },
+                    "multiStyle": { "type": "boolean", "description": "deslab: API_TextType::multiStyle of the new text (Archicad reads the runs and paragraphs only with it). Default: true with paragraphs, otherwise as the Text tool has it." },
                     "height": {
                         "type": "number",
                         "description": "The character height in millimeters. Optional; defaults to the Text tool default. Equivalent to style.height."
