@@ -282,6 +282,16 @@ def test_old_wiring():
                                                                                        {"id": "C5", "kind": "panel", "confidence": 0.6}]))
     assert [m["candidate"] for m in new["mep"] if m["kind"] == "panel"] == ["C5"], (new["mep"], report)
     scene["candidates"] = scene["candidates"][:3]
+    # deslab: Nagornaya v18, a strip 8 cm wide by the window from 0.38 to 3.02 m is no riser where the pipe search found none
+    scene["levels"] = {"ceiling": 3.32}
+    strip = {"id": "C6", "wallId": "W1", "side": "left", "from": 4.9, "to": 4.98, "bottom": 0.38, "top": 3.02, "depth": 0.053,
+             "hint": "riser?", "at": {"x": 4.94, "y": 0.1265}, "start": {"x": 4.9, "y": 0.1}, "end": {"x": 4.98, "y": 0.1}}
+    named = dict(review, candidates=[{"id": "C6", "kind": "heatingRiser", "confidence": 0.6}])
+    for bottom, built in ((0.38, False), (0.04, True)):
+        scene["candidates"] = scene["candidates"][:3] + [dict(strip, bottom=bottom)]
+        new, report = ai.apply_review(scene, named)
+        assert bool([m for m in new["mep"] if m.get("candidate") == "C6"]) == built, (bottom, new["mep"], report["rejected"])
+    scene["candidates"] = scene["candidates"][:3]
     # a room the model names a kitchen keeps its thin water pipe
     review["rooms"] = [{"id": "R1", "name": "Кухня-гостиная"}]
     review["pipes"][0]["system"] = "water"

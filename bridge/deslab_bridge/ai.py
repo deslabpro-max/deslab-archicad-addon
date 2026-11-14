@@ -755,6 +755,14 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
                        for p in new.get("pipes", [])):
                 doubts.append(f"Кандидат {cid} модель назвала {kind}, а по облаку у него нет ровной грани: "
                               "похоже на висящие провода или мусор. Не построен.")
+        elif kind in ("heatingRiser", "waterRiser", "sewerRiser") and new.get("pipes") is not None \
+                and float(c["bottom"]) > 0.25 and float(c["top"]) < float(new.get("levels", {}).get("ceiling", 99)) - 0.25 \
+                and not any(p.get("kind") == "riser" and math.hypot(p["path"][0]["x"] - c["at"]["x"], p["path"][0]["y"] - c["at"]["y"]) <= 0.15
+                            for p in new["pipes"]):
+            # deslab: 14.11.2026, Nagornaya v18: a strip 8 cm wide by the window, 0.38-3.02 m, became a third heating riser
+            # of 53 mm; a riser runs from the floor to the ceiling, and the helper's pipe search found nothing round there
+            rejected.append(f"кандидат {cid} ({kind}): не доходит ни до пола, ни до потолка ({c['bottom']}–{c['top']} м), "
+                            "круглой трубы там поиск не нашёл, это не стояк")
         elif kind in ("heatingRiser", "waterRiser", "sewerRiser") and not _round_shape(c):
             # deslab: 14.11.2026, Nagornaya: the narrow vent duct (16 cm wide, 30 cm out of the wall) named a sewer riser
             # became a pipe of 160 mm; a pipe stands out of the wall by its own size and a clamp's gap
