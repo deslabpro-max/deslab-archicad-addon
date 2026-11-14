@@ -90,6 +90,53 @@ def test_pipes():
     return pipes
 
 
+def tube(a, b, d, step=0.004):
+    """A whole pipe from point a to point b (3-D), scanned all round."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    axis = b - a
+    length = float(np.linalg.norm(axis))
+    axis /= length
+    u = np.cross(axis, [0, 0, 1] if abs(axis[2]) < 0.9 else [1, 0, 0])
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+    ang, along = np.meshgrid(np.arange(0, 2 * math.pi, step / (d / 2)), np.arange(0, length, step))
+    ang, along = ang.ravel()[:, None], along.ravel()[:, None]
+    return a + along * axis + d / 2 * (np.cos(ang) * u + np.sin(ang) * v)
+
+
+def test_branches():
+    # deslab: 14.11.2026, Игорь: «там ещё есть отводы… было бы здорово фиксировать». A water riser d 32 mm 15 cm off the
+    # north wall of room A (y 5) with two branches d 20 mm: 30 cm along the wall at z 1.0, 45 cm into the room at z 1.4;
+    # a shelf 2 cm thick at z 1.7 beside the riser and a hose 10 mm are no branches
+    c = (1.0, 4.85)
+    extra = [tube((c[0], c[1], 0.0), (c[0], c[1], H), 0.032),
+             tube((c[0] + 0.016, c[1], 1.0), (c[0] + 0.33, c[1], 1.0), 0.02),
+             tube((c[0], c[1] - 0.016, 1.4), (c[0], c[1] - 0.47, 1.4), 0.02)]
+    shelf = [np.stack([xs.ravel(), ys.ravel(), np.full(xs.size, z)], 1)
+             for z in (1.7, 1.72) for xs, ys in [np.mgrid[0.6:0.98:0.008, 4.6:5.0:0.008]]]
+    hose = tube((c[0] - 0.016, c[1], 0.6), (c[0] - 0.4, c[1], 0.6), 0.01)
+    pts = cloud(extra + shelf + [hose])
+    scene = analyze(pts, Options(step=1))
+    pipes = find_pipes(model_points(pts, scene), scene)
+    riser = [p for p in pipes if p["kind"] == "riser"]
+    assert len(riser) == 1 and abs(riser[0]["diameter"] - 0.032) < 0.008, riser
+    branches = sorted((p for p in pipes if p.get("branch")), key=lambda p: p["path"][0]["z"])
+    zs = [round(p["path"][0]["z"], 2) for p in branches]
+    lengths = [round(math.dist((p["path"][0]["x"], p["path"][0]["y"]), (p["path"][1]["x"], p["path"][1]["y"])), 2) for p in branches]
+    # the hose is found too (the helper measures, the bridge drops what is thinner than any pipe by GOST)
+    assert [z for z, p in zip(zs, branches) if p["diameter"] >= 0.016] == [1.0, 1.4], (zs, branches)
+    big = [(l, p) for l, p in zip(lengths, branches) if p["diameter"] >= 0.016]
+    assert abs(big[0][0] - 0.33) < 0.04 and abs(big[1][0] - 0.47) < 0.04, big
+    assert all(0.014 <= p["diameter"] <= 0.03 and p["path"][0]["joins"] == riser[0]["id"] for _, p in big), big
+    # the branch into the room leaves the riser at a right angle to the one along the wall
+    (_, a), (_, b) = big
+    va = (a["path"][1]["x"] - a["path"][0]["x"], a["path"][1]["y"] - a["path"][0]["y"])
+    vb = (b["path"][1]["x"] - b["path"][0]["x"], b["path"][1]["y"] - b["path"][0]["y"])
+    cos = (va[0] * vb[0] + va[1] * vb[1]) / (math.hypot(*va) * math.hypot(*vb))
+    assert abs(cos) < 0.1, cos
+    return branches
+
+
 def test_merge_arcs():
     # deslab: three pieces of one riser 108 mm are one spot; two thin pipes 3 cm apart stay two
     def spots_of(pieces, p):
@@ -113,4 +160,6 @@ if __name__ == "__main__":
     test_merge_arcs()
     for p in test_pipes():
         print(p["id"], p["kind"], p["diameter"], p["path"], p["hint"])
+    for p in test_branches():
+        print(p["id"], p["diameter"], p["path"], p["hint"])
     print("ok")

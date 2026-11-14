@@ -373,6 +373,130 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
     return _without_doubles(found)
 
 
+def _off_walls(pts, scene, margin=0.012):
+    """The points that are neither in a wall nor on its face."""
+    keep = np.ones(len(pts), dtype=bool)
+    for wall in scene.get("walls", []):
+        t, d, length = _wall_coords(pts, wall)
+        keep &= ~((np.abs(d) < float(wall["thickness"]) / 2 + margin) & (t > -0.05) & (t < length + 0.05))
+    return pts[keep]
+
+
+def find_branches(pts, scene, risers, runs=(), least=0.018, reach=0.8, min_length=0.15, max_size=0.07, band=0.03,
+                  step_deg=5, start=0.04):
+    """deslab: 14.11.2026, Игорь: «там ещё есть отводы. Вот отводы бы тоже было бы здорово фиксировать». A branch leaves a
+    riser sideways at some height in any direction (to a tap, a meter, a towel rail), often shorter than the 40 cm of a run
+    along a wall. Around each riser of 18 mm and more, the points within `band` of a horizontal ray from its axis are looked
+    at in the ray's cross-section (distance along the ray x height, 1 cm cells): a branch is a band of heights 2 to 7 cm thick
+    that is filled from the riser's skin on (within 4 cm of it) for 15 cm or more, with little just above and below it and
+    on rays 25 degrees to either side (a wall, a box, a shelf, a curtain are filled there too). Returns runs with
+    "branch": True whose first point stands on the riser's axis and holds the riser in "_riser"."""
+    height = float(scene["levels"]["ceiling"])
+    free = _off_walls(_without_risers(pts, risers, margin=0.02), scene)
+    found = []
+    for r in risers:
+        if float(r["diameter"]) < least:
+            continue
+        a, b = r["path"]
+        cx, cy, rad = float(a["x"]), float(a["y"]), float(r["diameter"]) / 2
+        z0, z1 = max(float(a["z"]), 0.1), min(float(b["z"]), height - 0.15)
+        dx, dy = free[:, 0] - cx, free[:, 1] - cy
+        near = (np.hypot(dx, dy) < reach + band) & (free[:, 2] > z0) & (free[:, 2] < z1)
+        if near.sum() < 20:
+            continue
+        q, qx, qy = free[near], dx[near], dy[near]
+        nz, ns = int((z1 - z0) / CELL) + 1, int((reach - rad) / CELL) + 1
+        angles = np.radians(np.arange(0, 360, step_deg))
+        lengths = np.zeros((len(angles), nz), dtype=np.int32)
+        grids = []
+        for k, th in enumerate(angles):
+            s = qx * math.cos(th) + qy * math.sin(th) - rad
+            e = np.abs(-qx * math.sin(th) + qy * math.cos(th))
+            m = (s > 0) & (s < reach - rad) & (e < band)
+            occ = np.zeros((nz, ns), dtype=bool)
+            occ[((q[m, 2] - z0) / CELL).astype(np.int32).clip(0, nz - 1), (s[m] / CELL).astype(np.int32).clip(0, ns - 1)] = True
+            # one empty cell may lie in a branch (a joint, a missed strip)
+            occ[:, 1:-1] |= occ[:, :-2] & occ[:, 2:]
+            grids.append(occ)
+            first = np.where(occ.any(axis=1), occ.argmax(axis=1), ns)
+            # filled run from the first cell on, per height
+            gaps = ~occ
+            gaps[:, -1] = True
+            rows = np.arange(nz)
+            after = np.array([gaps[i, first[i]:].argmax() if first[i] < ns else 0 for i in rows])
+            lengths[k] = np.where(first <= int(start / CELL), after, 0)
+        need = int(min_length / CELL)
+        side = max(1, int(round(25 / step_deg)))
+        mine = []
+        for k in range(len(angles)):
+            row = lengths[k]
+            good = row >= need
+            if not good.any():
+                continue
+            for lo, hi in _bands(good):
+                thick = hi - lo
+                if thick < 2 or thick * CELL > max_size:
+                    continue
+                n = int(np.median(row[lo:hi]))
+                # little just above and below, and on the rays to either side
+                around = np.concatenate([row[max(lo - 5, 0):max(lo - 2, 0)], row[hi + 2:hi + 5]])
+                if len(around) and around.max() >= 0.5 * n:
+                    continue
+                if max(lengths[(k - side) % len(angles), lo:hi].max(), lengths[(k + side) % len(angles), lo:hi].max()) >= 0.5 * n:
+                    continue
+                mine.append((n, k, lo, hi))
+        kept = []
+        for n, k, lo, hi in sorted(mine, reverse=True):
+            zc = z0 + (lo + hi) / 2 * CELL
+            if any(abs(zc - o["zc"]) < 0.06 and min(abs(k - o["k"]), len(angles) - abs(k - o["k"])) * step_deg < 30 for o in kept):
+                continue
+            th = angles[k]
+            length = n * CELL
+            # a run along a wall from this riser at this height and in this direction, or one that passes the riser on
+            # this line, is the same pipe
+            tip = (cx + math.cos(th) * (rad + n * CELL), cy + math.sin(th) * (rad + n * CELL))
+            if any(abs(o["path"][0]["z"] - zc) < 0.05 and (
+                    any(abs(e["x"] - cx) < 0.02 and abs(e["y"] - cy) < 0.02 for e in o["path"]) and _towards(o, cx, cy, th)
+                    or max(_off_segment(p, o) for p in ((cx, cy), tip)) < 0.04) for o in runs):
+                continue
+            # the diameter from the points of the branch, as for a run
+            s = qx * math.cos(th) + qy * math.sin(th) - rad
+            e = np.abs(-qx * math.sin(th) + qy * math.cos(th))
+            m = (s > 0.02) & (s < length) & (e < band) & (np.abs(q[:, 2] - zc) < max_size / 2 + CELL)
+            dia = (hi - lo) * CELL - CELL / 2
+            if m.sum() >= 20:
+                lo_z, hi_z = np.percentile(q[m, 2], 2), np.percentile(q[m, 2], 98)
+                dia, zc = float(hi_z - lo_z), float((lo_z + hi_z) / 2)
+            end = (cx + math.cos(th) * (rad + length), cy + math.sin(th) * (rad + length))
+            kept.append({"zc": zc, "k": k})
+            found.append({"kind": "run", "branch": True, "diameter": round(max(dia, 0.012), 3), "_riser": r,
+                          "path": [{"x": round(cx, 4), "y": round(cy, 4), "z": round(zc, 3)},
+                                   {"x": round(end[0], 4), "y": round(end[1], 4), "z": round(zc, 3)}]})
+    return found
+
+
+def _bands(mask):
+    """(start, stop) of the runs of True in a 1-D mask."""
+    edges = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
+    return list(zip(np.flatnonzero(edges == 1).tolist(), np.flatnonzero(edges == -1).tolist()))
+
+
+def _off_segment(p, run):
+    """How far the plan point p lies from the run's axis."""
+    a, b = run["path"][0], run["path"][-1]
+    vx, vy = b["x"] - a["x"], b["y"] - a["y"]
+    k = max(0.0, min(1.0, ((p[0] - a["x"]) * vx + (p[1] - a["y"]) * vy) / (vx * vx + vy * vy or 1.0)))
+    return math.hypot(p[0] - a["x"] - k * vx, p[1] - a["y"] - k * vy)
+
+
+def _towards(run, cx, cy, th, tol=30):
+    """The run leaves the point (cx, cy) in the direction th (within tol degrees)."""
+    a, b = run["path"][0], run["path"][-1]
+    far = b if math.hypot(a["x"] - cx, a["y"] - cy) < math.hypot(b["x"] - cx, b["y"] - cy) else a
+    ang = math.degrees(math.atan2(far["y"] - cy, far["x"] - cx) - th) % 360
+    return min(ang, 360 - ang) < tol
+
+
 def _without_doubles(runs, tol=0.04):
     """A pipe in a corner is seen from both walls of the corner: the longer piece stays."""
     keep = []
@@ -472,7 +596,8 @@ def find_pipes(pts, scene):
     """Scene "pipes": risers and runs with ids P1…, joined where they meet."""
     height = float(scene["levels"]["ceiling"])
     risers = find_risers(pts, scene)
-    pipes = risers + find_runs(pts, scene, risers)
+    runs = find_runs(pts, scene, risers)
+    pipes = risers + runs
     pipes.sort(key=lambda p: (p["kind"] != "riser", round(p["path"][0]["x"], 1), round(p["path"][0]["y"], 1), p["path"][0]["z"]))
     for k, p in enumerate(pipes, 1):
         p["id"] = f"P{k}"
@@ -482,7 +607,15 @@ def find_pipes(pts, scene):
     def between_risers(p):
         a, b = p["path"][0], p["path"][-1]
         return p["kind"] == "run" and a.get("joins") and b.get("joins") and math.dist((a["x"], a["y"]), (b["x"], b["y"])) < 0.3
-    return [p for p in pipes if not between_risers(p)]
+    pipes = [p for p in pipes if not between_risers(p)]
+    # deslab: 14.11.2026, the branches of the risers (after the runs, so that a run along a wall is not found twice)
+    ids = {id(r): r["id"] for r in risers}
+    for k, p in enumerate(find_branches(pts, scene, risers, [p for p in pipes if p["kind"] == "run"]), len(pipes) + 1):
+        p["id"] = f"P{k}"
+        p["path"][0]["joins"] = ids[id(p.pop("_riser"))]
+        p["hint"] = "branch of " + p["path"][0]["joins"] + ": " + _hint(p, height)
+        pipes.append(p)
+    return pipes
 
 
 def render(pts, scene, pipes, path, scale=100):
