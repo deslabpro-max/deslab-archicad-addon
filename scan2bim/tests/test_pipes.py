@@ -203,13 +203,15 @@ def test_runs_from_radiator():
     return runs
 
 
-def arcs(c, d, spans, lo=0.0, hi=H, step=0.004):
-    """The parts of a riser's surface seen between the angles of `spans` (degrees)."""
+def arcs(c, d, spans, lo=0.0, hi=H, step=0.004, tilt=(0.0, 0.0)):
+    """The parts of a riser's surface seen between the angles of `spans` (degrees), its axis off vertical by `tilt`
+    (m per m, from the middle height)."""
     out = []
     for a0, a1 in spans:
         angles = np.radians(np.arange(a0, a1, math.degrees(step / (d / 2))))
         a, z = np.meshgrid(angles, np.arange(lo, hi, step))
-        out.append(np.stack([c[0] + d / 2 * np.cos(a.ravel()), c[1] + d / 2 * np.sin(a.ravel()), z.ravel()], 1))
+        a, z = a.ravel(), z.ravel()
+        out.append(np.stack([c[0] + tilt[0] * (z - hi / 2) + d / 2 * np.cos(a), c[1] + tilt[1] * (z - hi / 2) + d / 2 * np.sin(a), z], 1))
     return np.concatenate(out)
 
 
@@ -221,7 +223,10 @@ def test_bathroom_risers():
     extra = [cylinder((0.12, 3.00), "z", 0, H, 0.056, 0.0), veil(0.0, 0.09, 3.00, 0.35, 3),
              cylinder((0.10, 2.935), "z", 0, H, 0.012, 0.0),
              cylinder((0.12, 3.12), "z", 0, H, 0.050, 0.0), veil(0.0, 0.095, 3.12, 0.35, 4),
-             arcs((0.16, 3.27), 0.110, ((-100, -40), (40, 100))),
+             # (Nagornaya v21 trace: the sewer riser stands 1-2 cm per metre off vertical)
+             arcs((0.16, 3.27), 0.110, ((-100, -40), (40, 100)), tilt=(0.012, 0.008)),
+             # a wire touching the first riser at its side
+             cylinder((0.12 + 0.028 + 0.006, 3.00 - 0.01), "z", 0, H, 0.012, 0.0),
              # two wires 9 cm apart in the middle of the room are no riser
              cylinder((2.0, 3.0), "z", 0, H, 0.012, 0.0), cylinder((2.0, 3.09), "z", 0, H, 0.012, 0.0)]
     for z in (1.0, 1.5):
@@ -255,11 +260,11 @@ def test_merge_arcs():
     pieces = arc_pieces((0.0, 0.0), 0.108, apart=True)
     p = np.concatenate(pieces)
     spots, x0, y0 = spots_of(pieces, p)
-    assert len(_merge_arcs(spots, p, x0, y0, 0.22)) == 1
+    assert len(_merge_arcs(spots, p, x0, y0, 0.22)[0]) == 1
     pair = [cylinder((0.0, 0.0), "z", 0, H, 0.02, math.pi), cylinder((0.0, 0.05), "z", 0, H, 0.02, math.pi)]
     p = np.concatenate(pair)
     spots, x0, y0 = spots_of(pair, p)
-    assert len(_merge_arcs(spots, p, x0, y0, 0.22)) == 2
+    assert len(_merge_arcs(spots, p, x0, y0, 0.22)[0]) == 2
 
 
 if __name__ == "__main__":

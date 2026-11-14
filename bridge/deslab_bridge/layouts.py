@@ -249,12 +249,14 @@ def place_note(ac, profile, source, total):
     return out + ["Примечание: " + e for e in errors]
 
 
-def scheme_xml(xml, name, scheme_id, title=None, layer_index=None, row_heights=None):
+def scheme_xml(xml, name, scheme_id, title=None, layer_index=None, row_heights=None, version=None):
     """deslab: 12.11.2026, an Interactive Schedule scheme (the XML of Scheme Settings > Export, taken from the office
     template) made ready for this project: its own name and ID, the main header shown with the title, and the «Слой»
     criterion pointed at this project's layer (the XML keeps the layer as an attribute index, which is another layer
     or none in another file); without a layer index the criterion is dropped. row_heights {row type: mm} makes the
-    table more compact than the office scheme (its column header is 15 mm tall and ran into the approval block)."""
+    table more compact than the office scheme (its column header is 15 mm tall and ran into the approval block).
+    version: the running Archicad's (29): the scheme says the one it was exported from (27.0.0), and Archicad 29 stopped
+    the import with a «not from the current version» window (Игорь, 14.11.2026)."""
     import re
     for kind, height in (row_heights or {}).items():
         xml = re.sub(rf'(<Row Type="{re.escape(kind)}">.*?<Row_Height value=")[^"]*(")', rf"\g<1>{height:g}\g<2>", xml, count=1, flags=re.S)
@@ -263,6 +265,8 @@ def scheme_xml(xml, name, scheme_id, title=None, layer_index=None, row_heights=N
         raise ValueError("в XML нет Scheme_Settings")
     tag = re.sub(r'\bID="[^"]*"', f'ID="{scheme_id}"', head.group(0), count=1)
     tag = re.sub(r'\bName="[^"]*"', f'Name="{name}"', tag, count=1)
+    if version:
+        tag = re.sub(r'\bVersion="[^"]*"', f'Version="{int(version)}.0.0"', tag, count=1)
     xml = xml[:head.start()] + tag + xml[head.end():]
     if title:
         xml = xml.replace('<Hide_Main_Header value="true"/>', '<Hide_Main_Header value="false"/>', 1)
@@ -297,7 +301,12 @@ def import_scheme(ac, cfg, profile, scheme_dir):
     layer_name = (profile.get("layers") or {}).get(scheme.get("layer", ""))
     layers = ac.tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", []) if layer_name else []
     index = next((a["index"] for a in layers if a.get("name") == layer_name), None)
-    xml = scheme_xml(source.read_text(encoding="utf-8"), scheme["name"], scheme["id"], cfg.get("title"), index, scheme.get("rowHeights"))
+    try:  # deslab: 14.11.2026, the running Archicad's version for the scheme (Archicad 29 asks about a 27 one)
+        version = int((ac.api("API.GetProductInfo") or {}).get("version") or 0) or None
+    except Exception:
+        version = None
+    xml = scheme_xml(source.read_text(encoding="utf-8"), scheme["name"], scheme["id"], cfg.get("title"), index, scheme.get("rowHeights"),
+                     version)
     path = Path(tempfile.gettempdir()) / "deslab-scheme.xml"
     path.write_text(xml, encoding="utf-8", newline="\n")
     try:

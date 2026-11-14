@@ -67,7 +67,9 @@ def find_penetrations(pts, scene, inset=0.03, least=40, size=(0.06, 0.5), throug
             ends = []
             for side, name in ((1, "left"), (-1, "right")):
                 depth = side * d - half
-                m = (t > t0 - around) & (t < t1 + around) & (z > z0 - 0.25) & (z < z1 + around) & (depth > 0.03) & (depth < reach)
+                # deslab: not the ceiling (Nagornaya v21: a 34 cm «grille» 20 cm deep on both faces of a seam under it)
+                m = (t > t0 - around) & (t < t1 + around) & (z > z0 - 0.25) & (z < min(z1 + around, height - 0.03)) & \
+                    (depth > 0.03) & (depth < reach)
                 if m.sum() < least:
                     continue
                 ends.append({"side": name, "from": round(float(np.percentile(t[m], 2)), 3), "to": round(float(np.percentile(t[m], 98)), 3),

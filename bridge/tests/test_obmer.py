@@ -505,6 +505,8 @@ def test_scheme_xml():
     rows = '<Row Type="Header">\n<Row_Height value="15"/>\n</Row>\n<Row Type="Value">\n<Row_Height value="8"/>\n</Row>\n'
     new = layouts.scheme_xml(xml.replace("\t<View_Settings>", rows + "\t<View_Settings>"), "А", "Б", None, None, {"Header": 8, "Value": 6.5})
     assert '<Row Type="Header">\n<Row_Height value="8"/>' in new and '<Row Type="Value">\n<Row_Height value="6.5"/>' in new
+    # Archicad 29 asked about a scheme «not from the current version» (Игорь, 14.11.2026): the running one's is put in
+    assert 'Version="29.0.0">' in layouts.scheme_xml(xml, "А", "Б", version=29) and 'Version="27.0.0"' in new
 
 
 def test_axonometry_spot():

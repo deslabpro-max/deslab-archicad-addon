@@ -470,8 +470,9 @@ def _face_point(wall, side, along):
 
 def vent_penetration(pen, wall, ducts, near=0.12):
     """deslab: 14.11.2026, the mep items of a channel through `wall` (scene "penetrations", measured by the helper) that
-    starts at one of `ducts` (by either face within `near`): the penetration across the wall (a rectangle on the plan with
-    its height) and, when the cloud has it, the outlet standing out of the far face. [] when it starts at no duct."""
+    starts at one of `ducts` (by either face within `near`), or at a big thing standing out of one face only (10 cm and
+    more): the penetration across the wall (a rectangle on the plan with its height) and, when the cloud has it, the
+    outlet standing out of the far face. [] when it starts at no duct."""
     if wall is None or not pen.get("through"):
         return []
     along, width = float(pen["along"]), float(pen["width"])
@@ -483,6 +484,12 @@ def vent_penetration(pen, wall, ducts, near=0.12):
             side = name
             break
     if side is None:
+        # deslab: 14.11.2026, Nagornaya v21 on the PC: the duct runs under the ceiling and the model may not name it; the
+        # cloud shows it anyway: 19 cm and more stands out of one face around the channel, 7 cm (the grille) of the other
+        deep = [e for e in pen.get("ends", []) if float(e.get("depth", 0)) >= 0.1]
+        if len(deep) == 1:
+            side = deep[0].get("side")
+    if side not in ("left", "right"):
         return []
     other = "right" if side == "left" else "left"
 

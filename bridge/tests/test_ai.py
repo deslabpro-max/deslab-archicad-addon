@@ -351,20 +351,26 @@ def test_vent_penetration():
              "penetrations": [{"id": "PN1", "wallId": "W2", "along": 0.645, "width": 0.153, "bottom": 2.896, "top": 3.026, "through": True,
                                "ends": [{"side": "left", "from": 0.5, "to": 0.9, "bottom": 2.6, "top": 3.1, "depth": 0.2},
                                         {"side": "right", "from": 0.55, "to": 0.75, "bottom": 2.8, "top": 3.1, "depth": 0.094}]},
-                              {"id": "PN2", "wallId": "W2", "along": 1.6, "width": 0.1, "bottom": 0.5, "top": 0.6, "through": True, "ends": []}]}
+                              {"id": "PN2", "wallId": "W2", "along": 1.6, "width": 0.1, "bottom": 0.5, "top": 0.6, "through": True, "ends": []},
+                              # no duct named by it, but one stands out of its left face (the model left the duct unnamed)
+                              {"id": "PN3", "wallId": "W2", "along": 1.2, "width": 0.1, "bottom": 2.9, "top": 3.0, "through": True,
+                               "ends": [{"side": "left", "from": 1.1, "to": 1.3, "bottom": 2.7, "top": 3.1, "depth": 0.19},
+                                        {"side": "right", "from": 1.15, "to": 1.25, "bottom": 2.85, "top": 3.05, "depth": 0.07}]}]}
     new, report = ai.apply_review(scene, {})
-    pen = next(m for m in new["mep"] if m["kind"] == "penetration")
+    pen = next(m for m in new["mep"] if m["kind"] == "penetration" and m["id"] == "PN1")
     xs = sorted({round(p["x"], 3) for p in pen["polygon"]})
     ys = sorted({round(p["y"], 4) for p in pen["polygon"]})
     assert xs == [3.123, 3.546] and abs(ys[0] - 8.0685) < 1e-3 and abs(ys[1] - 8.2215) < 1e-3, pen
     assert pen["label"] == "Вент. проходка 153×130 h=2896" and pen["elevation"] == 2.896, pen
-    out = next(m for m in new["mep"] if m["kind"] == "ventOutlet")
+    out = next(m for m in new["mep"] if m["kind"] == "ventOutlet" and m["id"] == "VV1")
     assert sorted({round(p["x"], 3) for p in out["polygon"]}) == [3.546, 3.64] and out["elevation"] == 2.8 and abs(out["height"] - 0.3) < 1e-9, out
     # a channel with no duct by it is asked about, not drawn
     assert not [m for m in new["mep"] if m["id"] in ("PN2", "VV2")]
     assert any("PN2" in d and "воздуховода" in d for d in report["doubts"]), report["doubts"]
     from deslab_bridge import mep
-    assert len(mep.vent_outlines(new)) == 2 and len([m for m, _ in mep.duct_morphs(new) if m["kind"] == "ventOutlet"]) == 1
+    assert len(mep.vent_outlines(new)) == 4 and len([m for m, _ in mep.duct_morphs(new) if m["kind"] == "ventOutlet"]) == 2
+    out3 = next(m for m in new["mep"] if m["id"] == "VV3")
+    assert sorted({round(p["x"], 3) for p in out3["polygon"]}) == [3.546, 3.616], out3  # on the right face, away from the duct
 
 
 def test_balcony_door_swing_in_a_thick_wall():

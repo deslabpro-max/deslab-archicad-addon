@@ -109,7 +109,7 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
         for box in boxes:
             taken[box] = True
     single = {id(spot) for spot in spots}
-    spots = _merge_arcs(spots, p, x0, y0, max_size)
+    spots, circles = _merge_arcs(spots, p, x0, y0, max_size)
     found = []
     for spot in spots:
         ys, xs = spot
@@ -145,7 +145,7 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
             d = float(np.median(sizes)) if len(sizes) >= 5 else float(np.percentile(wide, 98) - np.percentile(wide, 2))
             d = max(d, 0.012)
             _trace("sizes", x0, y0, ys, xs, d=d, merged=merged, levels=len(sizes))
-            main = _main_circle(q, lv) if d >= 0.06 and not merged else None
+            main = circles.get(id(spot)) or (_main_circle(q, lv) if d >= 0.06 and not merged else None)
             if main is not None:
                 # deslab: 14.11.2026, Nagornaya bathroom: a water riser 56 mm with a wire or a pipe across it in its
                 # spot came out a «sewer riser» of 110 mm; level by level its own piece of points makes its circle
@@ -175,7 +175,7 @@ def _merge_arcs(spots, p, x0, y0, max_size, gap=2, far=8):
     all the points around both go round one circle of 6 cm or more over a quarter of it or more, level by level (two
     wires or two thin pipes are two short arcs: a circle through them is mostly empty)."""
     if len(spots) < 2:
-        return spots
+        return spots, {}
     boxes = [(int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max())) for ys, xs in spots]
     # deslab: 14.11.2026, a spot that is a whole pipe of its own (its arc is as wide as its circle: a water riser 56 mm)
     # is no piece of a bigger one (with a wire 2 cm from it, it became a «riser» of 142 mm)
@@ -195,14 +195,14 @@ def _merge_arcs(spots, p, x0, y0, max_size, gap=2, far=8):
                 continue
             if apart <= gap:
                 parent[find(j)] = find(i)
-            elif apart <= far and _one_ring(spots[i], spots[j], p, x0, y0, max_size):
+            elif apart <= far and _one_ring(spots[i], spots[j], p, x0, y0, max_size) is not None:
                 # deslab: 14.11.2026, Nagornaya bathroom: the sewer riser 110 mm (bells, a clamp, pipes in front of it)
                 # was filled at enough heights on its two sides only, 9 cm apart: two thin «pipes», both lost
                 parent[find(j)] = find(i)
     groups = {}
     for i in range(len(spots)):
         groups.setdefault(find(i), []).append(i)
-    out = []
+    out, circles = [], {}
     for members in groups.values():
         if len(members) == 1:
             out.append(spots[members[0]])
@@ -210,7 +210,12 @@ def _merge_arcs(spots, p, x0, y0, max_size, gap=2, far=8):
         ys = np.concatenate([spots[i][0] for i in members])
         xs = np.concatenate([spots[i][1] for i in members])
         merged = None
-        if max(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) * CELL <= max_size:
+        # deslab: 14.11.2026, the group's own ring is the riser (its size and centre: the spots are its arcs only)
+        ring = _one_ring((ys, xs), (ys, xs), p, x0, y0, max_size)
+        if ring is not None:
+            merged = (ys, xs)
+            circles[id(merged)] = ring
+        elif max(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) * CELL <= max_size:
             near = (p[:, 0] >= x0 + (xs.min() - 1) * CELL) & (p[:, 0] < x0 + (xs.max() + 2) * CELL) & \
                    (p[:, 1] >= y0 + (ys.min() - 1) * CELL) & (p[:, 1] < y0 + (ys.max() + 2) * CELL)
             q = p[near]
@@ -221,7 +226,7 @@ def _merge_arcs(spots, p, x0, y0, max_size, gap=2, far=8):
                 if shape is not None and shape[0] == "round" and shape[1] >= 0.06:
                     merged = (ys, xs)
         out.extend([merged] if merged is not None else [spots[i] for i in members])
-    return out
+    return out, circles
 
 
 def _main_circle(q, lv, least=8, share=0.6):
@@ -229,7 +234,7 @@ def _main_circle(q, lv, least=8, share=0.6):
     Returns (diameter, (x, y) of the centre) when, at most levels, that piece holds `share` of the points or more, is an
     arc of 3 cm or more and goes round one circle closely, the same at every level; None otherwise (a pipe seen in two
     pieces, a flat thing)."""
-    radii, errors, centres, shares = [], [], [], []
+    radii, errors, centres, shares, zs = [], [], [], [], []
     for part in np.split(q, np.flatnonzero(np.diff(lv)) + 1):
         if len(part) < least:
             continue
@@ -249,9 +254,19 @@ def _main_circle(q, lv, least=8, share=0.6):
         if len(xy) < least or max(np.ptp(xy[:, 0]), np.ptp(xy[:, 1])) < 0.03:
             continue
         cx, cy, r, err = _circle(xy)
+        # deslab: 14.11.2026, a wire touching the pipe is in its piece at some heights: the points far off the circle
+        # are dropped and the circle fitted again (Nagornaya bathroom: the water riser 56 mm came out 66 mm, unsteady)
+        for _ in range(2):
+            dist = np.abs(np.hypot(xy[:, 0] - cx, xy[:, 1] - cy) - r)
+            keep = dist <= max(0.004, 3 * err)
+            if keep.sum() < least or keep.all():
+                break
+            xy = xy[keep]
+            cx, cy, r, err = _circle(xy)
         radii.append(r)
         errors.append(err)
         centres.append((cx, cy))
+        zs.append(float(part[:, 2].mean()))
     if TRACE is not None:
         box = (round(float(q[:, 0].min()), 3), round(float(q[:, 1].min()), 3), round(float(q[:, 0].max()), 3), round(float(q[:, 1].max()), 3))
     if len(radii) < 5 or np.median(shares) < share:
@@ -259,17 +274,17 @@ def _main_circle(q, lv, least=8, share=0.6):
             TRACE.append({"kind": "main", "box": box, "levels": len(radii), "share": round(float(np.median(shares)), 3) if shares else None, "result": None})
         return None
     r, err = float(np.median(radii)), float(np.median(errors))
-    c = np.median(np.array(centres), axis=0)
     iqr = float(np.subtract(*np.percentile(radii, [75, 25])))
-    moved = float(np.median(np.hypot(*(np.array(centres) - c).T)))
-    steady = iqr <= 0.25 * r and moved <= 0.25 * r
-    ok = steady and err <= 0.1 * r and 0.015 <= r <= 0.11
+    line, c, moved = _straight(centres, zs, r)
+    ok = iqr <= 0.25 * r and line and err <= 0.1 * r and 0.015 <= r <= 0.11
     if TRACE is not None:
         TRACE.append({"kind": "main", "box": box, "levels": len(radii), "share": round(float(np.median(shares)), 3), "d": round(2 * r, 4),
-                      "err": round(err, 4), "iqr": round(iqr, 4), "moved": round(moved, 4), "result": round(2 * r, 3) if ok else None})
+                      "err": round(err, 4), "iqr": round(iqr, 4), "moved": round(moved, 4), "result": round(2 * r, 3) if ok else None,
+                      "each": [[round(z, 2), round(2 * rr, 4), round(e, 4), round(x, 3), round(y, 3)]
+                               for z, rr, e, (x, y) in zip(zs, radii, errors, centres)]})
     if not ok:
         return None
-    return round(2 * r, 3), (float(c[0]), float(c[1]))
+    return round(2 * r, 3), c
 
 
 def _whole_pipe(spot, p, x0, y0, least=8):
@@ -306,22 +321,24 @@ def _whole_pipe(spot, p, x0, y0, least=8):
     return result
 
 
-def _one_ring(a, b, p, x0, y0, max_size, sectors=9, least=8):
-    """deslab: True when the points around the spots a and b (each (ys, xs) of the plan cells) lie, level by level, on one
-    circle of 6 cm or more across, filled over `sectors` tens of degrees or more, the same circle at every level."""
+def _one_ring(a, b, p, x0, y0, max_size, sectors=9, least=8, most=0.75):
+    """deslab: (diameter, centre) when the points around the spots a and b (each (ys, xs) of the plan cells) lie, level by
+    level, on one circle of 6 cm or more across, filled over `sectors` tens of degrees or more, the same circle at
+    `most` of the levels or more, its centres on one straight line; None otherwise. 14.11.2026, Nagornaya bathroom: a
+    «ring» through two water risers fitted 7 levels of 65 and tied them and the sewer riser into one 42 cm spot."""
     ys, xs = np.concatenate([a[0], b[0]]), np.concatenate([a[1], b[1]])
     if max(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) * CELL > max_size:
-        return False
+        return None
     near = (p[:, 0] >= x0 + (xs.min() - 2) * CELL) & (p[:, 0] < x0 + (xs.max() + 3) * CELL) & \
            (p[:, 1] >= y0 + (ys.min() - 2) * CELL) & (p[:, 1] < y0 + (ys.max() + 3) * CELL)
     q = p[near]
     if len(q) < 30:
         _trace("ring", x0, y0, ys, xs, points=len(q), result=False)
-        return False
+        return None
     lv = ((q[:, 2] - 0.05) / LEVEL).astype(np.int32)
     order = np.argsort(lv, kind="stable")
     q, lv = q[order], lv[order]
-    centres, radii, filled = [], [], []
+    centres, radii, filled, zs = [], [], [], []
     off = {"few": 0, "radius": 0, "err": 0}
     for part in np.split(q, np.flatnonzero(np.diff(lv)) + 1):
         if len(part) < least:
@@ -336,19 +353,34 @@ def _one_ring(a, b, p, x0, y0, max_size, sectors=9, least=8):
         angles = np.degrees(np.arctan2(xy[rim, 1] - cy, xy[rim, 0] - cx))
         centres.append((cx, cy))
         radii.append(r)
+        zs.append(float(part[:, 2].mean()))
         filled.append(len(np.unique(((angles + 180) // 10).astype(int))))
-    if len(radii) < 5:
+    measured = len(radii) + off["radius"] + off["err"]
+    if len(radii) < max(5, most * measured):
         _trace("ring", x0, y0, ys, xs, levels=len(radii), off=off, result=False)
-        return False
+        return None
     r = float(np.median(radii))
-    c = np.median(np.array(centres), axis=0)
     iqr = float(np.subtract(*np.percentile(radii, [75, 25])))
-    moved = float(np.median(np.hypot(*(np.array(centres) - c).T)))
-    steady = iqr <= 0.25 * r and moved <= 0.25 * r
-    result = bool(steady and np.median(filled) >= sectors)
+    line, c, moved = _straight(centres, zs, r)
+    result = bool(iqr <= 0.25 * r and line and np.median(filled) >= sectors)
     _trace("ring", x0, y0, ys, xs, levels=len(radii), off=off, d=2 * r, iqr=iqr, moved=moved, filled=float(np.median(filled)),
-           centre=(round(float(c[0]), 3), round(float(c[1]), 3)), result=result)
-    return result
+           centre=(round(c[0], 3), round(c[1], 3)), result=result)
+    return (round(2 * r, 3), c) if result else None
+
+
+def _straight(centres, zs, r, tilt=0.03):
+    """deslab: 14.11.2026, Nagornaya bathroom: the sewer riser 110 mm stood a little off vertical, and its centre went
+    1.5-1.8 cm off the middle one at most levels: it was no «steady circle» and was lost. A riser is a straight pipe:
+    its centres lie on one straight line, off vertical by `tilt` m per m at most. Returns (steady, the centre at the
+    middle height, the middle distance of the centres from the line)."""
+    c = np.asarray(centres, dtype=np.float64)
+    z = np.asarray(zs, dtype=np.float64)
+    zm = float(np.median(z))
+    a = np.column_stack([np.ones(len(z)), z - zm])
+    (cx, bx), *_ = np.linalg.lstsq(a, c[:, 0], rcond=None)
+    (cy, by), *_ = np.linalg.lstsq(a, c[:, 1], rcond=None)
+    off = float(np.median(np.hypot(c[:, 0] - (cx + bx * (z - zm)), c[:, 1] - (cy + by * (z - zm)))))
+    return bool(off <= 0.25 * r and np.hypot(bx, by) <= tilt), (float(cx), float(cy)), off
 
 
 def _circle(xy):
