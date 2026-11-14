@@ -394,6 +394,9 @@ def _without_doubles(runs, tol=0.04):
 def _hint(pipe, height):
     d = pipe["diameter"]
     z = pipe["path"][0]["z"]
+    if d < 0.016:
+        # deslab: 14.11.2026, Игорь: «по 12 миллиметров труб у нас не бывает»: thinner than the thinnest pipe (16 mm)
+        return "too thin for a pipe: wire or artefact?"
     if pipe["kind"] == "riser":
         return "sewer riser?" if d >= 0.08 else "heating or water riser?"
     if d >= 0.08:

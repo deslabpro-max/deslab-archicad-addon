@@ -246,8 +246,8 @@ def test_old_wiring():
          "at": {"x": 1.5, "y": 0.15}, "start": {"x": 1.0, "y": 0.1}, "end": {"x": 2.0, "y": 0.1}}]
     riser = lambda i, x, y, d: {"id": i, "kind": "riser", "diameter": d, "path": [{"x": x, "y": y, "z": 0.0}, {"x": x, "y": y, "z": 2.7}]}  # noqa: E731
     run = lambda i, a, b, d: {"id": i, "kind": "run", "diameter": d, "path": [{"x": a[0], "y": a[1], "z": 1.6}, {"x": b[0], "y": b[1], "z": 1.6}]}  # noqa: E731
-    scene["pipes"] = [riser("P1", 5.5, 3.8, 0.012), run("P2", (5.5, 3.8), (5.9, 3.0), 0.012), riser("P3", 4.5, 1.0, 0.012),
-                      run("P4", (1.2, 0.12), (1.2, 0.9), 0.012), riser("P5", 3.0, 3.8, 0.02), run("P6", (3.1, 3.8), (3.5, 3.8), 0.012),
+    scene["pipes"] = [riser("P1", 5.5, 3.8, 0.012), run("P2", (5.5, 3.8), (5.9, 3.0), 0.015), riser("P3", 4.5, 1.0, 0.02),
+                      run("P4", (1.2, 0.12), (1.2, 0.9), 0.016), riser("P5", 3.0, 3.8, 0.02), run("P6", (3.1, 3.8), (3.5, 3.8), 0.016),
                       run("P7", (0.5, 3.0), (0.5, 3.5), 0.05), run("P8", (0.5, 2.0), (0.5, 2.5), 0.05), riser("P9", 0.3, 3.8, 0.11),
                       run("P10", (4.6, 1.5), (3.6, 1.5), 0.05)]
     review = {"candidates": [{"id": "C1", "kind": "duct", "confidence": 0.6}, {"id": "C2", "kind": "duct", "confidence": 0.6},
@@ -265,7 +265,10 @@ def test_old_wiring():
     assert systems == {"P1": None, "P2": None, "P3": "water", "P4": "heating", "P5": "heating", "P6": "heating",
                        "P7": None, "P8": None, "P9": "sewer", "P10": "sewer"}, (systems, report)
     assert not next(p for p in new["pipes"] if p["id"] == "P1").get("label")
-    assert sum("кабель" in r for r in report["rejected"]) == 2, report["rejected"]
+    # deslab: 14.11.2026, Игорь: «По 12 миллиметров труб у нас не бывает»: P1 is thinner than any pipe by GOST, P2 (15 mm,
+    # a pipe in a wet room) is a cable in the room
+    assert ["P1" in r for r in report["rejected"] if "ГОСТ" in r] == [True], report["rejected"]
+    assert ["P2" in r for r in report["rejected"] if "кабель" in r] == [True], report["rejected"]
     assert "P7 (heating, 50 мм)" in report["doubts"][-1] and "P8 (sewer, 50 мм)" in report["doubts"][-1], report["doubts"]
     # the wiring by the Nagornaya entrance: about as wide as it should be, but its front goes in and out by height
     scene["candidates"][1]["face"] = {"flat": 0.064, "cover": 0.78}
@@ -294,9 +297,10 @@ def test_old_wiring():
     scene["candidates"] = scene["candidates"][:3]
     # a room the model names a kitchen keeps its thin water pipe
     review["rooms"] = [{"id": "R1", "name": "Кухня-гостиная"}]
-    review["pipes"][0]["system"] = "water"
+    review["pipes"][1]["system"] = "water"
     new, report = ai.apply_review(scene, review)
-    assert next(p for p in new["pipes"] if p["id"] == "P1").get("system") == "water", report
+    assert next(p for p in new["pipes"] if p["id"] == "P2").get("system") == "water", report
+    assert not next(p for p in new["pipes"] if p["id"] == "P1").get("system"), report
 
 
 def test_balcony_door_swing_in_a_thick_wall():

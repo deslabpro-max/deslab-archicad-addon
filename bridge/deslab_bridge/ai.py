@@ -261,6 +261,9 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
 - Трубы P1, P2… (раздел pipes сцены) алгоритм нашёл и измерил в облаке сам: kind riser это стояк (ось x, y, от z до z), run это труба
   вдоль стены (два конца оси, высота z), diameter в метрах, joins показывает, к какой трубе она присоединена, hint это догадка алгоритма.
+  Наружные диаметры по ГОСТ: стояки отопления и воды от 20 мм (сталь DN15 21.3, полипропилен 20), отводы и подводки от 16 мм,
+  канализация: отводы 40-50 мм, стояки 100-110 мм, круглые воздуховоды от 100 мм. Труб по 12 мм не бывает: тоньше 16 мм это провод,
+  шланг или артефакт облака, называй clutter (код такое не построит).
   Назови систему каждой трубы в разделе pipes: heating (пара тонких стояков у окна и трубы от них к радиатору), water (тонкие стояки и
   отводы в санузле или кухне), sewer (около 110 мм, отводы 50 мм у пола), vent (круглый воздуховод 100-160 мм под потолком или стояк).
   Не труба (косяк, наличник, кабель-канал, провод, кромка радиатора, карниз, плинтус, мебель): clutter. Код не построит трубу тоньше
@@ -498,6 +501,13 @@ def _round_shape(c):
 # распознавал»). A duct or a box has a face at every height (the helper's `face`: cover, the share of 10 cm bands it
 # fills over 60 % of its width; flat, the spread of the bands' fronts); a pipe thinner than a heating pipe that stands
 # neither in a wet room nor by a radiator or a heating riser is a cable.
+# deslab: 14.11.2026, Игорь: «По 12 миллиметров труб у нас не бывает. Это либо проводка… либо какой-то артефакт… стояки могут
+# быть только… не менее какой толщины трубы по ГОСТу». The thinnest outer diameters in a flat: steel DN15 21.3 mm (GOST 3262),
+# PP-R 20 mm (GOST 32415), metal-plastic 16 mm for branches, sewer 40-50 mm for branches and 100-110 mm risers (PVC, cast iron
+# GOST 6942 from 50), round vent ducts from 100 mm; less the cloud's measuring error of 2-3 mm. Anything thinner is a wire
+# or an artefact (the helper gives 12 mm to whatever is thinner than it can measure).
+GOST_MIN = {"riser": {"heating": 0.018, "water": 0.018, "sewer": 0.045, "vent": 0.09},
+            "run": {"heating": 0.014, "water": 0.014, "sewer": 0.036, "vent": 0.09}}
 FACE_COVER = 0.6
 FACE_FLAT = 0.04
 CABLE_DIAMETER = 0.016
@@ -803,6 +813,10 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             rejected.append(f"труба {pid}: неизвестная система {system}")
         elif not _confident(item, candidate_confidence):
             rejected.append(f"труба {pid} ({system}): уверенность {item.get('confidence')} ниже порога")
+        elif float(p.get("diameter", 0)) < GOST_MIN.get(p.get("kind"), GOST_MIN["run"])[system]:
+            least = GOST_MIN.get(p.get("kind"), GOST_MIN["run"])[system]
+            rejected.append(f"труба {pid} ({system}, {int(round(float(p.get('diameter', 0)) * 1000))} мм): тоньше самой тонкой трубы "
+                            f"по ГОСТ ({int(round((least + 0.002) * 1000))} мм), это провод или артефакт")
         else:
             p["system"] = system
             if p.get("kind") == "riser":
