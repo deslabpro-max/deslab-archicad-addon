@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from test_synthetic import H, cloud, plane_x, plane_y  # noqa: E402
 from deslab_scan2bim.analyze import Options, analyze  # noqa: E402
-from deslab_scan2bim.pipes import CELL, _merge_arcs, find_pipes  # noqa: E402
+from deslab_scan2bim.pipes import CELL, _merge_arcs, find_pipes, find_runs  # noqa: E402
 from deslab_scan2bim.views import model_points  # noqa: E402
 
 
@@ -137,6 +137,33 @@ def test_branches():
     return branches
 
 
+def test_runs_on_cubes():
+    # deslab: 14.11.2026, Nagornaya v17 on: on the 1 cm cubes of every point the wall's skin (0-2.5 cm off its face) is
+    # filled at every height and the stray points under each pipe tie the pipe to it: both pipes from the second radiator
+    # to the corner were lost. Two pipes 30 mm, 12 cm off the wall at z 0.33 and 0.57, 1.1 m long
+    rng = np.random.default_rng(5)
+    scene = {"levels": {"ceiling": 2.7}, "rooms": [],
+             "walls": [{"id": "W1", "start": {"x": 0, "y": 0}, "end": {"x": 0, "y": 3}, "thickness": 0.2, "openings": []}]}
+
+    def at(depth, y, z):   # the left face of W1 is x -0.1, the room lies at x < -0.1
+        return np.stack([-(0.1 + depth), y, z], 1)
+    n = 400000
+    out = [at(rng.uniform(-0.005, 0.025, n), rng.uniform(0, 3, n), rng.uniform(0, 2.7, n))]
+    for zc in (0.33, 0.57):
+        a = rng.uniform(math.pi / 2, 3 * math.pi / 2, 60000)
+        out.append(at(0.12 - 0.015 * np.cos(a), rng.uniform(1.0, 2.1, 60000), zc + 0.015 * np.sin(a)))
+        out.append(at(rng.uniform(0.0, 0.12, 30000), rng.uniform(1.0, 2.1, 30000), zc - 0.015 - rng.uniform(0.0, 0.012, 30000)))
+    cubes = np.unique(np.round(np.concatenate(out) / 0.01), axis=0) * 0.01
+    runs = sorted(find_runs(cubes, scene), key=lambda r: r["path"][0]["z"])
+    assert len(runs) == 2 and all(abs(r["path"][0]["z"] - z) <= 0.015 for r, z in zip(runs, (0.33, 0.57))), runs
+    for r in runs:
+        # the axis 12 cm off the face (x -0.22), not at the stray points behind the pipe
+        assert abs(r["path"][0]["x"] + 0.22) <= 0.015, r
+        ys = sorted(e["y"] for e in r["path"])
+        assert abs(ys[0] - 1.0) < 0.05 and abs(ys[1] - 2.1) < 0.05 and 0.016 <= r["diameter"] <= 0.05, r
+    return runs
+
+
 def test_merge_arcs():
     # deslab: three pieces of one riser 108 mm are one spot; two thin pipes 3 cm apart stay two
     def spots_of(pieces, p):
@@ -160,6 +187,8 @@ if __name__ == "__main__":
     test_merge_arcs()
     for p in test_pipes():
         print(p["id"], p["kind"], p["diameter"], p["path"], p["hint"])
+    for p in test_runs_on_cubes():
+        print(p["diameter"], p["path"])
     for p in test_branches():
         print(p["id"], p["diameter"], p["path"], p["hint"])
     print("ok")

@@ -268,7 +268,16 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
         half = float(wall["thickness"]) / 2
         for side in (1, -1):
             depth = side * d - half
-            m = (t > 0) & (t < length) & (depth > 0.012) & (depth < reach) & (pts[:, 2] > 0.04) & (pts[:, 2] < height - 0.04)
+            # deslab: 14.11.2026, Nagornaya v17 on: the cubes of every point fill the wall's skin (0-3 cm off its face) at
+            # every height, and the stray points under a pipe tie the pipe's spot to it: the spot came out a metre tall
+            # and both pipes from the second radiator to the corner were lost. The cross-section starts 2.5 cm off the
+            # face where the cloud has it (the commonest depth near the modelled face)
+            skin = (t > 0) & (t < length) & (depth > -0.03) & (depth < 0.1) & (pts[:, 2] > 0.2) & (pts[:, 2] < height - 0.2)
+            cut = 0.012
+            if skin.sum() >= 200:
+                hist, edges = np.histogram(depth[skin], bins=np.arange(-0.03, 0.105, 0.01))
+                cut = max(cut, float(edges[int(np.argmax(hist))]) + 0.005 + 0.025)
+            m = (t > 0) & (t < length) & (depth > cut) & (depth < reach) & (pts[:, 2] > 0.04) & (pts[:, 2] < height - 0.04)
             if m.sum() < 50:
                 continue
             it = (t[m] / LEVEL).astype(np.int32)
@@ -320,12 +329,19 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
                     zc = (zs.min() + zs.max() + 1) / 2 * CELL
                     near = (zz >= zs.min() * CELL) & (zz <= (zs.max() + 1) * CELL) & (dd >= ds.min() * CELL) & \
                            (dd <= (ds.max() + 1) * CELL) & (tt >= t0) & (tt <= t1)
+                    seen = None
                     if near.sum() >= 30:
                         lo, hi = np.percentile(zz[near], 2), np.percentile(zz[near], 98)
                         dia, zc = max(float(hi - lo), 0.012), float((lo + hi) / 2)
+                        seen = _front_diameter(zz[near], dd[near])
+                        if seen is not None:
+                            dia, zc = max(seen[0], 0.012), seen[1]
                         t0, t1 = max(t0, float(tt[near].min())), min(t1, float(tt[near].max()))
                     # the front of the pipe is seen: its axis is half a diameter behind the nearest points
                     dc = min(ds.min() * CELL + CELL + dia / 2, (ds.min() + ds.max() + 1) / 2 * CELL + dia / 2)
+                    if near.sum() >= 30 and seen is not None:
+                        # deslab: the stray points behind the pipe make the spot reach back to the wall
+                        dc = max(seen[2] - dia / 2, dc)
                     pieces.append([t0, t1, zc, dc, dia])
             runs = []
             for p in sorted(pieces, key=lambda p: -(p[1] - p[0])):
@@ -472,6 +488,10 @@ def find_branches(pts, scene, risers, runs=(), least=0.018, reach=0.8, min_lengt
             if m.sum() >= 20:
                 lo_z, hi_z = np.percentile(q[m, 2], 2), np.percentile(q[m, 2], 98)
                 dia, zc = float(hi_z - lo_z), float((lo_z + hi_z) / 2)
+                # the direction by the branch's own points (the rays go every 5 degrees: Nagornaya P23 ended 4 cm aside)
+                far = m & (s > length / 2)
+                if far.sum() >= 10:
+                    th = math.atan2(float(qy[far].mean()), float(qx[far].mean()))
             end = (cx + math.cos(th) * (rad + length), cy + math.sin(th) * (rad + length))
             kept.append({"zc": zc, "k": k})
             found.append({"kind": "run", "branch": True, "diameter": round(max(dia, 0.012), 3), "_riser": r,
@@ -500,6 +520,37 @@ def _towards(run, cx, cy, th, tol=30):
     far = b if math.hypot(a["x"] - cx, a["y"] - cy) < math.hypot(b["x"] - cx, b["y"] - cy) else a
     ang = math.degrees(math.atan2(far["y"] - cy, far["x"] - cx) - th) % 360
     return min(ang, 360 - ang) < tol
+
+
+def _front_diameter(z, depth, row=0.01, band=0.012):
+    """deslab: 14.11.2026, a run's diameter from the front of the pipe, which the scanner sees whole: the rows (1 cm of
+    height) whose frontmost point is within `band` of the pipe's front make a chord of the circle, 2 sqrt(2 r band - band²)
+    long. On 1 cm cubes this tells 20-50 mm pipes apart only roughly (31-45 mm); `band` 12 mm takes in two layers of cubes,
+    so a thin pipe comes out thicker rather than thinner than it is. The stray points that run from the pipe's edges back to the wall stand behind its axis and are not counted
+    (Nagornaya: the radiator pipes came out 60-70 mm on the cubes, 40 mm on every 4th point, by the full height of the
+    spot). Returns (diameter, height of the axis, depth of the pipe's front) or None."""
+    rows = np.floor(z / row).astype(np.int64)
+    uniq, inv = np.unique(rows, return_inverse=True)
+    if len(uniq) < 2:
+        return None
+    front = np.full(len(uniq), -9.0)
+    np.maximum.at(front, inv, depth)
+    k = int(np.argmax(front))
+    ok = front >= front[k] - band + 1e-6
+    lo = hi = k
+    while lo > 0 and ok[lo - 1] and uniq[lo - 1] == uniq[lo] - 1:
+        lo -= 1
+    while hi < len(uniq) - 1 and ok[hi + 1] and uniq[hi + 1] == uniq[hi] + 1:
+        hi += 1
+    # the chord by the points themselves (a row of 1 cm touched by a chord of 2 cm makes three rows)
+    sel = (rows >= uniq[lo]) & (rows <= uniq[hi]) & (depth >= front[k] - band + 1e-6)
+    zs = z[sel]
+    if len(zs) >= 5:
+        chord, mid = float(np.percentile(zs, 98) - np.percentile(zs, 2)), float((np.percentile(zs, 98) + np.percentile(zs, 2)) / 2)
+    else:
+        chord, mid = (hi - lo) * row, float((uniq[lo] + uniq[hi] + 1) / 2 * row)
+    r = ((chord / 2) ** 2 + band ** 2) / (2 * band)
+    return 2 * r, mid, float(front[k])
 
 
 def _without_doubles(runs, tol=0.04):
