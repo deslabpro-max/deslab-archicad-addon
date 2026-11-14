@@ -742,6 +742,9 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
                     # deslab: a leader through another label's text is as bad as a text on it (run kv94l:
                     # the leader of «Стояк канализации» through «Вытяжка»)
                     cost += 100 * sum(_seg_hits_box(dot, mid, w) for w in placed)
+                    # deslab: 14.11.2026, and no text over the leader of a label placed before (the check reads both as
+                    # a text crossed by a leader)
+                    cost += 100 * sum(1 for a_, b_ in leaders if _seg_box(a_, b_, box))
                     cost += 100 * sum(_box_hits(box, w) for w in swings + others)
                     cost += 40 * sum(_seg_hits_box(_add(dot, _mul(d, 0.1)), mid, w) for w in others)
                     # a long leader across dimension chains is worse than a short one (run kv94j:

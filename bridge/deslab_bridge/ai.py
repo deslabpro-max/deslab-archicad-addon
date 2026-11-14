@@ -722,6 +722,44 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
     for pid in pipes:
         if pid not in named:
             rejected.append(f"труба {pid}: модель не ответила")
+    # a box or a riser drawn from a candidate where the pipes themselves are built would draw the same thing twice
+    risers = [p for p in pipes.values() if p.get("system") and p.get("kind") == "riser"]
+    for m in list(mep):
+        if m.get("candidate") and m.get("kind") in ("box", "shaft", "heatingRiser", "waterRiser", "sewerRiser"):
+            pts = m.get("polygon") or [m.get("at")]
+            cx, cy = sum(q["x"] for q in pts) / len(pts), sum(q["y"] for q in pts) / len(pts)
+            if m.get("polygon"):
+                # deslab: 14.11.2026, Nagornaya: a riser on the edge of a box beside it took that box away; a box goes
+                # only for the risers that stand in it (its outline grown by the riser's radius and 3 cm); a duct only for
+                # the risers right in it
+                inside = [r for r in risers if _by_polygon((r["path"][0]["x"], r["path"][0]["y"]), m["polygon"],
+                                                           0.0 if m.get("duct") else float(r.get("diameter", 0.05)) / 2 + 0.03)]
+            else:
+                inside = [r for r in risers if math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= 0.15]
+            sides = [math.dist((a["x"], a["y"]), (b["x"], b["y"])) for a, b in zip(pts, pts[1:] + pts[:1])] or [0.0]
+            pipes_across = sum(float(r.get("diameter", 0.05)) for r in inside)
+            # deslab: 13.11.2026, Nagornaya: a box 0.3 x 0.65 m standing full height in the bathroom corner is a box
+            # of its own, the riser next to it does not explain it; only a box no longer than the risers in it is them.
+            # 14.11.2026: a «duct» 14 x 38 cm at the outer wall was the two heating risers seen one behind the other, while
+            # a thin pipe at the seam of the two real ducts stands in the wide one: a duct is its risers only when its
+            # narrow side is no wider than they are and 10 cm
+            if inside and (min(sides) > pipes_across + 0.1 if m.get("duct") else max(sides) > pipes_across + 0.3):
+                continue
+            if inside:
+                mep.remove(m)
+                applied[:] = [a for a in applied if f"из кандидата {m['candidate']}" not in a]
+                rejected.append(f"{m['kind']} {m['id']} из кандидата {m['candidate']}: на этом месте построены сами трубы")
+    # deslab: 14.11.2026, a thin «riser» right in a duct that stays is a seam or a flange of the duct (Nagornaya: 19 mm at the
+    # joint of the two bathroom ducts, 1 cm apart; its label lay across the duct's)
+    for m in mep:
+        if not (m.get("duct") and m.get("polygon")):
+            continue
+        for p in risers:
+            if p.get("system") and _point_in_polygon({"x": p["path"][0]["x"], "y": p["path"][0]["y"]}, m["polygon"]):
+                del p["system"]
+                p.pop("label", None)
+                applied[:] = [a for a in applied if not a.startswith(f"труба {p['id']}:")]
+                rejected.append(f"труба {p['id']}: стоит в воздуховоде {m['id']}, это его стык или фланец")
     # risers of one system that stand side by side (the pair by the window, the water risers) share one label:
     # three labels on one spot lay on each other (Nagornaya, 13.11.2026)
     labelled = []
@@ -732,28 +770,6 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
                 del p["label"]
             else:
                 labelled.append(p)
-    # a box or a riser drawn from a candidate where the pipes themselves are built would draw the same thing twice
-    risers = [p for p in pipes.values() if p.get("system") and p.get("kind") == "riser"]
-    for m in list(mep):
-        if m.get("candidate") and m.get("kind") in ("box", "shaft", "heatingRiser", "waterRiser", "sewerRiser") and not m.get("duct"):
-            pts = m.get("polygon") or [m.get("at")]
-            cx, cy = sum(q["x"] for q in pts) / len(pts), sum(q["y"] for q in pts) / len(pts)
-            if m.get("polygon"):
-                # deslab: 14.11.2026, Nagornaya: a riser on the edge of a box beside it took that box away; a box goes
-                # only for the risers that stand in it (its outline grown by the riser's radius and 3 cm)
-                inside = [r for r in risers if _by_polygon((r["path"][0]["x"], r["path"][0]["y"]), m["polygon"],
-                                                           float(r.get("diameter", 0.05)) / 2 + 0.03)]
-            else:
-                inside = [r for r in risers if math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= 0.15]
-            # deslab: 13.11.2026, Nagornaya: a box 0.3 x 0.65 m standing full height in the bathroom corner is a box
-            # of its own, the riser next to it does not explain it; only a box no longer than the risers in it is them
-            longest = max((math.dist((a["x"], a["y"]), (b["x"], b["y"])) for a, b in zip(pts, pts[1:] + pts[:1])), default=0.0)
-            if inside and longest > sum(float(r.get("diameter", 0.05)) for r in inside) + 0.3:
-                continue
-            if inside:
-                mep.remove(m)
-                applied[:] = [a for a in applied if f"из кандидата {m['candidate']}" not in a]
-                rejected.append(f"{m['kind']} {m['id']} из кандидата {m['candidate']}: на этом месте построены сами трубы")
     for n, item in enumerate(review.get("vents", []) or [], 1):
         wall = walls.get(item.get("wallId"))
         try:

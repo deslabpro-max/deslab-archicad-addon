@@ -195,11 +195,29 @@ def _quat_matrix(w, x, y, z):
     ])
 
 
-def read_points(path: str, step: int = 1) -> np.ndarray:
-    """All points of all scans as float32 (N, 3), world coordinates. step>1 keeps every n-th."""
+def _cube_keys(xyz: np.ndarray, size: float) -> np.ndarray:
+    """deslab: one int64 key per occupied cube of `size` (cube = round(p / size)), without repeats."""
+    k = np.round(np.asarray(xyz, dtype=np.float64) / size).astype(np.int64) + (1 << 20)
+    return np.unique((k[:, 0] << 42) | (k[:, 1] << 21) | k[:, 2])
+
+
+def cubes_of_keys(keys: np.ndarray, size: float) -> np.ndarray:
+    """deslab: the cubes' points (round(p / size) * size) of `_cube_keys`."""
+    mask = (1 << 21) - 1
+    k = np.stack([(keys >> 42) & mask, (keys >> 21) & mask, keys & mask], 1) - (1 << 20)
+    return k.astype(np.float64) * size
+
+
+def read_points(path: str, step: int = 1, cube: float = 0.0):
+    """All points of all scans as float32 (N, 3), world coordinates. step>1 keeps every n-th.
+    deslab: 14.11.2026, cube > 0 also thins EVERY point of the scan to one per cube of that size (the pipes are measured on
+    those: every 4th point left holes in a pipe's 1 cm cubes and the sewer riser of Nagornaya was lost) and returns
+    (points, cubes); the points are the same as with cube 0, the file is decoded once."""
     e57 = E57File(path)
     try:
         chunks = []
+        keys = []
+        keep_every, step = step, (1 if cube > 0 else step)
         for scan in e57.scans():
             pts_node = scan.find(NS + "points")
             proto = pts_node.find(NS + "prototype")
@@ -222,8 +240,10 @@ def read_points(path: str, step: int = 1) -> np.ndarray:
                 r, az, el = cols["sphericalRange"], cols["sphericalAzimuth"], cols["sphericalElevation"]
                 xyz = np.stack([r * np.cos(el) * np.cos(az), r * np.cos(el) * np.sin(az), r * np.sin(el)], 1)
                 bad = cols.get("sphericalInvalidState")
-            if bad is not None:
-                xyz = xyz[bad == 0]
+            # deslab: with cubes the scan is read whole; the points keep the rows a step-wise read keeps (every n-th row of
+            # the scan, the invalid ones dropped after)
+            take = np.ones(len(xyz), dtype=bool) if bad is None else (bad == 0)
+            sub = take & (np.arange(len(xyz)) % keep_every == 0) if cube > 0 else take
             pose = scan.find(NS + "pose")
             if pose is not None:
                 rot = pose.find(NS + "rotation")
@@ -235,9 +255,13 @@ def read_points(path: str, step: int = 1) -> np.ndarray:
                 if tr is not None:
                     xyz = xyz + np.array([_num(tr.find(NS + "x")), _num(tr.find(NS + "y")),
                                           _num(tr.find(NS + "z"))])
-            chunks.append(xyz.astype(np.float32))
+            if cube > 0:
+                keys.append(_cube_keys(xyz[take], cube))
+            chunks.append(xyz[sub].astype(np.float32))
         if not chunks:
             raise ValueError("E57 file has no scans")
+        if cube > 0:
+            return np.concatenate(chunks), cubes_of_keys(np.unique(np.concatenate(keys)), cube)
         return np.concatenate(chunks)
     finally:
         e57.close()

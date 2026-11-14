@@ -211,6 +211,23 @@ def test_two_vent_ducts():
     scene["candidates"] = [dict(scene["candidates"][0], to=2.71, end={"x": 2.71, "y": 0.1}, depth=0.15)]
     new, report = ai.apply_review(scene, {"candidates": [{"id": "C1", "kind": "sewerRiser", "confidence": 0.8}]})
     assert [m["id"] for m in new["mep"] if m.get("candidate") == "C1"] == ["K1"], (new["mep"], report)
+    # deslab: 14.11.2026, a narrow «duct» over two heating risers one behind the other is those risers; a thin pipe at the
+    # seam of a wide duct leaves the duct
+    scene["candidates"] = [
+        {"id": "C1", "wallId": "W1", "side": "left", "from": 2.6, "to": 2.74, "bottom": 0.0, "top": 2.7, "depth": 0.378,
+         "at": {"x": 2.67, "y": 0.289}, "start": {"x": 2.6, "y": 0.1}, "end": {"x": 2.74, "y": 0.1}, "hint": "duct or box?"},
+        {"id": "C2", "wallId": "W1", "side": "left", "from": 3.0, "to": 3.45, "bottom": 0.0, "top": 2.7, "depth": 0.3,
+         "at": {"x": 3.225, "y": 0.25}, "start": {"x": 3.0, "y": 0.1}, "end": {"x": 3.45, "y": 0.1}, "hint": "duct or box?"}]
+    scene["pipes"] = [{"id": f"P{i}", "kind": "riser", "diameter": d, "path": [{"x": x, "y": y, "z": 0.0}, {"x": x, "y": y, "z": 2.7}]}
+                      for i, (x, y, d) in enumerate(((2.67, 0.36, 0.02), (2.67, 0.26, 0.026), (3.42, 0.12, 0.019)), 1)]
+    new, report = ai.apply_review(scene, {"candidates": [{"id": "C1", "kind": "duct", "confidence": 0.7}, {"id": "C2", "kind": "duct", "confidence": 0.7}],
+                                          "pipes": [{"id": "P1", "system": "heating", "confidence": 0.7}, {"id": "P2", "system": "heating", "confidence": 0.7},
+                                                    {"id": "P3", "system": "water", "confidence": 0.6}]})
+    assert [m["id"] for m in new["mep"] if m.get("duct")] == ["VD2"], (new["mep"], report)
+    # the thin pipe in the duct that stays is its seam: not built, no label
+    p3 = next(p for p in new["pipes"] if p["id"] == "P3")
+    assert not p3.get("system") and not p3.get("label") and "P3" in "\n".join(report["rejected"]), (p3, report)
+    assert all(next(p for p in new["pipes"] if p["id"] == i).get("system") == "heating" for i in ("P1", "P2"))
 
 
 def test_balcony_door_swing_in_a_thick_wall():

@@ -66,6 +66,7 @@ jobs:
         python scan2bim/tests/test_clutter.py
         python scan2bim/tests/test_views.py
         python scan2bim/tests/test_pipes.py
+        python scan2bim/tests/test_e57_cubes.py
     - name: Build deslab-scan2bim.exe
       run: pyinstaller --noconfirm --onedir --name deslab-scan2bim --paths scan2bim --distpath scan2bim/dist --workpath scan2bim/build scan2bim/run_scan2bim.py
     - name: Smoke test
