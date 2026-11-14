@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from test_synthetic import H, cloud, plane_x, plane_y  # noqa: E402
 from deslab_scan2bim.analyze import Options, analyze  # noqa: E402
-from deslab_scan2bim.pipes import find_pipes  # noqa: E402
+from deslab_scan2bim.pipes import CELL, _merge_arcs, find_pipes  # noqa: E402
 from deslab_scan2bim.views import model_points  # noqa: E402
 
 
@@ -26,6 +26,17 @@ def cylinder(c, axis, lo, hi, d, facing, step=0.004):
     if axis == "z":
         return np.stack([u, v, s.ravel()], 1)
     return np.stack([u, s.ravel(), v], 1)
+
+
+def arc_pieces(c, d, step=0.004, apart=False):
+    """deslab: a riser seen over 140 degrees in three pieces with gaps of 30 degrees (2.8 cm) between them."""
+    out = []
+    for a0, a1 in ((-70, -45), (-15, 15), (45, 70)):
+        angles = np.radians(np.arange(a0, a1, math.degrees(step / (d / 2)))) + math.pi
+        along = np.arange(0, H, step)
+        a, z = np.meshgrid(angles, along)
+        out.append(np.stack([c[0] + d / 2 * np.cos(a.ravel()), c[1] + d / 2 * np.sin(a.ravel()), z.ravel()], 1))
+    return out if apart else np.concatenate(out)
 
 
 def veil(x0, x1, y, share, seed):
@@ -46,13 +57,21 @@ def test_pipes():
              cylinder((7.00, 0.40), "y", 0.30, 1.6, 0.020, math.pi), plane_x(7.00, 1.6, 2.6, 0.15, 0.65),
              cylinder((4.25, 4.85), "z", 0, H, 0.110, -math.pi / 4), cylinder((8.2, 4.0), "z", 0, H, 0.05, math.pi),
              # deslab: the edge-on face of a duct: a flat strip 16 cm wide, floor to ceiling, is no riser
-             plane_y(3.5, 5.0, 5.16, 0, H)]
+             plane_y(3.5, 5.0, 5.16, 0, H),
+             # deslab: a sewer riser 108 mm seen over a narrow arc only, scanned in three pieces with gaps
+             arc_pieces((5.6, 1.0), 0.108)]
     pts = cloud(extra)
     scene = analyze(pts, Options(step=1))
     model = model_points(pts, scene)
     pipes = find_pipes(model, scene)
     risers = [p for p in pipes if p["kind"] == "riser"]
     runs = [p for p in pipes if p["kind"] == "run"]
+    # the model frame is the flat's, shifted: the first heating riser stands at (7.00, 0.30)
+    first = min(risers, key=lambda p: (p["diameter"] > 0.04, p["path"][0]["y"]))
+    dx, dy = first["path"][0]["x"] - 7.00, first["path"][0]["y"] - 0.30
+    big = [p for p in risers if math.dist((p["path"][0]["x"] - dx, p["path"][0]["y"] - dy), (5.6, 1.0)) < 0.1]
+    assert len(big) == 1 and abs(big[0]["diameter"] - 0.108) < 0.012, (big, risers)
+    risers = [p for p in risers if p not in big]
     assert len(risers) == 3, pipes
     risers.sort(key=lambda p: p["diameter"])
     thin, wide = risers[0], risers[2]
@@ -71,7 +90,27 @@ def test_pipes():
     return pipes
 
 
+def test_merge_arcs():
+    # deslab: three pieces of one riser 108 mm are one spot; two thin pipes 3 cm apart stay two
+    def spots_of(pieces, p):
+        x0, y0 = p[:, 0].min(), p[:, 1].min()
+        out = []
+        for q in pieces:
+            cells = np.unique(np.stack([((q[:, 1] - y0) / CELL).astype(int), ((q[:, 0] - x0) / CELL).astype(int)], 1), axis=0)
+            out.append((cells[:, 0], cells[:, 1]))
+        return out, x0, y0
+    pieces = arc_pieces((0.0, 0.0), 0.108, apart=True)
+    p = np.concatenate(pieces)
+    spots, x0, y0 = spots_of(pieces, p)
+    assert len(_merge_arcs(spots, p, x0, y0, 0.22)) == 1
+    pair = [cylinder((0.0, 0.0), "z", 0, H, 0.02, math.pi), cylinder((0.0, 0.05), "z", 0, H, 0.02, math.pi)]
+    p = np.concatenate(pair)
+    spots, x0, y0 = spots_of(pair, p)
+    assert len(_merge_arcs(spots, p, x0, y0, 0.22)) == 2
+
+
 if __name__ == "__main__":
+    test_merge_arcs()
     for p in test_pipes():
         print(p["id"], p["kind"], p["diameter"], p["path"], p["hint"])
     print("ok")

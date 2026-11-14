@@ -90,6 +90,7 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
                 continue
             taken[box] = True
             spots.append((ys, xs))
+    spots = _merge_arcs(spots, p, x0, y0, max_size)
     found = []
     for ys, xs in spots:
         w, h = (xs.max() - xs.min() + 1) * CELL, (ys.max() - ys.min() + 1) * CELL
@@ -139,27 +140,75 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
     return found
 
 
+def _merge_arcs(spots, p, x0, y0, max_size, gap=2):
+    """deslab: 14.11.2026, Nagornaya: the sewer riser 108 mm, seen over a narrow arc, fell apart into three thin spots
+    (12, 12 and 50 mm). Spots at most `gap` cells apart are taken together when their points, level by level, lie on one
+    circle of 6 cm or more (two thin pipes side by side do not)."""
+    if len(spots) < 2:
+        return spots
+    boxes = [(int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max())) for ys, xs in spots]
+    parent = list(range(len(spots)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i in range(len(spots)):
+        for j in range(i + 1, len(spots)):
+            a, b = boxes[i], boxes[j]
+            if max(a[0], b[0]) - min(a[1], b[1]) - 1 <= gap and max(a[2], b[2]) - min(a[3], b[3]) - 1 <= gap:
+                parent[find(j)] = find(i)
+    groups = {}
+    for i in range(len(spots)):
+        groups.setdefault(find(i), []).append(i)
+    out = []
+    for members in groups.values():
+        if len(members) == 1:
+            out.append(spots[members[0]])
+            continue
+        ys = np.concatenate([spots[i][0] for i in members])
+        xs = np.concatenate([spots[i][1] for i in members])
+        merged = None
+        if max(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) * CELL <= max_size:
+            near = (p[:, 0] >= x0 + (xs.min() - 1) * CELL) & (p[:, 0] < x0 + (xs.max() + 2) * CELL) & \
+                   (p[:, 1] >= y0 + (ys.min() - 1) * CELL) & (p[:, 1] < y0 + (ys.max() + 2) * CELL)
+            q = p[near]
+            if len(q) >= 30:
+                lv = ((q[:, 2] - 0.05) / LEVEL).astype(np.int32)
+                order = np.argsort(lv, kind="stable")
+                shape = _roundness(q[order], lv[order])
+                if shape is not None and shape[0] == "round" and shape[1] >= 0.06:
+                    merged = (ys, xs)
+        out.extend([merged] if merged is not None else [spots[i] for i in members])
+    return out
+
+
 def _circle(xy):
-    """Circle through plan points (algebraic fit, then once more without the fifth of the points that lie worst):
-    centre, radius, middle distance of the points from the circle."""
-    def fit(v):
-        a = np.column_stack([v[:, 0], v[:, 1], np.ones(len(v))])
-        b = (v ** 2).sum(axis=1)
-        (cx, cy, c), *_ = np.linalg.lstsq(a, b, rcond=None)
-        cx, cy = cx / 2, cy / 2
-        r = float(np.sqrt(max(c + cx * cx + cy * cy, 0.0)))
-        return cx, cy, r, np.abs(np.hypot(v[:, 0] - cx, v[:, 1] - cy) - r)
-    cx, cy, r, err = fit(xy)
-    if len(xy) >= 10:
-        cx, cy, r, err = fit(xy[err <= np.percentile(err, 80)])
-    return cx, cy, r, float(np.median(err))
+    """Circle through plan points: the algebraic fit, then a few Gauss-Newton steps on the points' distances (the
+    algebraic one alone makes a short arc's circle too small). Centre, radius, middle distance of the points from it."""
+    a = np.column_stack([xy[:, 0], xy[:, 1], np.ones(len(xy))])
+    (cx, cy, c), *_ = np.linalg.lstsq(a, (xy ** 2).sum(axis=1), rcond=None)
+    cx, cy = cx / 2, cy / 2
+    r = float(np.sqrt(max(c + cx * cx + cy * cy, 1e-12)))
+    for _ in range(20):
+        dx, dy = xy[:, 0] - cx, xy[:, 1] - cy
+        dist = np.maximum(np.hypot(dx, dy), 1e-9)
+        jac = np.column_stack([-dx / dist, -dy / dist, -np.ones(len(xy))])
+        step, *_ = np.linalg.lstsq(jac, -(dist - r), rcond=None)
+        cx, cy, r = cx + step[0], cy + step[1], abs(r + step[2])
+        if np.abs(step).max() < 1e-6:
+            break
+    err = np.abs(np.hypot(xy[:, 0] - cx, xy[:, 1] - cy) - r)
+    return cx, cy, float(r), float(np.median(err))
 
 
 def _roundness(q, lv, least=8):
     """deslab: 14.11.2026, Nagornaya: the narrow vent duct's south face (a flat strip 16 cm wide seen edge on) came out
     as a sewer riser 162 mm, and the real sewer riser (108 mm by a circle through the slices) as 56 mm. The half of a
-    pipe the scanner sees is an arc: level by level its points bend off a straight line, and a circle goes through
-    them closely and is about as wide as the spot. A flat face hardly bends. Returns ("round", diameter),
+    pipe the scanner sees is an arc: level by level a circle goes through its points closely, the same circle at every
+    level, as wide as the spot or up to 2.5 times (seen over 60 degrees only). A flat face hardly bends off its straight
+    line and gives no such circle. Returns ("round", diameter),
     ("flat", None) or None when too few levels can tell."""
     radii, errors, spans, bends = [], [], [], []
     for part in np.split(q, np.flatnonzero(np.diff(lv)) + 1):
@@ -179,11 +228,15 @@ def _roundness(q, lv, least=8):
         spans.append(span)
     if len(radii) < 5:
         return None
+    radii = np.array(radii)
     r, err, span, bend = float(np.median(radii)), float(np.median(errors)), float(np.median(spans)), float(np.median(bends))
-    if bend < 0.1:
-        return ("flat", None)
-    if bend >= 0.15 and err <= 0.1 * r and 2 * r <= 1.6 * span + 0.02:
+    steady = np.subtract(*np.percentile(radii, [75, 25])) <= 0.25 * r
+    # a circle as wide as the spot or up to 2.5 times (a pipe seen over 60 degrees only), the same at every level,
+    # close to its points
+    if steady and err <= 0.1 * r and 0.9 * span <= 2 * r <= 2.5 * span + 0.01:
         return ("round", round(2 * r, 3))
+    if bend < 0.12 or 2 * r > 4 * span:
+        return ("flat", None)
     return None
 
 
