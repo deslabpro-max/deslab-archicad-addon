@@ -164,6 +164,40 @@ def test_runs_on_cubes():
     return runs
 
 
+def test_runs_from_radiator():
+    # deslab: 14.11.2026, Nagornaya v20: the wall's skin goes on 1 cm past the cut (at 2-3 cm off the face) over the
+    # stretch between the second radiator and the corner, above and below its pipes: it read as the radiator and cut
+    # the pipes to 40 cm of their 1.1 m. A panel radiator at y 0.4-1.0 (front 16 cm off the wall, z 0.2-0.7), its two
+    # pipes 20 mm 12 cm off the wall at z 0.33 and 0.57 run on from under it to y 2.1; the skin's tail at 2.5-3.5 cm
+    # covers two thirds of the heights over y 0-2.8 (on past the pipes), none further
+    rng = np.random.default_rng(7)
+    scene = {"levels": {"ceiling": 2.7}, "rooms": [],
+             "walls": [{"id": "W1", "start": {"x": 0, "y": 0}, "end": {"x": 0, "y": 3}, "thickness": 0.2, "openings": []}]}
+
+    def at(depth, y, z):
+        return np.stack([-(0.1 + depth), y, z], 1)
+    n = 400000
+    out = [at(rng.uniform(-0.005, 0.025, n), rng.uniform(0, 3, n), rng.uniform(0, 2.7, n))]
+    tail = rng.uniform(0, 2.8, n // 2), rng.uniform(0, 2.7, n // 2)
+    keep = (tail[1] % 0.3) < 0.2
+    out.append(at(rng.uniform(0.025, 0.035, keep.sum()), tail[0][keep], tail[1][keep]))
+    m = 80000
+    out.append(at(np.full(m, 0.16), rng.uniform(0.4, 1.0, m), rng.uniform(0.2, 0.7, m)))       # the front
+    out.append(at(rng.uniform(0.06, 0.16, m // 4), rng.uniform(0.4, 1.0, m // 4), np.full(m // 4, 0.7)))   # the top
+    for zc in (0.33, 0.57):
+        a = rng.uniform(math.pi / 2, 3 * math.pi / 2, 40000)
+        out.append(at(0.12 - 0.01 * np.cos(a), rng.uniform(1.0, 2.1, 40000), zc + 0.01 * np.sin(a)))
+        out.append(at(rng.uniform(0.0, 0.12, 20000), rng.uniform(1.0, 2.1, 20000), zc - 0.01 - rng.uniform(0.0, 0.012, 20000)))
+    cubes = np.unique(np.round(np.concatenate(out) / 0.01), axis=0) * 0.01
+    runs = sorted(find_runs(cubes, scene), key=lambda r: r["path"][0]["z"])
+    assert len(runs) == 2 and all(abs(r["path"][0]["z"] - z) <= 0.015 for r, z in zip(runs, (0.33, 0.57))), runs
+    for r in runs:
+        ys = sorted(e["y"] for e in r["path"])
+        # from the radiator's side (y 1.0) to the end, not into the radiator and not on along the skin
+        assert abs(ys[0] - 1.0) < 0.08 and abs(ys[1] - 2.1) < 0.05, r
+    return runs
+
+
 def test_merge_arcs():
     # deslab: three pieces of one riser 108 mm are one spot; two thin pipes 3 cm apart stay two
     def spots_of(pieces, p):
@@ -188,6 +222,8 @@ if __name__ == "__main__":
     for p in test_pipes():
         print(p["id"], p["kind"], p["diameter"], p["path"], p["hint"])
     for p in test_runs_on_cubes():
+        print(p["diameter"], p["path"])
+    for p in test_runs_from_radiator():
         print(p["diameter"], p["path"])
     for p in test_branches():
         print(p["id"], p["diameter"], p["path"], p["hint"])

@@ -28,6 +28,8 @@ from .views import _frame, _inside, _wall_coords, model_points
 
 CELL = 0.01        # plan and cross-section cell, m
 LEVEL = 0.05       # step along the pipe, m
+SKIN_COVER = 0.15  # deslab: share of the wall's height filled at a depth past the cut that is still its skin
+SKIN_DEPTH = 3     # deslab: cells past the cut looked at for the skin
 
 
 def _grow(mask):
@@ -286,6 +288,20 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
             nt, nd, nz = int(length / LEVEL) + 1, int(reach / CELL) + 1, int(height / CELL) + 1
             occ = np.zeros((nt, nz, nd), dtype=bool)
             occ[np.clip(it, 0, nt - 1), np.clip(iz, 0, nz - 1), np.clip(idp, 0, nd - 1)] = True
+            # deslab: 14.11.2026, Nagornaya v20: here and there the skin goes on past the cut (at 2-3 cm off the face
+            # between the second radiator and the corner), above and below the pipes: it read as the radiator they
+            # enter and cut both pipes to 40 cm of their 1.1 m. Per stretch of the wall, the depths next to the cut
+            # that are filled over a good share of the wall's height are still its skin and are left out (a pipe, a
+            # radiator or a box fills a small share of the height, and none of them lies on the wall)
+            zl = int(0.2 / CELL)
+            cover = occ[:, zl:max(int((height - 0.2) / CELL), zl + 1), :].mean(axis=1)
+            c0 = int(cut / CELL + 1e-6)
+            alive = np.ones(nt, dtype=bool)
+            for k in range(c0, min(c0 + SKIN_DEPTH, nd)):
+                here = cover[:, k] >= SKIN_COVER
+                if k > c0:   # (the first cell is cut through by the cut and may be filled in part only)
+                    alive &= here
+                occ[alive & here, :, k] = False
             grown = _grow(occ)
             zz, dd, tt = pts[m, 2], depth[m], t[m]
             wn, st = int(round(window / LEVEL)), int(round(step / LEVEL))
