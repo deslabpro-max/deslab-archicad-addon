@@ -1,5 +1,7 @@
 #include "CommandBase.hpp"
 
+#include <vector>
+
 #include "SchemaDefinitions.hpp"
 #include "MigrationHelper.hpp"
 
@@ -1229,19 +1231,25 @@ GSErrCode SearchLibraryPartAnyVersion (API_LibPart& libPart)
     if (err == NoError) {
         return err;
     }
-    // deslab: «Base NN» with NN of one or two digits; the other versions are tried from 40 down to 20
+    // deslab: «Base NN» with NN of one or two digits: the bare «Base» is tried first (from Archicad 28 on the library parts
+    // have no version in their names: Archicad 29 has «Цилиндр», «Окно», «Панельный Радиатор», not «Цилиндр 27»), then
+    // the other versions from 40 down to 20. A bare «Base» is tried as «Base NN» from 40 down to 20.
     const std::string name (GS::UniString (libPart.docu_UName).ToCStr (CC_UTF8).Get ());
     const size_t space = name.find_last_of (' ');
-    if (space == std::string::npos || space == 0 || name.size () - space - 1 < 1 || name.size () - space - 1 > 2 ||
-        name.find_first_not_of ("0123456789", space + 1) != std::string::npos) {
-        return err;
+    const bool versioned = space != std::string::npos && space != 0 && name.size () - space - 1 >= 1 && name.size () - space - 1 <= 2 &&
+                           name.find_first_not_of ("0123456789", space + 1) == std::string::npos;
+    std::vector<std::string> candidates;
+    if (versioned) {
+        candidates.push_back (name.substr (0, space));
     }
-    const std::string base = name.substr (0, space + 1);
+    const std::string base = versioned ? name.substr (0, space + 1) : name + " ";
     for (int version = 40; version >= 20; --version) {
         const std::string candidate = base + std::to_string (version);
-        if (candidate == name) {
-            continue;
+        if (candidate != name) {
+            candidates.push_back (candidate);
         }
+    }
+    for (const std::string& candidate : candidates) {
         API_LibPart other = {};
         other.typeID = libPart.typeID;
         GS::ucsncpy (other.docu_UName, GS::UniString (candidate.c_str (), CC_UTF8).ToUStr ().Get (), API_UniLongNameLen - 1);

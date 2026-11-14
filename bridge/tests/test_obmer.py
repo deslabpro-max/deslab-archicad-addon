@@ -260,19 +260,21 @@ class FakeArchicad:
             return {"elements": self._new(len(params[key]))}
         if command == "GetElementsByType":
             return {"elements": [{"elementId": {"guid": "D1"}}]}
+        if command == "GetFavoritesByType":
+            return {"favorites": [n for n in PROFILE["favorites"].values() if n]}
         return {}
 
 
 def test_build_calls():
     ac = FakeArchicad()
     report = obmer.build_measured_plan(ac, SCENE, PROFILE, rooms={"R1": {"name": "Кухня", "wet": "kitchen"}})
-    names = [c for c, _ in ac.calls]
+    names = [c for c, _ in ac.calls if c != "GetFavoritesByType"]
     # a layer hidden in the open view is shown for the build and hidden again at the end
     assert names[:6] == ["GetAttributesByType", "GetLayers", "CreateLayers", "ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
     assert names[-1] == "CreateLayers" and ac.calls[-1][1]["layerDataArray"][0]["isHidden"] is True
     assert ac.calls[2][1]["layerDataArray"] == [{"attributeId": {"guid": "L0"}, "name": "слой", "isHidden": False, "isLocked": False}]
     assert len(names) < 30, names  # a whole sheet in a couple dozen fast calls, not hundreds of Claude turns
-    build = ac.calls[5][1]
+    build = next(p for c, p in ac.calls if c == "BuildModelFromScan")
     assert build["scene"]["rooms"][0]["name"] == "Кухня"
     assert build["favorites"]["zone"] == "ОБМЕР шаблон Зона"
     labels = next(p for c, p in ac.calls if c == "CreateLabels")["labelsData"]
@@ -359,6 +361,56 @@ def test_refused_items_are_reported():
     report = obmer.build_measured_plan(ac, SCENE, PROFILE)
     assert "ImportFavorites" in [c for c, _ in ac.calls]
     assert any("Выноска" in e and "no favorite" in e for e in report["errors"]), report["errors"]
+
+
+def test_missing_favorites_build_with_defaults():
+    # deslab: 14.11.2026, Игорь's Archicad 29: the favorites of 27 are not imported, and every zone, label and dimension
+    # asked with one was refused (no zones, no dimensions, an empty explication)
+    class NoFavorites(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "ImportFavorites":
+                raise RuntimeError("ACAPI_Favorite_Import failed.")
+            if command == "GetFavoritesByType":
+                return {"favorites": []}
+            return super().tapir(command, params, timeout)
+    ac = NoFavorites()
+    report = obmer.build_measured_plan(ac, SCENE, PROFILE)
+    build = next(p for c, p in ac.calls if c == "BuildModelFromScan")
+    assert "zone" not in build["favorites"], build["favorites"]
+    for command, key in (("CreateLabels", "labelsData"), ("CreateAssociativeDimensions", "dimensionsData"), ("CreateTexts", "textsData")):
+        sent = [x for c, p in ac.calls if c == command for x in p[key]]
+        assert sent and not any("favoriteName" in x for x in sent), (command, sent[:1])
+    assert any("Нет избранного" in e and "ОБМЕР шаблон Размер" in e for e in report["errors"]), report["errors"]
+
+
+def test_axonometry_on_white():
+    # deslab: 14.11.2026, Игорь's Archicad 29: the axonometry on a blue background (the style takes the rendering's sky)
+    from deslab_bridge import layouts
+
+    class Styles:
+        def __init__(self, styles):
+            self.styles, self.calls = styles, []
+
+        def tapir(self, command, params=None, timeout=None):
+            self.calls.append((command, params))
+            if command == "Get3DStyleDetails":
+                return {"styles": [self.styles.get(n, {"error": {"code": 1, "message": "no"}}) for n in params["names"]]}
+            for st in params["styles"]:
+                self.styles[st["name"]] = st
+            return {"executionResults": [{"success": True}]}
+    white = {"red": 1.0, "green": 1.0, "blue": 1.0}
+    ac = Styles({"Тени": {"name": "Тени", "backgroundAsInRendering": False, "chainBackgroundColors": True, "backgroundColor": white,
+                          "backgroundSkyColor": {"red": 0.5, "green": 0.7, "blue": 1.0}, "castShadowPercent": 40}})
+    assert layouts.axonometry_style(ac, "Тени") == ("Тени", None) and len(ac.calls) == 1
+    ac.styles["Тени"]["backgroundAsInRendering"] = True
+    name, note = layouts.axonometry_style(ac, "Тени")
+    made = ac.styles[layouts.AXONOMETRY_STYLE]
+    assert name == layouts.AXONOMETRY_STYLE and note is None and ac.calls[-1][0] == "Create3DStyles"
+    assert made["backgroundAsInRendering"] is False and made["backgroundColor"] == white and made["castShadowPercent"] == 40
+    name, note = layouts.axonometry_style(ac, "Тени")
+    assert ac.calls[-1][0] == "Change3DStyles" and ac.styles["Тени"]["backgroundAsInRendering"] is True
+    name, note = layouts.axonometry_style(ac, "Нет такого")
+    assert name == layouts.AXONOMETRY_STYLE and "Нет такого" in note
 
 
 def test_shaft_walls_join_on_axes():

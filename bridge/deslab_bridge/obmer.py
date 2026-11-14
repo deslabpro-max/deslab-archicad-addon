@@ -1347,6 +1347,35 @@ def _elements(guids):
     return [{"elementId": {"guid": g}} for g in guids]
 
 
+FAVORITE_TYPES = {"zone": "Zone", "heightText": "Text", "label": "Label", "dimension": "Dimension", "wall": "Wall",
+                  "window": "Window", "door": "Door", "opening": "Window", "wetBathroom": "Fill", "wetKitchen": "Fill"}
+
+
+def _favorites_in_project(ac, favorites, report):
+    """deslab: 14.11.2026, Игорь's Archicad 29: the office favorites made in 27 are not imported there, and every zone, text,
+    label and dimension asked with a favorite that is not in the project was refused (no zones, no dimensions, an empty
+    explication). A favorite the project does not have is left out: those elements are built with the tool's defaults,
+    and the report says which favorites are missing. Returns the favorites to use."""
+    out = dict(favorites)
+    missing = []
+    seen = {}
+    for key, name in favorites.items():
+        kind = FAVORITE_TYPES.get(key)
+        if not name or not kind:
+            continue
+        if kind not in seen:
+            try:
+                seen[kind] = set(ac.tapir("GetFavoritesByType", {"elementType": kind}).get("favorites", []))
+            except Exception:
+                seen[kind] = None   # cannot tell: keep it as it is
+        if seen[kind] is not None and name not in seen[kind]:
+            out[key] = None
+            missing.append(name)
+    if missing:
+        report.errors.append("Нет избранного в проекте, элементы построены с настройками по умолчанию: " + ", ".join(sorted(set(missing))))
+    return out
+
+
 def _created(response, key, report=None, what=""):
     """Guids of the created elements; a refused item is None and its error goes to the report."""
     out = []
@@ -1709,6 +1738,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
             ac.tapir("ImportFavorites", {"path": profile["favoritesFile"], "conflictPolicy": "Skip"})
         except Exception as error:
             report.errors.append(f"Избранное офиса не загружено из {profile['favoritesFile']}: {error}")
+    F = _favorites_in_project(ac, F, report)
     idx = layer_indices(ac, set(L.values()))
     report.step("проверка проекта", missingLayers=[n for n, i in idx.items() if not i])
 

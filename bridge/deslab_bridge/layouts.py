@@ -459,6 +459,40 @@ def _compass_and_signature(ac, cfg):
     return sig_top, notes
 
 
+AXONOMETRY_STYLE = "deslab Аксонометрия"
+WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+
+def _white(color):
+    return isinstance(color, dict) and all(abs(float(color.get(k, 0.0)) - 1.0) < 0.02 for k in ("red", "green", "blue"))
+
+
+def axonometry_style(ac, wanted):
+    """deslab: 14.11.2026, Игорь's Archicad 29: the axonometry came out on a blue background (the 3D style takes the
+    background of the rendering, the sky). Returns the 3D style for the view and a note: the wanted one when its
+    background is white; otherwise «deslab Аксонометрия», the same style with a white background (made or changed in
+    the project, the user's own styles are not touched)."""
+    try:
+        got = ac.tapir("Get3DStyleDetails", {"names": [wanted, AXONOMETRY_STYLE]}).get("styles", [])
+    except ArchicadError as error:
+        return wanted, f"3D-стиль не прочитан ({error})"
+    base, own = (list(got) + [{}, {}])[:2]
+    found = bool(base.get("name")) and "error" not in base
+    if found and not base.get("backgroundAsInRendering") and _white(base.get("backgroundColor")) \
+            and (base.get("chainBackgroundColors") or _white(base.get("backgroundSkyColor"))):
+        return wanted, None
+    fields = {k: v for k, v in base.items() if k != "name"} if found else {}
+    fields.update(backgroundAsInRendering=False, chainBackgroundColors=True, backgroundSkyColor=WHITE, backgroundColor=WHITE)
+    command = "Change3DStyles" if own.get("name") and "error" not in own else "Create3DStyles"
+    try:
+        result = ac.tapir(command, {"styles": [dict(fields, name=AXONOMETRY_STYLE)]})
+    except ArchicadError as error:
+        return wanted, f"белый фон не задан ({error})"
+    if not all(r.get("success") for r in result.get("executionResults", [])):
+        return wanted, f"белый фон не задан ({result})"
+    return AXONOMETRY_STYLE, None if found else f"нет 3D-стиля «{wanted}», взят текущий с белым фоном"
+
+
 def axonometry_view(ac, profile):
     """Makes the 3D view of the template again from the project's own axonometry: the template's projection, the view's
     layers, overrides, scale and 3D style. The old view of this name goes first (its zoom is of the previous flat)."""
@@ -477,6 +511,10 @@ def axonometry_view(ac, profile):
         notes.append(f"проекция не задана ({done})")
     # only the layers of the view's combination in the 3D window, then the flat fills it: the saved view keeps this zoom
     settings = dict(cfg.get("viewSettings") or {})
+    if settings.get("d3styleName"):
+        settings["d3styleName"], note = axonometry_style(ac, settings["d3styleName"])
+        if note:
+            notes.append(note)
     leave = next((i for i in _tree(ac, "LayoutBook") if i.get("type") == "LayoutItem"), None)
     if not _fit_3d(ac, cfg["matrix"], source["navigatorItemId"], leave["navigatorItemId"] if leave else None):
         notes.append("кадр 3D-окна не устоялся")
