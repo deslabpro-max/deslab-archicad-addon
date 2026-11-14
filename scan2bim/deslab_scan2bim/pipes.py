@@ -122,6 +122,12 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
             wide = q[:, 0 if w >= h else 1]
             d = float(np.median(sizes)) if len(sizes) >= 5 else float(np.percentile(wide, 98) - np.percentile(wide, 2))
             d = max(d, 0.012)
+            if d >= 0.06:
+                shape = _roundness(q, lv)
+                if shape is not None and shape[0] == "flat":
+                    continue
+                if shape is not None and shape[0] == "round":
+                    d = min(shape[1], max_size)
             cx = float((np.percentile(p[near][:, 0], 98) + np.percentile(p[near][:, 0], 2)) / 2)
             cy = float((np.percentile(p[near][:, 1], 98) + np.percentile(p[near][:, 1], 2)) / 2)
         z_lo = 0.0 if z_lo < 0.2 else z_lo
@@ -131,6 +137,54 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
                                {"x": round(float(cx), 4), "y": round(float(cy), 4), "z": round(float(z_hi), 3)}],
                       "fill": round(float(column[zs.min():zs.max() + 1].mean()), 2)})
     return found
+
+
+def _circle(xy):
+    """Circle through plan points (algebraic fit, then once more without the fifth of the points that lie worst):
+    centre, radius, middle distance of the points from the circle."""
+    def fit(v):
+        a = np.column_stack([v[:, 0], v[:, 1], np.ones(len(v))])
+        b = (v ** 2).sum(axis=1)
+        (cx, cy, c), *_ = np.linalg.lstsq(a, b, rcond=None)
+        cx, cy = cx / 2, cy / 2
+        r = float(np.sqrt(max(c + cx * cx + cy * cy, 0.0)))
+        return cx, cy, r, np.abs(np.hypot(v[:, 0] - cx, v[:, 1] - cy) - r)
+    cx, cy, r, err = fit(xy)
+    if len(xy) >= 10:
+        cx, cy, r, err = fit(xy[err <= np.percentile(err, 80)])
+    return cx, cy, r, float(np.median(err))
+
+
+def _roundness(q, lv, least=8):
+    """deslab: 14.11.2026, Nagornaya: the narrow vent duct's south face (a flat strip 16 cm wide seen edge on) came out
+    as a sewer riser 162 mm, and the real sewer riser (108 mm by a circle through the slices) as 56 mm. The half of a
+    pipe the scanner sees is an arc: level by level its points bend off a straight line, and a circle goes through
+    them closely and is about as wide as the spot. A flat face hardly bends. Returns ("round", diameter),
+    ("flat", None) or None when too few levels can tell."""
+    radii, errors, spans, bends = [], [], [], []
+    for part in np.split(q, np.flatnonzero(np.diff(lv)) + 1):
+        if len(part) < least:
+            continue
+        xy = part[:, :2].astype(np.float64)
+        xy = xy - xy.mean(axis=0)
+        span = float(max(np.ptp(xy[:, 0]), np.ptp(xy[:, 1])))
+        if span < 0.03:
+            continue
+        # how far the points bend off their straight line: a half pipe about 0.44, a quarter of it 0.2, a face 0.05
+        low, high = np.linalg.eigvalsh(np.cov(xy.T))
+        bends.append(float(np.sqrt(max(low, 0.0) / max(high, 1e-12))))
+        _, _, r, err = _circle(xy)
+        radii.append(r)
+        errors.append(err)
+        spans.append(span)
+    if len(radii) < 5:
+        return None
+    r, err, span, bend = float(np.median(radii)), float(np.median(errors)), float(np.median(spans)), float(np.median(bends))
+    if bend < 0.1:
+        return ("flat", None)
+    if bend >= 0.15 and err <= 0.1 * r and 2 * r <= 1.6 * span + 0.02:
+        return ("round", round(2 * r, 3))
+    return None
 
 
 def _without_risers(pts, risers, margin=0.03):

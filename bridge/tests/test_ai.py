@@ -155,6 +155,11 @@ def test_pipes_from_the_cloud():
     scene["candidates"][0].update({"from": 2.3, "to": 2.95, "start": {"x": 2.3, "y": 0.1}, "end": {"x": 2.95, "y": 0.1}})
     new, report = ai.apply_review(scene, review)
     assert [m["candidate"] for m in new["mep"]] == ["C1"], new["mep"]
+    # deslab: 14.11.2026, a box 10 cm beside the riser (not standing on it) stays
+    scene["candidates"][0].update({"from": 2.8, "to": 3.1, "start": {"x": 2.8, "y": 0.1}, "end": {"x": 3.1, "y": 0.1},
+                                   "at": {"x": 2.95, "y": 0.175}})
+    new, report = ai.apply_review(scene, review)
+    assert [m["candidate"] for m in new["mep"]] == ["C1"], (new["mep"], report["rejected"])
 
 
 def test_two_vent_ducts():

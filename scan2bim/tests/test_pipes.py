@@ -10,7 +10,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from test_synthetic import H, cloud, plane_x  # noqa: E402
+from test_synthetic import H, cloud, plane_x, plane_y  # noqa: E402
 from deslab_scan2bim.analyze import Options, analyze  # noqa: E402
 from deslab_scan2bim.pipes import find_pipes  # noqa: E402
 from deslab_scan2bim.views import model_points  # noqa: E402
@@ -44,7 +44,9 @@ def test_pipes():
     extra = [cylinder((7.00, 0.30), "z", 0, H, 0.026, math.pi), cylinder((7.00, 0.41), "z", 0, H, 0.026, math.pi),
              veil(7.01, 7.12, 0.30, 0.35, 1), veil(7.01, 7.12, 0.41, 0.35, 2),
              cylinder((7.00, 0.40), "y", 0.30, 1.6, 0.020, math.pi), plane_x(7.00, 1.6, 2.6, 0.15, 0.65),
-             cylinder((4.25, 4.85), "z", 0, H, 0.110, -math.pi / 4), cylinder((8.2, 4.0), "z", 0, H, 0.05, math.pi)]
+             cylinder((4.25, 4.85), "z", 0, H, 0.110, -math.pi / 4), cylinder((8.2, 4.0), "z", 0, H, 0.05, math.pi),
+             # deslab: the edge-on face of a duct: a flat strip 16 cm wide, floor to ceiling, is no riser
+             plane_y(3.5, 5.0, 5.16, 0, H)]
     pts = cloud(extra)
     scene = analyze(pts, Options(step=1))
     model = model_points(pts, scene)

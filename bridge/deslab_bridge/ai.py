@@ -244,8 +244,10 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   radiator: панель под окном или у стены, низ 0.05-0.3 м, верх до 1.2 м. heatingRiser: вертикальная труба 15-40 мм от пола до потолка
   рядом с радиатором или окном, обычно пара. sewerRiser: труба около 110 мм, обычно в санузле или шахте. waterRiser: трубы 25-50 мм
   рядом с канализационным стояком (ХВС и ГВС, обычно две). shaft: выступающий короб вентиляции на всю высоту с решёткой или отверстием.
-  box: короб без решётки (закрытые стояки, гипсокартон). duct: открытый прямоугольный вентиляционный воздуховод от пола до потолка
-  (металл или пластик, поперечные стыки-фланцы); два воздуховода рядом это два кандидата, назови каждый duct. panel: электрощит. vent: решётка или отверстие вентиляции.
+  box: короб без решётки вокруг стояков (гипсокартон): в нём или вплотную к нему стоят трубы P из раздела pipes.
+  duct: открытый прямоугольный вентиляционный воздуховод от пола до потолка (металл или пластик, поперечные стыки-фланцы):
+  ширина 0.1-0.6 м, глубина 0.15-0.35 м, ровные грани, обычно в санузле, на кухне или у шахты; два-три рядом разной ширины
+  это отдельные кандидаты (или один с seam), назови каждый duct. Кандидат во всю высоту такой формы, в котором нет стояка P, это duct, а не box. panel: электрощит. vent: решётка или отверстие вентиляции.
   seam у кандидата: по облаку там слабый стык (seamStrength в м, seamDepths глубины двух сторон). Если на снимках кандидат в этом месте
   это две вещи рядом (два воздуховода, воздуховод и короб), добавь parts: 2, код разрежет его по seam, kind относится к обеим частям.
   Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
@@ -324,6 +326,19 @@ def _point_in_polygon(p, polygon):
 
 def _flat_polygons(scene):
     return [s["polygon"] for s in scene.get("slabs", []) if s.get("polygon")] or [r["polygon"] for r in scene.get("rooms", []) if r.get("polygon")]
+
+
+def _by_polygon(p, polygon, margin):
+    """The point lies in the polygon or at most `margin` from its outline."""
+    pts = [(float(q["x"]), float(q["y"])) for q in polygon]
+    if _point_in_polygon({"x": p[0], "y": p[1]}, polygon):
+        return True
+    for a, b in zip(pts, pts[1:] + pts[:1]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        k = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy or 1.0)))
+        if math.hypot(p[0] - a[0] - k * dx, p[1] - a[1] - k * dy) <= margin:
+            return True
+    return False
 
 
 def _inside_flat(p, scene, tolerance=0.3):
@@ -707,8 +722,13 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
         if m.get("candidate") and m.get("kind") in ("box", "shaft", "heatingRiser", "waterRiser", "sewerRiser") and not m.get("duct"):
             pts = m.get("polygon") or [m.get("at")]
             cx, cy = sum(q["x"] for q in pts) / len(pts), sum(q["y"] for q in pts) / len(pts)
-            reach = 0.15 + max((math.hypot(q["x"] - cx, q["y"] - cy) for q in pts), default=0.0)
-            inside = [r for r in risers if math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= reach]
+            if m.get("polygon"):
+                # deslab: 14.11.2026, Nagornaya: a riser on the edge of a box beside it took that box away; a box goes
+                # only for the risers that stand in it (its outline grown by the riser's radius and 3 cm)
+                inside = [r for r in risers if _by_polygon((r["path"][0]["x"], r["path"][0]["y"]), m["polygon"],
+                                                           float(r.get("diameter", 0.05)) / 2 + 0.03)]
+            else:
+                inside = [r for r in risers if math.hypot(r["path"][0]["x"] - cx, r["path"][0]["y"] - cy) <= 0.15]
             # deslab: 13.11.2026, Nagornaya: a box 0.3 x 0.65 m standing full height in the bathroom corner is a box
             # of its own, the riser next to it does not explain it; only a box no longer than the risers in it is them
             longest = max((math.dist((a["x"], a["y"]), (b["x"], b["y"])) for a, b in zip(pts, pts[1:] + pts[:1])), default=0.0)
