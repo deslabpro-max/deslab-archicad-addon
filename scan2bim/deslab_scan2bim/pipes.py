@@ -390,7 +390,8 @@ def find_branches(pts, scene, risers, runs=(), least=0.018, reach=0.8, min_lengt
     at in the ray's cross-section (distance along the ray x height, 1 cm cells): a branch is a band of heights 2 to 7 cm thick
     that is filled from the riser's skin on (within 4 cm of it) for 15 cm or more, with little just above and below it and
     on rays 25 degrees to either side (a wall, a box, a shelf, a curtain are filled there too). Returns runs with
-    "branch": True whose first point stands on the riser's axis and holds the riser in "_riser"."""
+    "branch": True whose first point stands on the riser's axis and holds the riser in "_riser". A sewer riser's branches
+    may be as thick as it (up to 13 cm)."""
     height = float(scene["levels"]["ceiling"])
     free = _off_walls(_without_risers(pts, risers, margin=0.02), scene)
     found = []
@@ -435,7 +436,8 @@ def find_branches(pts, scene, risers, runs=(), least=0.018, reach=0.8, min_lengt
                 continue
             for lo, hi in _bands(good):
                 thick = hi - lo
-                if thick < 2 or thick * CELL > max_size:
+                # a sewer riser's branch to the toilet is as thick as the riser
+                if thick < 2 or thick * CELL > max(max_size, min(1.2 * 2 * rad, 0.13)):
                     continue
                 n = int(np.median(row[lo:hi]))
                 # little just above and below, and on the rays to either side
@@ -454,10 +456,13 @@ def find_branches(pts, scene, risers, runs=(), least=0.018, reach=0.8, min_lengt
             length = n * CELL
             # a run along a wall from this riser at this height and in this direction, or one that passes the riser on
             # this line, is the same pipe
+            # (Nagornaya: the run to the radiator was joined to the other riser of the pair, 10 cm off, and goes slanted by
+            # up to 7 cm from this one's branch along it)
             tip = (cx + math.cos(th) * (rad + n * CELL), cy + math.sin(th) * (rad + n * CELL))
+            mid = ((cx + tip[0]) / 2, (cy + tip[1]) / 2)
             if any(abs(o["path"][0]["z"] - zc) < 0.05 and (
                     any(abs(e["x"] - cx) < 0.02 and abs(e["y"] - cy) < 0.02 for e in o["path"]) and _towards(o, cx, cy, th)
-                    or max(_off_segment(p, o) for p in ((cx, cy), tip)) < 0.04) for o in runs):
+                    or max(_off_segment(p, o) for p in (mid, tip)) < 0.08) for o in runs):
                 continue
             # the diameter from the points of the branch, as for a run
             s = qx * math.cos(th) + qy * math.sin(th) - rad
