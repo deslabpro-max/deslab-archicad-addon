@@ -294,6 +294,13 @@ def test_old_wiring():
         scene["candidates"] = scene["candidates"][:3] + [dict(strip, bottom=bottom)]
         new, report = ai.apply_review(scene, named)
         assert bool([m for m in new["mep"] if m.get("candidate") == "C6"]) == built, (bottom, new["mep"], report["rejected"])
+    # deslab: Nagornaya v20, a strip 6 cm high along the wall at the height of a radiator's pipe is that pipe, no radiator
+    pipe = dict(strip, id="C7", hint="radiator?", bottom=0.54, top=0.6, depth=0.08)
+    named = dict(review, candidates=[{"id": "C7", "kind": "radiator", "confidence": 0.6}])
+    for bottom, built in ((0.54, False), (0.3, True)):
+        scene["candidates"] = scene["candidates"][:3] + [dict(pipe, bottom=bottom)]
+        new, report = ai.apply_review(scene, named)
+        assert bool([m for m in new["mep"] if m.get("candidate") == "C7"]) == built, (bottom, new["mep"], report["rejected"])
     scene["candidates"] = scene["candidates"][:3]
     # a room the model names a kitchen keeps its thin water pipe
     review["rooms"] = [{"id": "R1", "name": "Кухня-гостиная"}]

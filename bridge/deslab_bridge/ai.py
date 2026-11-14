@@ -241,7 +241,7 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   (по горизонтали метры вдоль стены от её начала, по вертикали высота над полом; цвет показывает, насколько предмет выступает из стены).
   Рамки с номерами C1, C2… это кандидаты, которые алгоритм нашёл и ИЗМЕРИЛ в облаке (в сцене раздел candidates: стена, грань, from/to
   вдоль стены, bottom/top, depth). Размеры кандидатов не меняй и не придумывай свои: только назови каждый номер в разделе candidates.
-  radiator: панель под окном или у стены, низ 0.05-0.3 м, верх до 1.2 м. heatingRiser: вертикальная труба 15-40 мм от пола до потолка
+  radiator: панель под окном или у стены высотой от 12 см, низ 0.05-0.3 м, верх до 1.2 м (полоса в несколько см на высоте трубы это труба). heatingRiser: вертикальная труба 15-40 мм от пола до потолка
   рядом с радиатором или окном, обычно пара. sewerRiser: труба около 110 мм, обычно в санузле или шахте. waterRiser: трубы 25-50 мм
   рядом с канализационным стояком (ХВС и ГВС, обычно две). shaft: выступающий короб вентиляции на всю высоту с решёткой или отверстием.
   box: короб без решётки вокруг стояков (гипсокартон): в нём или вплотную к нему стоят трубы P из раздела pipes.
@@ -512,6 +512,7 @@ def _round_shape(c):
 # or an artefact (the helper gives 12 mm to whatever is thinner than it can measure).
 GOST_MIN = {"riser": {"heating": 0.018, "water": 0.018, "sewer": 0.045, "vent": 0.09},
             "run": {"heating": 0.014, "water": 0.014, "sewer": 0.036, "vent": 0.09}}
+RADIATOR_LEAST = 0.12   # deslab: the lowest radiator, m (a skirting convector on the floor aside)
 FACE_COVER = 0.6
 FACE_FLAT = 0.04
 CABLE_DIAMETER = 0.016
@@ -777,6 +778,11 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             # of 53 mm; a riser runs from the floor to the ceiling, and the helper's pipe search found nothing round there
             rejected.append(f"кандидат {cid} ({kind}): не доходит ни до пола, ни до потолка ({c['bottom']}–{c['top']} м), "
                             "круглой трубы там поиск не нашёл, это не стояк")
+        elif kind == "radiator" and float(c["top"]) - float(c["bottom"]) < RADIATOR_LEAST and float(c["bottom"]) > 0.15:
+            # deslab: 14.11.2026, Nagornaya v20: the second radiator's upper pipe along the wall to the corner (z 0.54-0.60)
+            # became a radiator 6 cm high; the lowest radiators are 12 cm and more (a skirting convector stands on the floor)
+            rejected.append(f"кандидат {cid} (radiator): высотой {int(round((float(c['top']) - float(c['bottom'])) * 100))} см, "
+                            "радиатор ниже не бывает, это труба вдоль стены")
         elif kind in ("heatingRiser", "waterRiser", "sewerRiser") and not _round_shape(c):
             # deslab: 14.11.2026, Nagornaya: the narrow vent duct (16 cm wide, 30 cm out of the wall) named a sewer riser
             # became a pipe of 160 mm; a pipe stands out of the wall by its own size and a clamp's gap
