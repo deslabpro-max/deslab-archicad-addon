@@ -134,7 +134,10 @@ PROTECTED = ("Антон Крючков",)
 
 
 def connect():
-    for port in PORTS:
+    # deslab: 14.11.2026, Игорь's own Archicad 29 was open on 19723 while the test build waited for its Archicad 27 on
+    # the next port: DESLAB_ARCHICAD_PORT names the one port to build in, and no other is tried
+    only = os.environ.get("DESLAB_ARCHICAD_PORT", "").strip()
+    for port in ([int(only)] if only else PORTS):
         ac = Archicad(port=port)
         if ac.alive():
             break
