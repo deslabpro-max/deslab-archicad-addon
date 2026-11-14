@@ -28,7 +28,7 @@ from .views import _frame, _inside, _wall_coords, model_points
 
 CELL = 0.01        # plan and cross-section cell, m
 LEVEL = 0.05       # step along the pipe, m
-SKIN_COVER = 0.15  # deslab: share of the wall's height filled at a depth past the cut that is still its skin
+SKIN_COVER = 0.10  # deslab: share of the wall's height filled at a depth past the cut that is still its skin
 SKIN_DEPTH = 3     # deslab: cells past the cut looked at for the skin
 
 
@@ -292,7 +292,8 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
             # between the second radiator and the corner), above and below the pipes: it read as the radiator they
             # enter and cut both pipes to 40 cm of their 1.1 m. Per stretch of the wall, the depths next to the cut
             # that are filled over a good share of the wall's height are still its skin and are left out (a pipe, a
-            # radiator or a box fills a small share of the height, and none of them lies on the wall)
+            # radiator or a box fills a small share of the height, and none of them lies on the wall; on Nagornaya the skin
+            # filled 11-16 % of it, the rest of the wall up to 6 %)
             zl = int(0.2 / CELL)
             cover = occ[:, zl:max(int((height - 0.2) / CELL), zl + 1), :].mean(axis=1)
             c0 = int(cut / CELL + 1e-6)
@@ -315,13 +316,19 @@ def find_runs(pts, scene, risers=(), reach=0.6, min_length=0.4, max_size=0.2, wi
                     if tall > max_size or deep > max_size or len(zs) < 2:
                         continue
                     # how far the spot runs on along the whole wall, without a break of more than a bin
-                    line = grown[:, zs.min():zs.max() + 1, ds.min():ds.max() + 1].any(axis=(1, 2))
+                    # deslab: 14.11.2026, Nagornaya v20/v21: the stray points behind a pipe make its spot reach back to the
+                    # wall, and by the wall (2-4 cm off its face) bits of its skin lie above and below the pipe here and
+                    # there: they read as the radiator it enters and cut the second radiator's pipes to 40 cm of their 1.1 m.
+                    # The pipe is looked for along the wall at its own depths only (its front and back by its height)
+                    front = ds.max()
+                    lo = max(ds.min(), front - (zs.max() - zs.min() + 1) - 2)
+                    line = grown[:, zs.min():zs.max() + 1, lo:front + 1].any(axis=(1, 2))
                     # where the cloud goes on above or below the spot, the pipe has entered something bigger
                     # (the radiator it feeds): the run ends there
-                    d0, d1 = ds.min(), ds.max() + 1
-                    # (a panel radiator shows its front and its top, nothing inside: looked for up to 6 cm nearer
-                    # to the room, and as a block 4 cm high, which a second pipe alongside is not)
-                    e0, e1 = max(d0 - 3, 0), d1 + 6
+                    d0, d1 = lo, front + 1
+                    # (a panel radiator shows its front and its top, nothing inside: looked for from the pipe's back up to
+                    # 6 cm nearer to the room, and as a block 4 cm high, which a second pipe alongside is not)
+                    e0, e1 = d0, d1 + 6
                     above = occ[:, zs.max() + 3:zs.max() + 7, e0:e1].any(axis=2)
                     below = occ[:, max(zs.min() - 6, 0):max(zs.min() - 2, 0), e0:e1].any(axis=2)
                     block = (above.sum(axis=1) >= 3) | (below.sum(axis=1) >= 3)

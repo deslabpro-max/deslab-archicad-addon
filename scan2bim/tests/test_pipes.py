@@ -181,6 +181,11 @@ def test_runs_from_radiator():
     tail = rng.uniform(0, 2.8, n // 2), rng.uniform(0, 2.7, n // 2)
     keep = (tail[1] % 0.3) < 0.2
     out.append(at(rng.uniform(0.025, 0.035, keep.sum()), tail[0][keep], tail[1][keep]))
+    # patches of the skin 4 cm high above and below the pipes every 10 cm over y 1.4-2.0, past its tail (4.5-5.5 cm off
+    # the face, too little of the height to be the skin; Nagornaya v21: at 2-4 cm)
+    for z0 in (0.38, 0.48):
+        y = 1.4 + 0.1 * rng.integers(0, 6, 30000) + rng.uniform(0.005, 0.04, 30000)
+        out.append(at(rng.uniform(0.045, 0.055, 30000), y, rng.uniform(z0, z0 + 0.04, 30000)))
     m = 80000
     out.append(at(np.full(m, 0.16), rng.uniform(0.4, 1.0, m), rng.uniform(0.2, 0.7, m)))       # the front
     out.append(at(rng.uniform(0.06, 0.16, m // 4), rng.uniform(0.4, 1.0, m // 4), np.full(m // 4, 0.7)))   # the top
