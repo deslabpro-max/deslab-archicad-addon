@@ -86,12 +86,21 @@ def main(argv=None):
         scene["warnings"].append(f"cloud views and candidates failed: {exc}")
     # deslab: 13.11.2026 (Игорь: трубы «по диаметрам, по направлению, как в облаке»): the pipes themselves, P1…; the
     # reviewing model says what each one carries
+    fine = None
     try:
         from .pipes import find_pipes
         from .views import model_points as _model_points
-        scene["pipes"] = find_pipes(_model_points(cubes, scene), scene)
+        fine = _model_points(cubes, scene)
+        scene["pipes"] = find_pipes(fine, scene)
     except Exception as exc:
         scene["warnings"].append(f"pipes failed: {exc}")
+    # deslab: 14.11.2026 (Игорь: «нужно рисовать проходку и делать обязательно вывод»): channels through the walls
+    try:
+        if fine is not None:
+            from .penetrations import find_penetrations
+            scene["penetrations"] = find_penetrations(fine, scene)
+    except Exception as exc:
+        scene["warnings"].append(f"penetrations failed: {exc}")
     scene["source"]["seconds"] = round(time.time() - t0, 1)
     scene["source"]["version"] = __version__
     with open(args.output, "w", encoding="utf-8") as f:

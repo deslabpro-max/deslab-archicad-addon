@@ -339,6 +339,34 @@ def test_square_pipes():
     assert branch[0]["x"] == branch[1]["x"] == 8.092 and abs(branch[1]["y"] - 1.292) < 0.001, branch
 
 
+def test_vent_penetration():
+    # deslab: Nagornaya bathroom, the duct VD4 by the wall W2 (42 cm) goes out through it at 2.90 m into the kitchen,
+    # where a grille stands out of the wall (Игорь: «нужно рисовать проходку и делать обязательно вывод»)
+    scene = {"levels": {"ceiling": 3.32},
+             "walls": [{"id": "W2", "start": {"x": 3.3345, "y": 7.5}, "end": {"x": 3.3345, "y": 9.5}, "thickness": 0.423, "openings": []}],
+             "rooms": [{"id": "R3", "polygon": [{"x": 1.3, "y": 6.0}, {"x": 3.123, "y": 6.0}, {"x": 3.123, "y": 9.0}, {"x": 1.3, "y": 9.0}]},
+                       {"id": "R1", "polygon": [{"x": 3.546, "y": 6.0}, {"x": 8.0, "y": 6.0}, {"x": 8.0, "y": 9.0}, {"x": 3.546, "y": 9.0}]}],
+             "mep": [{"kind": "shaft", "duct": True, "id": "VD4", "label": "Воздуховод 160×300", "height": 3.32, "elevation": 0.0,
+                      "polygon": [{"x": 2.823, "y": 8.115}, {"x": 3.123, "y": 8.115}, {"x": 3.123, "y": 8.275}, {"x": 2.823, "y": 8.275}]}],
+             "penetrations": [{"id": "PN1", "wallId": "W2", "along": 0.645, "width": 0.153, "bottom": 2.896, "top": 3.026, "through": True,
+                               "ends": [{"side": "left", "from": 0.5, "to": 0.9, "bottom": 2.6, "top": 3.1, "depth": 0.2},
+                                        {"side": "right", "from": 0.55, "to": 0.75, "bottom": 2.8, "top": 3.1, "depth": 0.094}]},
+                              {"id": "PN2", "wallId": "W2", "along": 1.6, "width": 0.1, "bottom": 0.5, "top": 0.6, "through": True, "ends": []}]}
+    new, report = ai.apply_review(scene, {})
+    pen = next(m for m in new["mep"] if m["kind"] == "penetration")
+    xs = sorted({round(p["x"], 3) for p in pen["polygon"]})
+    ys = sorted({round(p["y"], 4) for p in pen["polygon"]})
+    assert xs == [3.123, 3.546] and abs(ys[0] - 8.0685) < 1e-3 and abs(ys[1] - 8.2215) < 1e-3, pen
+    assert pen["label"] == "Вент. проходка 153×130 h=2896" and pen["elevation"] == 2.896, pen
+    out = next(m for m in new["mep"] if m["kind"] == "ventOutlet")
+    assert sorted({round(p["x"], 3) for p in out["polygon"]}) == [3.546, 3.64] and out["elevation"] == 2.8 and abs(out["height"] - 0.3) < 1e-9, out
+    # a channel with no duct by it is asked about, not drawn
+    assert not [m for m in new["mep"] if m["id"] in ("PN2", "VV2")]
+    assert any("PN2" in d and "воздуховода" in d for d in report["doubts"]), report["doubts"]
+    from deslab_bridge import mep
+    assert len(mep.vent_outlines(new)) == 2 and len([m for m, _ in mep.duct_morphs(new) if m["kind"] == "ventOutlet"]) == 1
+
+
 def test_balcony_door_swing_in_a_thick_wall():
     # Nagornaya: the slab runs to the outer outline, the wall is 0.64 m thick; the rooms tell the flat's side
     scene = {"walls": [{"id": "W3", "start": {"x": 0, "y": 0}, "end": {"x": 6, "y": 0}, "thickness": 0.64, "kind": "exterior",

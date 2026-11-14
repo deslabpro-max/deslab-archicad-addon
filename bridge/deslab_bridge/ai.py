@@ -468,6 +468,41 @@ def _face_point(wall, side, along):
     return {"x": round(wall["start"]["x"] + ux * along - uy * k, 4), "y": round(wall["start"]["y"] + uy * along + ux * k, 4)}
 
 
+def vent_penetration(pen, wall, ducts, near=0.12):
+    """deslab: 14.11.2026, the mep items of a channel through `wall` (scene "penetrations", measured by the helper) that
+    starts at one of `ducts` (by either face within `near`): the penetration across the wall (a rectangle on the plan with
+    its height) and, when the cloud has it, the outlet standing out of the far face. [] when it starts at no duct."""
+    if wall is None or not pen.get("through"):
+        return []
+    along, width = float(pen["along"]), float(pen["width"])
+    bottom, top = float(pen["bottom"]), float(pen["top"])
+    side = None
+    for name in ("left", "right"):
+        face = _face_point(wall, name, along)
+        if any(_by_polygon((face["x"], face["y"]), d["polygon"], near) for d in ducts):
+            side = name
+            break
+    if side is None:
+        return []
+    other = "right" if side == "left" else "left"
+
+    def at(name, t, out=0.0):   # on the face `name`, t along the wall, `out` off the face into the room
+        return _face_point(dict(wall, thickness=float(wall.get("thickness", 0.2)) + 2 * out), name, t)
+    t0, t1 = along - width / 2, along + width / 2
+    n = pen["id"][2:] if str(pen.get("id", "")).startswith("PN") else pen.get("id", "")
+    items = [{"kind": "penetration", "id": f"PN{n}", "wallId": wall["id"], "polygon": [at(side, t0), at(side, t1), at(other, t1), at(other, t0)],
+              "elevation": round(bottom, 3), "height": round(top - bottom, 3),
+              "label": f"Вент. проходка {int(round(width * 1000))}×{int(round((top - bottom) * 1000))} h={int(round(bottom * 1000))}"}]
+    end = next((e for e in pen.get("ends", []) if e.get("side") == other and float(e.get("depth", 0)) > 0.02), None)
+    if end:
+        e0, e1, out = float(end["from"]), float(end["to"]), float(end["depth"])
+        items.append({"kind": "ventOutlet", "id": f"VV{n}", "wallId": wall["id"],
+                      "polygon": [at(other, e0), at(other, e1), at(other, e1, out), at(other, e0, out)],
+                      "elevation": round(float(end["bottom"]), 3), "height": round(float(end["top"]) - float(end["bottom"]), 3),
+                      "label": "Вент. выход"})
+    return items
+
+
 def split_candidate(c, least=0.05):
     """deslab: 13.11.2026, a candidate the model sees as two things side by side (Nagornaya: a narrow and a wide vent duct)
     is cut at the seam the helper measured; each half keeps the depth of its side. None without a seam inside it."""
@@ -893,6 +928,19 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
                 p.pop("label", None)
                 applied[:] = [a for a in applied if not a.startswith(f"труба {p['id']}:")]
                 rejected.append(f"труба {p['id']}: стоит в воздуховоде {m['id']}, это его стык или фланец")
+    # deslab: 14.11.2026 (Игорь: «У вентиляции есть отводы, в том числе и через стену. То есть нужно рисовать проходку и
+    # делать обязательно вывод. Вентиляция – это очень важно»): a channel through a wall that starts at a vent duct is the
+    # duct's way out: the penetration across the wall and the outlet that stands out of the far face, as measured
+    for pen in new.get("penetrations", []) or []:
+        made = vent_penetration(pen, walls.get(pen.get("wallId")), [m for m in mep if m.get("duct") and m.get("polygon")])
+        size = f"{int(round(float(pen.get('width', 0)) * 1000))}×{int(round((float(pen.get('top', 0)) - float(pen.get('bottom', 0))) * 1000))}"
+        if made:
+            mep.extend(made)
+            applied.append(f"вент. проходка {pen['id']} в стене {pen['wallId']} ({size} мм)"
+                           + (", вывод" if len(made) > 1 else ", вывода с другой стороны в облаке нет"))
+        elif pen.get("through"):
+            doubts.append(f"Проходка {pen.get('id')} в стене {pen.get('wallId')} ({size} мм, низ {pen.get('bottom')} м): воздуховода "
+                          "рядом нет. Что через неё идёт? Не построена.")
     # risers of one system that stand side by side (the pair by the window, the water risers) share one label:
     # three labels on one spot lay on each other (Nagornaya, 13.11.2026)
     labelled = []

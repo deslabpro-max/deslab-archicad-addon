@@ -301,6 +301,11 @@ def test_engineering_and_tracing():
     scene["tracing"] = [{"id": "T1", "start": {"x": 2.5, "y": 1.2}, "end": {"x": 2.5, "y": 3.0}, "thickness": 0.08, "height": 0.25}]
     scene["mep"][0]["partitions"] = [[{"x": 0.0, "y": 2.5}, {"x": 0.55, "y": 2.5}]]
     scene["mep"].append({"kind": "panel", "id": "EL1", "start": {"x": 4, "y": 0.3}, "end": {"x": 4, "y": 0.62}, "depth": 0.158})
+    # deslab: 14.11.2026, a vent channel through the wall and its outlet: dashed outlines, the outlet a box, two labels
+    scene["mep"] += [{"kind": "penetration", "id": "PN1", "polygon": [{"x": 3.3, "y": 3.4}, {"x": 3.45, "y": 3.4}, {"x": 3.45, "y": 3.0}, {"x": 3.3, "y": 3.0}],
+                      "elevation": 2.6, "height": 0.13, "label": "Вент. проходка 150×130 h=2600"},
+                     {"kind": "ventOutlet", "id": "VV1", "polygon": [{"x": 3.25, "y": 3.0}, {"x": 3.5, "y": 3.0}, {"x": 3.5, "y": 2.92}, {"x": 3.25, "y": 2.92}],
+                      "elevation": 2.55, "height": 0.25, "label": "Вент. выход"}]
     moved = obmer.shift_scene(copy.deepcopy(scene), {"x": 100, "y": 0})
     assert moved["mep"][0]["partitions"][0][0]["x"] == 100  # run kv94i: the partition stayed at x=0
     assert not obmer.check_room_faces(scene)
@@ -320,13 +325,18 @@ def test_engineering_and_tracing():
     sizes = [g["gdlParameters"] for g in next(p for c, p in ac.calls if c == "SetGDLParametersOfElements"
                                                 and any(x["gdlParameters"][0]["name"] == "radius_1" for x in p["elementsWithGDLParameters"]))["elementsWithGDLParameters"]]
     assert {"name": "A", "value": 1.0} in sizes[1], sizes  # the radiator's size as GDL A too
-    panel = calls["CreatePolylines"]["polylinesData"][0]["coordinates"]  # «Электрощиты 21» drew 0.5 x 0.5
+    panel = next(p for c, p in ac.calls if c == "CreatePolylines")["polylinesData"][0]["coordinates"]  # «Электрощиты 21» drew 0.5 x 0.5
     assert panel[0] == {"x": 3.985, "y": 0.3} and panel[2] == {"x": 3.827, "y": 0.62} and panel[4] == panel[0], panel
     assert rad["pen"] == 161
     dims = calls["CreateAssociativeDimensions"]["dimensionsData"]
     assert len(dims) >= 7, len(dims)  # 4 room chains + radiators + shaft depth + tracing length and place
     texts = ["".join(r["text"] for r in l["runs"]) for l in calls["CreateLabels"]["labelsData"]]
     assert "Вытяжка" in texts and "Стояк канализации" in texts and "Трассировка h=250" in texts, texts
+    assert "Вент. проходка 150×130 h=2600" in texts and "Вент. выход" in texts, texts
+    outlines = [p for c, p in ac.calls if c == "CreatePolylines"]
+    assert any(len(p["polylinesData"]) == 2 and p["polylinesData"][0]["coordinates"][0] == {"x": 3.3, "y": 3.4} for p in outlines), outlines
+    morphs = [d for c, p in ac.calls if c == "CreateMorphs" for d in p["morphsData"]]
+    assert any(abs(d["basePoint"]["z"] - 2.55) < 1e-9 and abs(d["size"]["z"] - 0.25) < 1e-9 for d in morphs), morphs
     assert not report["errors"], report["errors"]
     # Игорь 06.11.2026: shafts in the template's gypsum plaster, not the default orange material
     mods = [p for c, p in ac.calls if c == "ModifyWalls" and any("buildingMaterialId" in w for w in p["wallsWithDetails"])]

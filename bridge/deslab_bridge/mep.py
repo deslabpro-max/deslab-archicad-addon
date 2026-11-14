@@ -393,7 +393,8 @@ def duct_morphs(scene):
     height = scene.get("levels", {}).get("ceiling") or 2.7
     out = []
     for m in scene.get("mep", []):
-        if m.get("kind") != "shaft" or not m.get("duct") or len(m.get("polygon", [])) < 3:
+        # deslab: 14.11.2026, the outlet of a vent channel through a wall is a box of its own height too
+        if not (m.get("kind") == "shaft" and m.get("duct") or m.get("kind") == "ventOutlet") or len(m.get("polygon", [])) < 3:
             continue
         pts = [(float(p["x"]), float(p["y"])) for p in m["polygon"]]
         z0 = float(m.get("elevation", 0.0))
@@ -444,6 +445,13 @@ def mep_outlines(scene, profile):
         d = _add(a, _mul(n, depth))
         out.append([_xy(p) for p in (a, b, c, d, a)])
     return out
+
+
+def vent_outlines(scene):
+    """deslab: 14.11.2026 (Игорь: «нужно рисовать проходку и делать обязательно вывод»): the outlines of the vent channels
+    through the walls and of their outlets on the plan, closed polylines (they are above the plan's cut, drawn dashed)."""
+    return [[_xy(_pt(p)) for p in m["polygon"] + m["polygon"][:1]]
+            for m in scene.get("mep", []) if m.get("kind") in ("penetration", "ventOutlet") and len(m.get("polygon", [])) >= 3]
 
 
 def _chain(pts, u, normal, ref, room_id, key, offset, extra="item"):
@@ -745,7 +753,7 @@ def plan_mep_labels(scene, profile, obstacles, taken=()):
     for m in scene.get("mep", []):
         if not m.get("label") or m["id"] in grouped:
             continue
-        if m.get("kind") == "shaft":
+        if m.get("kind") == "shaft" or m.get("polygon"):   # deslab: a vent penetration and its outlet too
             poly = [_pt(p) for p in m["polygon"]]
             dot = (sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly))
         elif m.get("kind") in RISERS or m.get("kind") == "vent":  # deslab: a vent opening is a label with its dot on the wall face

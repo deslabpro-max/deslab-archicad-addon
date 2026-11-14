@@ -1347,6 +1347,19 @@ def _elements(guids):
     return [{"elementId": {"guid": g}} for g in guids]
 
 
+def _line_type(ac, names):
+    """deslab: the index of the project's first line type whose name holds one of `names` (case aside), or None."""
+    try:
+        lines = ac.tapir("GetAttributesByType", {"attributeType": "Line"}).get("attributes", [])
+    except Exception:
+        return None
+    for want in names:
+        for a in lines:
+            if want.lower() in str(a.get("name", "")).lower() and a.get("index"):
+                return a["index"]
+    return None
+
+
 FAVORITE_TYPES = {"zone": "Zone", "heightText": "Text", "label": "Label", "dimension": "Dimension", "wall": "Wall",
                   "window": "Window", "door": "Door", "opening": "Window", "wetBathroom": "Fill", "wetKitchen": "Fill"}
 
@@ -1840,6 +1853,17 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
             {"coordinates": pts, "floorInd": floor_index, **({"layerIndex": panel_layer} if panel_layer else {}),
              **({"linePenIndex": profile.get("mep", {}).get("pen")} if profile.get("mep", {}).get("pen") else {})}
             for pts in outlines]}), "elements", report, "Контур щитка")
+    # deslab: 14.11.2026, the vent channels through the walls and their outlets: dashed outlines on the duct layer
+    from .mep import vent_outlines
+    vents = vent_outlines(scene)
+    if vents:
+        dashed = _line_type(ac, profile.get("mep", {}).get("overheadLine", ["Пунктир", "Штрих", "Dashed", "Hidden"]))
+        _created(ac.tapir("CreatePolylines", {"polylinesData": [
+            {"coordinates": pts, "floorInd": floor_index,
+             **({"layerIndex": idx.get(L.get("ducts")) or mep_layer} if (idx.get(L.get("ducts")) or mep_layer) else {}),
+             **({"lineTypeIndex": dashed} if dashed else {}),
+             **({"linePenIndex": profile.get("mep", {}).get("pen")} if profile.get("mep", {}).get("pen") else {})}
+            for pts in vents]}), "elements", report, "Вент. проходка")
     objects = mep_objects(scene, profile)
     if objects:
         guids = _created(ac.tapir("CreateObjects", {"objectsData": [

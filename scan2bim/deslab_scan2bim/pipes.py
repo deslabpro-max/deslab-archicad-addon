@@ -26,10 +26,20 @@ import numpy as np
 from .grid import label
 from .views import _frame, _inside, _wall_coords, model_points
 
+TRACE = None       # deslab: a list to collect the risers' measures in (main --debug), None for none
 CELL = 0.01        # plan and cross-section cell, m
 LEVEL = 0.05       # step along the pipe, m
 SKIN_COVER = 0.10  # deslab: share of the wall's height filled at a depth past the cut that is still its skin
 SKIN_DEPTH = 3     # deslab: cells past the cut looked at for the skin
+
+
+
+def _trace(kind, x0, y0, ys, xs, **values):
+    """deslab: one entry of TRACE: what was measured on the spot of cells (ys, xs)."""
+    if TRACE is not None:
+        TRACE.append(dict(kind=kind, box=(round(float(x0 + xs.min() * CELL), 3), round(float(y0 + ys.min() * CELL), 3),
+                                          round(float(x0 + (xs.max() + 1) * CELL), 3), round(float(y0 + (ys.max() + 1) * CELL), 3)),
+                          **{k: (round(v, 4) if isinstance(v, float) else v) for k, v in values.items()}))
 
 
 def _grow(mask):
@@ -95,6 +105,7 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
                 continue
             boxes.append(box)
             spots.append((ys, xs))
+            _trace("spot", x0, y0, ys, xs, share=share)
         for box in boxes:
             taken[box] = True
     single = {id(spot) for spot in spots}
@@ -133,6 +144,7 @@ def find_risers(pts, scene, min_span=1.2, max_size=0.22, fill=0.5):
             wide = q[:, 0 if w >= h else 1]
             d = float(np.median(sizes)) if len(sizes) >= 5 else float(np.percentile(wide, 98) - np.percentile(wide, 2))
             d = max(d, 0.012)
+            _trace("sizes", x0, y0, ys, xs, d=d, merged=merged, levels=len(sizes))
             main = _main_circle(q, lv) if d >= 0.06 and not merged else None
             if main is not None:
                 # deslab: 14.11.2026, Nagornaya bathroom: a water riser 56 mm with a wire or a pipe across it in its
@@ -240,13 +252,22 @@ def _main_circle(q, lv, least=8, share=0.6):
         radii.append(r)
         errors.append(err)
         centres.append((cx, cy))
+    if TRACE is not None:
+        box = (round(float(q[:, 0].min()), 3), round(float(q[:, 1].min()), 3), round(float(q[:, 0].max()), 3), round(float(q[:, 1].max()), 3))
     if len(radii) < 5 or np.median(shares) < share:
+        if TRACE is not None:
+            TRACE.append({"kind": "main", "box": box, "levels": len(radii), "share": round(float(np.median(shares)), 3) if shares else None, "result": None})
         return None
     r, err = float(np.median(radii)), float(np.median(errors))
     c = np.median(np.array(centres), axis=0)
-    steady = np.subtract(*np.percentile(radii, [75, 25])) <= 0.25 * r and \
-        float(np.median(np.hypot(*(np.array(centres) - c).T))) <= 0.25 * r
-    if not (steady and err <= 0.1 * r and 0.015 <= r <= 0.11):
+    iqr = float(np.subtract(*np.percentile(radii, [75, 25])))
+    moved = float(np.median(np.hypot(*(np.array(centres) - c).T)))
+    steady = iqr <= 0.25 * r and moved <= 0.25 * r
+    ok = steady and err <= 0.1 * r and 0.015 <= r <= 0.11
+    if TRACE is not None:
+        TRACE.append({"kind": "main", "box": box, "levels": len(radii), "share": round(float(np.median(shares)), 3), "d": round(2 * r, 4),
+                      "err": round(err, 4), "iqr": round(iqr, 4), "moved": round(moved, 4), "result": round(2 * r, 3) if ok else None})
+    if not ok:
         return None
     return round(2 * r, 3), (float(c[0]), float(c[1]))
 
@@ -277,9 +298,12 @@ def _whole_pipe(spot, p, x0, y0, least=8):
         spans.append(span)
         errors.append(err)
     if len(radii) < 5:
+        _trace("whole", x0, y0, ys, xs, levels=len(radii), result=False)
         return False
     r, span, err = float(np.median(radii)), float(np.median(spans)), float(np.median(errors))
-    return bool(2 * r >= 0.03 and err <= 0.12 * r and 2 * r <= 1.3 * span)
+    result = bool(2 * r >= 0.03 and err <= 0.12 * r and 2 * r <= 1.3 * span)
+    _trace("whole", x0, y0, ys, xs, levels=len(radii), d=2 * r, span=span, err=err, result=result)
+    return result
 
 
 def _one_ring(a, b, p, x0, y0, max_size, sectors=9, least=8):
@@ -292,17 +316,21 @@ def _one_ring(a, b, p, x0, y0, max_size, sectors=9, least=8):
            (p[:, 1] >= y0 + (ys.min() - 2) * CELL) & (p[:, 1] < y0 + (ys.max() + 3) * CELL)
     q = p[near]
     if len(q) < 30:
+        _trace("ring", x0, y0, ys, xs, points=len(q), result=False)
         return False
     lv = ((q[:, 2] - 0.05) / LEVEL).astype(np.int32)
     order = np.argsort(lv, kind="stable")
     q, lv = q[order], lv[order]
     centres, radii, filled = [], [], []
+    off = {"few": 0, "radius": 0, "err": 0}
     for part in np.split(q, np.flatnonzero(np.diff(lv)) + 1):
         if len(part) < least:
+            off["few"] += 1
             continue
         xy = part[:, :2].astype(np.float64)
         cx, cy, r, err = _circle(xy)
         if not 0.03 <= r <= max_size / 2 or err > 0.12 * r:
+            off["radius" if not 0.03 <= r <= max_size / 2 else "err"] += 1
             continue
         rim = np.abs(np.hypot(xy[:, 0] - cx, xy[:, 1] - cy) - r) <= max(0.012, 0.15 * r)
         angles = np.degrees(np.arctan2(xy[rim, 1] - cy, xy[rim, 0] - cx))
@@ -310,12 +338,17 @@ def _one_ring(a, b, p, x0, y0, max_size, sectors=9, least=8):
         radii.append(r)
         filled.append(len(np.unique(((angles + 180) // 10).astype(int))))
     if len(radii) < 5:
+        _trace("ring", x0, y0, ys, xs, levels=len(radii), off=off, result=False)
         return False
     r = float(np.median(radii))
     c = np.median(np.array(centres), axis=0)
-    steady = np.subtract(*np.percentile(radii, [75, 25])) <= 0.25 * r and \
-        float(np.median(np.hypot(*(np.array(centres) - c).T))) <= 0.25 * r
-    return bool(steady and np.median(filled) >= sectors)
+    iqr = float(np.subtract(*np.percentile(radii, [75, 25])))
+    moved = float(np.median(np.hypot(*(np.array(centres) - c).T)))
+    steady = iqr <= 0.25 * r and moved <= 0.25 * r
+    result = bool(steady and np.median(filled) >= sectors)
+    _trace("ring", x0, y0, ys, xs, levels=len(radii), off=off, d=2 * r, iqr=iqr, moved=moved, filled=float(np.median(filled)),
+           centre=(round(float(c[0]), 3), round(float(c[1]), 3)), result=result)
+    return result
 
 
 def _circle(xy):
@@ -862,6 +895,26 @@ def main(argv=None):
     data = np.load(argv[0])
     scene = json.load(open(argv[1], encoding="utf-8"))
     pts = model_points(data["xyz"].astype(np.float64) * float(data["size"]) + data["origin"], scene)
+    if "--penetrations" in argv:
+        from .penetrations import find_penetrations
+        for e in find_penetrations(pts, scene):
+            print(json.dumps(e, ensure_ascii=False))
+        return 0
+    if "--debug" in argv:
+        # deslab: what the riser search measured on the spots in a box of the plan: --debug x0,y0,x1,y1
+        global TRACE
+        bx0, by0, bx1, by1 = (float(v) for v in argv[argv.index("--debug") + 1].split(","))
+        TRACE = []
+        risers = find_risers(pts, scene)
+        for e in TRACE:
+            b = e["box"]
+            if b[0] <= bx1 and b[2] >= bx0 and b[1] <= by1 and b[3] >= by0:
+                print(json.dumps(e, ensure_ascii=False))
+        for r in risers:
+            a = r["path"][0]
+            if bx0 <= a["x"] <= bx1 and by0 <= a["y"] <= by1:
+                print("riser", f"d{int(round(r['diameter'] * 1000))}", a["x"], a["y"], r["path"][0]["z"], r["path"][1]["z"])
+        return 0
     pipes = find_pipes(pts, scene)
     for p in pipes:
         a, b = p["path"][0], p["path"][-1]
