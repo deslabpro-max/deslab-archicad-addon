@@ -14,6 +14,10 @@ TH = 0.145            # dimension text height, 0.03 m over its line
 LAB_CH = 1.80 * K     # a label letter («Вытяжка» 13.7 mm, «Стояк канализации» 30.0 mm)
 LAB_PAD = 1.0 * K
 LAB_H = 3.45 * K
+# deslab: 14.11.2026, an opening label is narrower: «hподокон 962» 16.5 mm, «hокна 2744» 15.3 mm (label test 03.11.2026);
+# the 1.8 mm of the engineering labels flagged «hокна 1782 / hподокон 962» on Nagornaya that the sheet shows clear
+OPEN_CH = 1.4 * K
+OPEN_PAD = 1.5 * K
 
 
 def _p(p):
@@ -54,7 +58,7 @@ def _label_box(lb):
     m, e = _p(lb["midCoordinate"]), _p(lb["endCoordinate"])
     txt = "".join(r["text"] for r in lb["runs"])
     parts = [x for x in txt.split("\n") if x.strip()] or [txt]
-    w = max(len(x) for x in parts) * LAB_CH + LAB_PAD
+    w = max(len(x) for x in parts) * (OPEN_CH if lb.get("opening") else LAB_CH) + (OPEN_PAD if lb.get("opening") else LAB_PAD)
     x0 = e[0] if e[0] >= m[0] else e[0] - w
     if len(parts) == 1:
         return (x0, m[1], x0 + w, m[1] + LAB_H), parts[0]
@@ -123,3 +127,37 @@ def check(scene, chains, labels):
             if _hits(b1, b2):
                 out.append(f"«{n1}» налезает на «{n2}»")
     return sorted(set(out))
+
+
+def check_scene(scene, profile=None, origin=None):
+    """deslab: 14.11.2026, the check of a scene as the build would lay it out (the same planning, no Archicad):
+    {"план 1": [...], "план 2": [...]} (one plan when the engineering items share the measured plan)."""
+    import json
+    from . import obmer
+    profile = profile or obmer.load_profile()
+    if obmer.check_room_faces(scene) and not scene.get("allowLooseRoomEdges"):
+        scene, _ = obmer.fit_walls_to_rooms(scene)
+    scene = obmer.shift_scene(json.loads(json.dumps(scene)), origin)
+    texts = obmer.plan_height_texts(scene, profile)
+    chains, labels, eng_labels, split = obmer.plan_annotations(scene, profile, texts)
+    if not split:
+        return {"план 1": check(scene, chains, labels + eng_labels)}
+    return {"план 1": check(scene, [c for c in chains if c.get("plan") != "eng"], labels),
+            "план 2": check(scene, [c for c in chains if c.get("plan") == "eng"], eng_labels)}
+
+
+def main(argv=None):
+    """python -m deslab_bridge.check SCENE.json: what touches on the plans of this scene."""
+    import json
+    import sys
+    args = sys.argv[1:] if argv is None else argv
+    scene = json.load(open(args[0], encoding="utf-8"))
+    for plan, faults in check_scene(scene).items():
+        print(f"{plan}: {len(faults)}")
+        for line in faults:
+            print("  " + line)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

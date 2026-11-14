@@ -201,6 +201,16 @@ def test_two_vent_ducts():
     body = data["body"]
     assert "size" not in data and len(body["vertices"]) == 8 and len(body["polygons"]) == 6, data
     assert body["vertices"][4]["z"] == 2.5 and body["polygons"][1]["vertexIds"] == [4, 5, 6, 7]
+    # deslab: 14.11.2026, Nagornaya: the narrow duct named a sewer riser became a pipe of 160 mm; a rectangular candidate is
+    # no pipe, it is left out with a question for Игорь
+    scene["candidates"] = [dict(scene["candidates"][0], to=2.76, end={"x": 2.76, "y": 0.1}, depth=0.3)]
+    new, report = ai.apply_review(scene, {"candidates": [{"id": "C1", "kind": "sewerRiser", "confidence": 0.8}]})
+    assert not [m for m in new["mep"] if m.get("candidate") == "C1"], new["mep"]
+    assert "это не труба" in "\n".join(report["rejected"]) and "160×300" in report["doubts"][-1], report
+    # a round one (11 cm wide, 15 cm out of the wall) still is
+    scene["candidates"] = [dict(scene["candidates"][0], to=2.71, end={"x": 2.71, "y": 0.1}, depth=0.15)]
+    new, report = ai.apply_review(scene, {"candidates": [{"id": "C1", "kind": "sewerRiser", "confidence": 0.8}]})
+    assert [m["id"] for m in new["mep"] if m.get("candidate") == "C1"] == ["K1"], (new["mep"], report)
 
 
 def test_balcony_door_swing_in_a_thick_wall():

@@ -21,13 +21,28 @@ def _dump(pts, prefix, part=2_000_000):
         np.savez_compressed(f"{prefix}.{i // part}.npz", xyz=cm[i:i + part], origin=origin)
 
 
+def _cells(pts, size=0.01):
+    """The cloud thinned to one point per `size` cube: (int16 steps of `size` from `origin`, origin)."""
+    import numpy as np
+    pts = np.asarray(pts, dtype=np.float64)
+    origin = np.floor(pts.min(axis=0))
+    return np.unique(np.round((pts - origin) / size).astype(np.int16), axis=0), origin
+
+
+def _cubes(pts, size=0.01):
+    """deslab: 14.11.2026, Nagornaya: the pipes were tuned on the 1 cm cubes of the --voxels file (sewer riser d110) and
+    came out at half their size from the raw points of the build (d44, d56: more scatter at each height, the circle test
+    gave up). The pipes are measured on the same cubes in the build too."""
+    import numpy as np
+    cells, origin = _cells(pts, size)
+    return cells.astype(np.float64) * size + origin if len(cells) else np.asarray(pts, dtype=np.float64)
+
+
 def _voxels(pts, path, size=0.01):
     """deslab: the cloud thinned to one point per `size` cube, as int16 steps of `size` from `origin`: a file of a few MB
     that shows pipes and joints, for debugging the helper away from the scan."""
     import numpy as np
-    pts = np.asarray(pts, dtype=np.float64)
-    origin = np.floor(pts.min(axis=0))
-    cells = np.unique(np.round((pts - origin) / size).astype(np.int16), axis=0)
+    cells, origin = _cells(pts, size)
     np.savez_compressed(path, xyz=cells, origin=origin, size=size)
     return len(cells)
 
@@ -81,7 +96,7 @@ def main(argv=None):
     try:
         from .pipes import find_pipes
         from .views import model_points as _model_points
-        scene["pipes"] = find_pipes(_model_points(pts, scene), scene)
+        scene["pipes"] = find_pipes(_model_points(_cubes(pts), scene), scene)
     except Exception as exc:
         scene["warnings"].append(f"pipes failed: {exc}")
     scene["source"]["seconds"] = round(time.time() - t0, 1)

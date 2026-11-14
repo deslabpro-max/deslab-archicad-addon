@@ -457,3 +457,40 @@ def test_axonometry_spot():
     assert abs(w - 0.119) < 1e-9 and abs(x + w - 0.326) < 1e-9
     # no room at all
     assert layouts.axonometry_spot({"xMin": 0.03, "xMax": 0.32, "yMin": 0.06, "yMax": 0.28}, frame, cfg, 2.0) is None
+
+
+def test_narrow_hall_labels():
+    """deslab: 14.11.2026, a hall 1.9 m wide (Nagornaya): its two inner chains 1 m apart, a vent duct in the corner by the
+    entrance door. The door label and the doorway label to the bathroom found no place clear of the chains and were drawn
+    across a dimension line; now a 45° leader takes them between the chains (or the label goes to the other room)."""
+    from deslab_bridge import check as layout_check
+
+    def wall(i, a, b, t, openings=()):
+        return {"id": f"W{i}", "start": {"x": a[0], "y": a[1]}, "end": {"x": b[0], "y": b[1]}, "thickness": t, "height": 3.3,
+                "kind": "interior", "openings": list(openings)}
+
+    def room(i, x0, y0, x1, y1):
+        return {"id": f"R{i}", "number": i, "name": f"Помещение {i}", "floor": 0, "ceiling": 3.3, "height": 3.3,
+                "area": (x1 - x0) * (y1 - y0),
+                "polygon": [{"x": x0, "y": y0}, {"x": x1, "y": y0}, {"x": x1, "y": y1}, {"x": x0, "y": y1}]}
+    scene = {
+        "format": "deslab.scan2bim/1", "levels": {"floor": 0.0, "ceiling": 3.3}, "slabs": [], "assumptions": [], "warnings": [],
+        "walls": [
+            wall(1, (-0.2, -0.16), (2.1, -0.16), 0.32,
+                 [{"id": "W1.1", "kind": "door", "centerOffset": 1.33, "width": 0.94, "sill": 0, "height": 2.21}]),
+            wall(2, (-0.2, 4.95), (2.1, 4.95), 0.3,
+                 [{"id": "W2.1", "kind": "opening", "centerOffset": 1.41, "width": 0.79, "sill": 0, "height": 2.21}]),
+            wall(3, (2.1, -0.32), (2.1, 8.0), 0.4), wall(4, (-0.2, 8.0), (-0.2, -0.32), 0.4), wall(5, (2.1, 8.0), (-0.2, 8.0), 0.4)],
+        "rooms": [room(1, 0, 0, 1.9, 4.8), room(2, 0, 5.1, 1.9, 7.8)],
+        "mep": [{"kind": "shaft", "duct": True, "id": "VD1", "label": "Воздуховод 260×150", "elevation": 0, "height": 3.3,
+                 "polygon": [{"x": 0.21, "y": 0}, {"x": 0.47, "y": 0}, {"x": 0.47, "y": 0.15}, {"x": 0.21, "y": 0.15}]}],
+    }
+    assert not obmer.check_room_faces(scene)
+    texts = obmer.plan_height_texts(scene, PROFILE)
+    chains, labels, eng_labels, split = obmer.plan_annotations(scene, PROFILE, texts)
+    room_chains = [c for c in chains if c.get("plan") != "eng"] if split else chains
+    faults = [f for f in layout_check.check(scene, room_chains, labels) if "подпись" in f or "налезает" in f]
+    assert not faults, (faults, [(lb["opening"], lb["midCoordinate"], lb["box"]) for lb in labels])
+    # the left chain of the hall goes just past the duct, not a whole step further
+    left = next(c for c in chains if c["room"] == "R1" and abs(c["direction"]["x"]) < 0.5 and c["referencePoint"]["x"] < 1.0)
+    assert left["offset"] < 0.6, left

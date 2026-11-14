@@ -248,6 +248,8 @@ MEMORY_RULES = """Правила офиса, которые нельзя нар�
   duct: открытый прямоугольный вентиляционный воздуховод от пола до потолка (металл или пластик, поперечные стыки-фланцы):
   ширина 0.1-0.6 м, глубина 0.15-0.35 м, ровные грани, обычно в санузле, на кухне или у шахты; два-три рядом разной ширины
   это отдельные кандидаты (или один с seam), назови каждый duct. Кандидат во всю высоту такой формы, в котором нет стояка P, это duct, а не box. panel: электрощит. vent: решётка или отверстие вентиляции.
+  hint кандидата это форма по облаку: «riser?» выступает из стены примерно на свою ширину (круглая труба), «duct or box?» прямоугольный
+  во всю высоту. heatingRiser, waterRiser, sewerRiser давай только кандидату, который по форме может быть трубой: прямоугольный код не построит.
   seam у кандидата: по облаку там слабый стык (seamStrength в м, seamDepths глубины двух сторон). Если на снимках кандидат в этом месте
   это две вещи рядом (два воздуховода, воздуховод и короб), добавь parts: 2, код разрежет его по seam, kind относится к обеим частям.
   Мебель, шторы, подоконники, откосы, строительный мусор: clutter, furniture, windowBoard или other, на чертёж они не идут.
@@ -475,6 +477,13 @@ def split_candidate(c, least=0.05):
     return out
 
 
+def _round_shape(c):
+    """deslab: 14.11.2026, a candidate that can be a pipe at a wall: it stands out of the wall by about its width (a clamp
+    gap of up to 10 cm more), the same rule as the helper's «riser?» hint."""
+    width, depth = float(c["to"]) - float(c["from"]), float(c["depth"])
+    return width - 0.04 <= depth <= width + 0.1
+
+
 def candidate_item(c, kind, number):
     """deslab: 13.11.2026, a numbered candidate of the scan helper named by the model becomes an engineering item. Every
     number is the cloud's (the helper measured the candidate), the model gives the name only."""
@@ -529,7 +538,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
     deslab: Nagornaya run 1, a candidate is a thing the helper measured in the cloud, the model only names it, so its bar is
     lower (0.4: the risers at 0.4-0.45 were lost and the engineering sheet stayed half empty)."""
     new = copy.deepcopy(scene)
-    applied, rejected = [], []
+    applied, rejected, doubts = [], [], []
     walls = {w["id"]: w for w in new.get("walls", [])}
     openings = {o["id"]: (w, o) for w in new.get("walls", []) for o in w.get("openings", [])}
 
@@ -665,6 +674,13 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             rejected.append(f"кандидат {cid} ({kind}): уверенность {item.get('confidence')} ниже порога")
         elif kind in ("shaft", "box") and min(float(c["to"]) - float(c["from"]), float(c["depth"])) < 0.1:
             rejected.append(f"кандидат {cid} ({kind}): уже 0.1 м, это не короб")
+        elif kind in ("heatingRiser", "waterRiser", "sewerRiser") and not _round_shape(c):
+            # deslab: 14.11.2026, Nagornaya: the narrow vent duct (16 cm wide, 30 cm out of the wall) named a sewer riser
+            # became a pipe of 160 mm; a pipe stands out of the wall by its own size and a clamp's gap
+            width, depth = float(c["to"]) - float(c["from"]), float(c["depth"])
+            rejected.append(f"кандидат {cid} ({kind}): {int(round(width * 1000))}×{int(round(depth * 1000))} мм, прямоугольный, это не труба")
+            doubts.append(f"Кандидат {cid} ({int(round(width * 1000))}×{int(round(depth * 1000))} мм) модель назвала трубой, "
+                          "а по облаку он прямоугольный: воздуховод или короб? Не построен.")
         else:
             halves = split_candidate(c) if str(item.get("parts")) == "2" else None
             if str(item.get("parts")) == "2" and halves is None:
@@ -786,7 +802,7 @@ def apply_review(scene, review, min_confidence=0.5, shaft_confidence=0.3, candid
             rejected.append(f"мокрая зона {item.get('kind')}: неверные данные или не в квартире")
     if wet:
         new["wetZones"] = wet
-    return new, {"applied": applied, "rejected": rejected, "doubts": list(review.get("doubts", []) or [])}
+    return new, {"applied": applied, "rejected": rejected, "doubts": list(review.get("doubts", []) or []) + doubts}
 
 
 def main(argv=None):

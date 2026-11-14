@@ -60,6 +60,8 @@ def test_two_ducts_side_by_side():
     assert abs(spans[0][0] - 1.0) <= 0.03 and abs(spans[0][1] - 1.15) <= 0.03, found
     assert abs(spans[1][0] - 1.18) <= 0.03 and abs(spans[1][1] - 1.65) <= 0.03, found
     assert all(abs(c["depth"] - 0.27) < 0.02 for c in found), found
+    # deslab: 14.11.2026, a duct 15 cm wide and 27 cm deep is no round pipe (Nagornaya C4 was «riser?»)
+    assert [c["hint"] for c in found] == ["duct or box?", "duct or box?"], found
     # pressed together, the narrow one 26 cm and the wide one 30 cm out (Nagornaya): a step, two things
     tall = lambda p: [c for c in find_candidates(p, scene) if c["top"] - c["bottom"] > 2.0]  # noqa: E731
     flat = face[:2] + face[3:]

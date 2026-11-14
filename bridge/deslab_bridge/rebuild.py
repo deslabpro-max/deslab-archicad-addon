@@ -301,6 +301,10 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         scene, ai_report = ai.apply_review(scene_in, review)
         with open(out_dir / f"ai-review-{name}.json", "w", encoding="utf-8") as f:
             json.dump({"review": review, "report": ai_report, "usage": usage}, f, ensure_ascii=False, indent=1)
+    # deslab: 14.11.2026, the scene as it is built (the review applied), for the layout check without Archicad:
+    # python -m deslab_bridge.check captures\scene-<name>-applied.json
+    with open(out_dir / f"scene-{name}-applied.json", "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in scene.items() if k != "views"}, f, ensure_ascii=False, indent=1)
         # deslab: Claude Code reports input/output tokens and a cost in dollars (the subscription), Polza prompt/completion and roubles
         tokens = f"{usage.get('prompt_tokens', usage.get('input_tokens'))}+{usage.get('completion_tokens', usage.get('output_tokens'))}"
         cost = f"{usage['cost_rub']} ₽" if "cost_rub" in usage else (f"${usage['cost']:.2f} (подписка)" if usage.get("cost") is not None else "? ₽")

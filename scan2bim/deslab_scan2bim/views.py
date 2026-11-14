@@ -189,10 +189,19 @@ def _without_other_walls(pts, scene, wall):
     return keep
 
 
+def _round_shape(width, depth):
+    """deslab: 14.11.2026, a pipe at a wall stands out of it by its own size and the clamp's gap: no more than 10 cm
+    deeper than wide, and not much shallower (Nagornaya C4, the narrow vent duct 16 cm wide and 30 cm deep, was called
+    «riser?» and the model built a pipe of 160 mm there)."""
+    return width - 0.04 <= depth <= width + 0.1
+
+
 def _hint(width, bottom, top, depth, height):
     tall = top - bottom
+    if tall >= 0.7 * height and width <= 0.6 and 0.08 <= depth <= 0.4 and (width > 0.3 or not _round_shape(width, depth)):
+        return "duct or box?"
     if width <= 0.3 and tall >= 0.7 * height:
-        return "riser?"
+        return "riser?" if _round_shape(width, depth) else ""
     if width <= 0.3 and tall >= 0.5:
         return "pipe?"
     if 0.3 <= width <= 3.0 and 0.2 <= tall <= 1.0 and top <= 1.2 and depth <= 0.25:
@@ -272,7 +281,9 @@ def _join_pipe_pieces(found, height):
                           "start": {"x": round(c["start"]["x"] + ux * (t0 - c["from"]), 4), "y": round(c["start"]["y"] + uy * (t0 - c["from"]), 4)},
                           "end": {"x": round(c["end"]["x"] + ux * (t1 - c["to"]), 4), "y": round(c["end"]["y"] + uy * (t1 - c["to"]), 4)},
                           "pieces": c.get("pieces", 1) + o.get("pieces", 1)})
-                c["hint"] = "riser?" if z1 - z0 >= 0.5 * height else _hint(t1 - t0, z0, z1, c["depth"], height)
+                c["hint"] = _hint(t1 - t0, z0, z1, c["depth"], height)
+                if z1 - z0 >= 0.5 * height and _round_shape(t1 - t0, c["depth"]):
+                    c["hint"] = "riser?"
                 del found[j]
                 joined = True
                 break

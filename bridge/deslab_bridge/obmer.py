@@ -478,6 +478,7 @@ def label_obstacles(scene, profile, texts=None, chains=None):
     their text band, height texts and zone stamps."""
     cfg = profile["labels"]
     walls, dims, marks, dim_dirs, witness = [], [], [], [], []
+    lines, dim_texts = [], []
     for wall in scene.get("walls", []):
         a, b = _pt(wall["start"]), _pt(wall["end"])
         u = _unit(_sub(b, a))
@@ -487,6 +488,20 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         a, b = _chain_line(ch)
         dim_dirs.append(_pt(ch["direction"]))
         dims.append(_rect_of_segment(a, b, cfg["dimensionBand"]))
+        # deslab: 14.11.2026, the line itself and its texts at the middles of their segments, for a label with no place
+        # clear of the whole band (Nagornaya hall: two inner chains 0.95 m apart, a door label 0.76 m long)
+        lines.append(_rect_of_segment(a, b, cfg.get("lineClear", 0.04)))
+        d_, ref_ = _pt(ch["direction"]), _pt(ch["referencePoint"])
+        side = _left((1.0, 0.0) if abs(d_[0]) >= abs(d_[1]) else (0.0, 1.0))
+        ts = [_dot(_sub(_pt(p_), ref_), d_) for p_ in ch["points"]]
+        for k in range(len(ts) - 1):
+            seg = abs(ts[k + 1] - ts[k])
+            if seg < profile.get("dimensions", {}).get("shortSegment", 0.3):
+                continue
+            c_ = _add(ref_, _mul(d_, (ts[k] + ts[k + 1]) / 2))
+            half = dimension_text_width(seg, profile) / 2
+            corners = [_add(_add(c_, _mul(d_, sg * half)), _mul(side, off)) for sg in (-1, 1) for off in (0.01, 0.18)]
+            dim_texts.append((min(q[0] for q in corners), min(q[1] for q in corners), max(q[0] for q in corners), max(q[1] for q in corners)))
         # deslab: the witness lines too (kv94: «Щиток» across the panel chain's witness lines)
         d_, ref_ = _pt(ch["direction"]), _pt(ch["referencePoint"])
         for p_ in ch["points"]:
@@ -501,7 +516,8 @@ def label_obstacles(scene, profile, texts=None, chains=None):
         c = zone_spot(scene, room)
         r = cfg["stampRadius"]
         marks.append((c[0] - r, c[1] - r, c[0] + r, c[1] + r))
-    return {"walls": walls, "dims": dims, "marks": marks, "dimDirs": dim_dirs, "witness": witness}
+    return {"walls": walls, "dims": dims, "marks": marks, "dimDirs": dim_dirs, "witness": witness, "lines": lines,
+            "dimTexts": dim_texts}
 
 
 def plan_opening_labels(scene, profile, obstacles=None):
@@ -570,13 +586,18 @@ def plan_opening_labels(scene, profile, obstacles=None):
         cost += 100 * sum(_seg_box(a, b, box) for a, b in leads)
         cost += 100 * sum(_seg_box(dot, mid, t) or _seg_box(shelf[0], shelf[1], t) for t in taken)
         cost += 15 * sum(_seg_cross(dot, mid, a, b) or _seg_cross(shelf[0], shelf[1], a, b) for a, b in leads)
-        cost += 100 * sum(_box_hits(box, d) for d in obstacles["dims"])
+        lines = obstacles.get("lines") or [None] * len(obstacles["dims"])
+        # deslab: 14.11.2026, inside the band of a chain but clear of its line and texts: a small cost, so a label of a
+        # narrow room still finds a place (the dimension texts move off it later)
+        cost += sum((100 if ln is None else 300 if _box_hits(box, ln) else 10) for d, ln in zip(obstacles["dims"], lines) if _box_hits(box, d))
+        # a dimension text moves off a label later, a line does not
+        cost += 40 * sum(_box_hits(box, t) for t in obstacles.get("dimTexts", []) if obstacles.get("lines"))
         cost += 100 * sum(_box_hits(box, m) for m in obstacles["marks"] + taken)
-        for d, dd in zip(obstacles["dims"], dim_dirs):
+        for d, dd, ln in zip(obstacles["dims"], dim_dirs, lines):
             # the chain along the opening's own wall face is crossed by every inner leader
             if dd is not None and abs(_dot(dd, u)) > 0.99 and _seg_hits_box(dot, _add(dot, _mul(lead_dir, 0.8)), d):
                 continue
-            cost += 40 * _seg_hits_box(dot, mid, d)
+            cost += 40 * _seg_hits_box(dot, mid, d if ln is None else ln)
         cost += 100 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, w) for w in obstacles["walls"])
         cost += 8 * sum(_seg_hits_box(_add(dot, _mul(lead_dir, 0.05)), mid, m) for m in obstacles["marks"] + taken)
         if flat and not (flat[0] <= box[0] and box[2] <= flat[2] and flat[1] <= box[1] and box[3] <= flat[3]):
@@ -603,6 +624,10 @@ def plan_opening_labels(scene, profile, obstacles=None):
         vertical_wall = abs(u[1]) > abs(u[0])
         best = None
         options = []
+        # deslab: 14.11.2026, Nagornaya: «hпроёма 2210» between the hall and the bathroom stayed in the hall across a
+        # dimension line; the smaller room on the other side of a wall costs less than a line through the text
+        beyond = _add(items[0][1], _mul(n_in, -(half_t + 0.3)))
+        other_side = 90 if any(_inside(r, beyond) for r in rooms) else 200
         for side_rank, side in enumerate((n_in, _mul(n_in, -1))):
             # deslab: how Archicad draws the label (test of 03.11.2026): the text block is hung at
             # the shelf end (left edge for a shelf to the right, right edge for one to the left),
@@ -610,11 +635,14 @@ def plan_opening_labels(scene, profile, obstacles=None):
             # 1 cm past the elbow, so the block starts right at the elbow. A vertical wall: the
             # shelf runs on away from the wall; a horizontal one: to the right if free.
             shelves = ((1.0 if side[0] >= 0 else -1.0),) if vertical_wall else (1.0, -1.0)
-            for lean in (0.0,):  # deslab: square leaders only (a slanted one drew an endless shelf, run 7b)
+            # deslab: a 45° leader only when nothing square is free (Игорь, 03.11.2026); it was left out after the endless
+            # shelf of run 7b, which _redo_endless_labels now makes again. 14.11.2026, Nagornaya hall 1.9 m wide: a square
+            # leader hangs the text at the middle of the door, right on the inner chains
+            for lean in (0.0, 1.0, -1.0):
                 lead_dir = _unit(_add(side, _mul(u, lean)))
-                for length in cfg["leaderLengths"]:
+                for length in (cfg.get("slantLengths", [round(0.5 + 0.05 * i, 2) for i in range(21)]) if lean else cfg["leaderLengths"]):
                     for shelf in shelves:
-                        total = side_rank * 200 + length * weight + (3 if shelf != shelves[0] else 0)
+                        total = side_rank * other_side + length * weight + (3 if shelf != shelves[0] else 0) + (45 if lean else 0)
                         taken = list(o_boxes)
                         leads = list(o_leads)
                         result = []
@@ -840,10 +868,17 @@ def plan_dimension_chains(scene, profile):
     for ch in chains:
         for _ in range(4):
             a, b = _chain_line(ch)
-            if not any(_seg_box(a, b, bx) for bx in blockers):
+            hit = [bx for bx in blockers if _seg_box(a, b, bx)]
+            if not hit:
                 break
-            ch["referencePoint"] = _xy(_add(_pt(ch["referencePoint"]), _mul(_pt(ch["normal"]), step)))
-            ch["offset"] = round(ch["offset"] + step, 4)
+            # deslab: 14.11.2026, Nagornaya hallway: a full step put the chain past a 15 cm duct 0.7 m off the wall, and the
+            # opening labels of the 1.9 m wide hall had no place left between the chains. The chain goes just past the item
+            # (its texts stand at the middles of the segments, not at the item), at most a step.
+            n, ref = _pt(ch["normal"]), _pt(ch["referencePoint"])
+            past = max(_dot(_sub((x, y), ref), n) for bx in hit for x in (bx[0], bx[2]) for y in (bx[1], bx[3]))
+            move = min(max(past + cfg.get("blockerClear", 0.08), 0.02), step)
+            ch["referencePoint"] = _xy(_add(ref, _mul(n, move)))
+            ch["offset"] = round(ch["offset"] + move, 4)
     # deslab: two plans (Игорь 06.11.2026): the measured plan has the room chains, the engineering
     # plan (view «2. Инженерные узлы») the chains of the radiators, panel, shafts and tracing
     split = profile.get("mep", {}).get("splitViews")
@@ -1251,6 +1286,44 @@ def place_dimension_texts(chains, labels, profile, marks=(), inside=None):
             if abs(sh) > 1e-9:
                 ch.setdefault("textAt", {})[k + 1] = _xy(c)
     return chains
+
+
+def plan_annotations(scene, profile, texts):
+    """deslab: 14.11.2026, the dimension chains and the labels of both plans as the build makes them, without Archicad
+    (the build, the tests and an offline check of a run's scene use this one place). Returns (chains, labels, eng_labels,
+    split); chains carry "plan": "obmer" or "eng"."""
+    chains = plan_dimension_chains(scene, profile)
+    obmer_chains = [c for c in chains if c.get("plan") != "eng"]
+    eng_chains = [c for c in chains if c.get("plan") == "eng"]
+    split = bool(profile.get("mep", {}).get("splitViews"))
+    obstacles = label_obstacles(scene, profile, texts, obmer_chains)
+    labels = plan_opening_labels(scene, profile, obstacles)
+    from .mep import plan_mep_labels
+    if split:
+        # deslab: the engineering labels on their own plan: clear of its chains, not of the opening
+        # labels, «Н» or the zone stamp, which are not shown there
+        eng_obstacles = label_obstacles({**scene, "rooms": []}, profile, [], eng_chains)
+        eng_labels = plan_mep_labels(scene, profile, eng_obstacles, taken=[])
+    else:
+        eng_labels = plan_mep_labels(scene, profile, obstacles, taken=[lab["box"] for lab in labels])
+    from .mep import mep_marks
+    strips = [_rect_of_segment(_pt(t["start"]), _pt(t["end"]), float(t.get("thickness", 0.08)) / 2)
+              for t in scene.get("tracing", [])]
+    stamps = [m for m in obstacles["marks"] if m not in [tuple(b) for ch in chains for b in ch.get("leaderBoxes", [])]]
+    # deslab: a text on a leader stays on the flat or its walls (JK v7: «1 039» beyond the right wall)
+    area = [[_pt(p) for p in r["polygon"]] for r in scene.get("rooms", [])]
+    wall_rects = [_rect_of_segment(_pt(w["start"]), _pt(w["end"]), float(w.get("thickness", 0.2)) / 2)
+                  for w in scene.get("walls", [])]
+
+    def on_flat(q):
+        return any(_inside(r, q) for r in area) or any(b[0] - 1e-3 <= q[0] <= b[2] + 1e-3 and b[1] - 1e-3 <= q[1] <= b[3] + 1e-3
+                                                     for b in wall_rects)
+    if split:
+        place_dimension_texts(obmer_chains, labels, profile, marks=stamps + strips + mep_marks(scene), inside=on_flat)
+        place_dimension_texts(eng_chains, eng_labels, profile, marks=strips + mep_marks(scene), inside=on_flat)
+    else:
+        place_dimension_texts(chains, labels + eng_labels, profile, marks=stamps + strips + mep_marks(scene), inside=on_flat)
+    return chains, labels, eng_labels, split
 
 
 def plan_wet_zones(scene, profile):
@@ -1837,37 +1910,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     report.step("тексты Н", count=len(texts))
 
     # 3. Opening labels, clear of walls, dimension chains, «Н» texts, stamps and each other.
-    chains = plan_dimension_chains(scene, profile)
-    obmer_chains = [c for c in chains if c.get("plan") != "eng"]
-    eng_chains = [c for c in chains if c.get("plan") == "eng"]
-    split = bool(profile.get("mep", {}).get("splitViews"))
-    obstacles = label_obstacles(scene, profile, texts, obmer_chains)
-    labels = plan_opening_labels(scene, profile, obstacles)
-    from .mep import plan_mep_labels
-    if split:
-        # deslab: the engineering labels on their own plan: clear of its chains, not of the opening
-        # labels, «Н» or the zone stamp, which are not shown there
-        eng_obstacles = label_obstacles({**scene, "rooms": []}, profile, [], eng_chains)
-        eng_labels = plan_mep_labels(scene, profile, eng_obstacles, taken=[])
-    else:
-        eng_labels = plan_mep_labels(scene, profile, obstacles, taken=[lab["box"] for lab in labels])
-    from .mep import mep_marks
-    strips = [_rect_of_segment(_pt(t["start"]), _pt(t["end"]), float(t.get("thickness", 0.08)) / 2)
-              for t in scene.get("tracing", [])]
-    stamps = [m for m in obstacles["marks"] if m not in [tuple(b) for ch in chains for b in ch.get("leaderBoxes", [])]]
-    # deslab: a text on a leader stays on the flat or its walls (JK v7: «1 039» beyond the right wall)
-    area = [[_pt(p) for p in r["polygon"]] for r in scene.get("rooms", [])]
-    wall_rects = [_rect_of_segment(_pt(w["start"]), _pt(w["end"]), float(w.get("thickness", 0.2)) / 2)
-                  for w in scene.get("walls", [])]
-
-    def on_flat(q):
-        return any(_inside(r, q) for r in area) or any(b[0] - 1e-3 <= q[0] <= b[2] + 1e-3 and b[1] - 1e-3 <= q[1] <= b[3] + 1e-3
-                                                     for b in wall_rects)
-    if split:
-        place_dimension_texts(obmer_chains, labels, profile, marks=stamps + strips + mep_marks(scene), inside=on_flat)
-        place_dimension_texts(eng_chains, eng_labels, profile, marks=strips + mep_marks(scene), inside=on_flat)
-    else:
-        place_dimension_texts(chains, labels + eng_labels, profile, marks=stamps + strips + mep_marks(scene), inside=on_flat)
+    chains, labels, eng_labels, split = plan_annotations(scene, profile, texts)
     n_open = len(labels)
     labels = labels + eng_labels
     data = []
