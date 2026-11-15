@@ -1469,6 +1469,52 @@ def _check_details(response, report, what):
         report.errors.append(f"{what}: не применено к {len(bad)} элементам ({bad[0].get('error', {}).get('message', '')})")
 
 
+def fallback_zone_markers(ac, scene, zone_guid, profile, layer_index, floor_index, report):
+    """deslab: portable reference number-in-circle when AC29 cannot import the AC27 Zone favorite."""
+    cfg = profile["zone"].get("marker")
+    rooms = [r for r in scene.get("rooms", []) if r["id"] in zone_guid]
+    if not cfg or not rooms:
+        return
+    try:
+        stamps = ac.tapir("GetGDLParametersOfElements", {"elements": _elements([zone_guid[r["id"]] for r in rooms])}).get("gdlParametersOfElements", [])
+    except Exception as error:
+        report.errors.append(f"Номер зоны в круге: параметры штампа недоступны ({error})")
+        return
+    changes = []
+    for room, stamp in zip(rooms, stamps):
+        params = {p["name"]: p for p in stamp.get("parameters", [])}
+        groups = ("0", "50", "100", "200")
+        required = [prefix + group for group in groups for prefix in ("bShowZoneNum_", "iFrameStyle_")]
+        if not all(name in params and params[name].get("type") == ("Boolean" if name.startswith("bShow") else "Integer") for name in required):
+            break
+        flags = [{"name": name, "value": False} for name in params if name.startswith("bShow") and name.rsplit("_", 1)[-1] in groups]
+        flags += [{"name": "iFrameStyle_" + group, "value": 1} for group in groups]
+        changes.append({"elementId": {"guid": zone_guid[room["id"]]}, "gdlParameters": flags})
+    if len(changes) != len(rooms):
+        report.errors.append("Номер зоны в круге: неизвестный тип штампа; его параметры сохранены без изменений.")
+        return
+    texts, circles = [], []
+    radius = float(cfg["radius"])
+    style = dict(cfg["style"], justification="Center", anchor="MiddleMiddle")
+    line_type = _line_type(ac, ("сплошная", "solid"))
+    for room in rooms:
+        x, y = zone_spot(scene, room)
+        texts.append({"text": str(room.get("number", room["id"])), "coordinate": {"x": x, "y": y},
+                      "floorIndex": floor_index, "layerIndex": layer_index, "style": style})
+        circles.append({"coordinates": [_xy((x + radius * dx, y + radius * dy)) for dx, dy in ((1, 0), (0, 1), (-1, 0), (0, -1), (1, 0))],
+                        "arcs": [{"begIndex": i, "endIndex": i + 1, "arcAngle": math.pi / 2} for i in range(4)],
+                        "linePenIndex": cfg["pen"], "floorInd": floor_index, "layerIndex": layer_index,
+                        **({"lineTypeIndex": line_type} if line_type else {})})
+    ids = _created(ac.tapir("CreateTexts", {"textsData": texts}), "elements", report, "Номер зоны")
+    ids += _created(ac.tapir("CreatePolylines", {"polylinesData": circles}), "elements", report, "Круг номера зоны")
+    if len(ids) != 2 * len(rooms) or any(g is None for g in ids):
+        if any(ids):
+            ac.tapir("DeleteElements", {"elements": _elements([g for g in ids if g])})
+        report.errors.append("Номер зоны в круге не создан; исходные штампы сохранены.")
+        return
+    _check_details(ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": changes}), report, "Скрытие стандартного штампа зоны")
+
+
 def _find_key(obj, key):
     if isinstance(obj, dict):
         if key in obj:
@@ -1923,15 +1969,18 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         ac.tapir("UnlockElements", {"elements": _elements(zone_guids)})
     report.step("слои стен, зоны разблокированы", partitions=len(partitions))
 
-    # Zone stamps in the middle of the room (the «Н» text goes under them).
-    if profile["zone"].get("stampAtCentre") and zone_guid:
+    # deslab: reference zones have no coloured area fill; keep this independent of stamp placement.
+    zone_style = {key: profile["zone"][key] for key in ("useFloorFill", "useContourLine") if key in profile["zone"]}
+    if zone_guid and (profile["zone"].get("stampAtCentre") or zone_style):
         items = []
         for room in scene.get("rooms", []):
             if room["id"] in zone_guid:
-                c = zone_spot(scene, room)
+                details = dict(zone_style)
+                if profile["zone"].get("stampAtCentre"):
+                    details["stampPosition"] = _xy(zone_spot(scene, room))
                 items.append({"elementId": {"guid": zone_guid[room["id"]]},
-                              "details": {"typeSpecificDetails": {"stampPosition": _xy(c)}}})
-        _check_details(ac.tapir("SetDetailsOfElements", {"elementsWithDetails": items}), report, "Штамп зоны в центр")
+                              "details": {"typeSpecificDetails": details}})
+        _check_details(ac.tapir("SetDetailsOfElements", {"elementsWithDetails": items}), report, "Оформление зон")
 
     # Walls painted on every side and on the ends with one plain surface (no grey concrete in 3D).
     surface = find_surface(ac, profile["walls"].get("surface"))
@@ -1963,6 +2012,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         guids = _created(ac.tapir("CreateTexts", {"textsData": data}), "elements", report, "Текст Н")
         ac.tapir("UnlockElements", {"elements": _elements([g for g in guids if g])})
     report.step("тексты Н", count=len(texts))
+    if not F.get("zone"):
+        fallback_zone_markers(ac, scene, zone_guid, profile, idx.get(L["zones"]), floor_index, report)
 
     # 3. Opening labels, clear of walls, dimension chains, «Н» texts, stamps and each other.
     chains, labels, eng_labels, split = plan_annotations(scene, profile, texts)

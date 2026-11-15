@@ -107,6 +107,10 @@
     }
   },
   "zone": {
+    "useFloorFill": false,
+    "marker": {"radius": 0.15, "pen": 120,
+               "style": {"fontName": "GOST type B Кириллический", "height": 3, "penIndex": 120,
+                         "bold": false, "italic": false, "fixedSize": true, "usedContour": false, "usedFill": false}},
     "heightTextFormat": "Н {height_mm}",
     "heightTextOffset": -0.35,
     "defaultName": "Помещение",

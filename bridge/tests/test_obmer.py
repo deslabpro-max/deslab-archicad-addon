@@ -404,6 +404,68 @@ def test_missing_favorites_build_with_defaults():
     dimensions = next(p for c, p in ac.calls if c == "CreateAssociativeDimensions")["dimensionsData"]
     assert all(d["linePen"] == 120 and d["markerPen"] == 120 for d in dimensions)
     assert all(d["markerType"] == 6 and d["markerSize"] == 1.25 for d in dimensions)
+    zones = [x for c, p in ac.calls if c == "SetDetailsOfElements" for x in p["elementsWithDetails"]
+             if x["elementId"]["guid"] == "Z1"]
+    assert zones and zones[0]["details"]["typeSpecificDetails"]["useFloorFill"] is False
+
+
+def test_zone_fill_style_without_moving_stamp():
+    # deslab: zone fill must match the reference even if a profile keeps the stamp at its original position.
+    import copy
+    profile = copy.deepcopy(PROFILE)
+    profile["zone"]["stampAtCentre"] = False
+    ac = FakeArchicad()
+    obmer.build_measured_plan(ac, SCENE, profile)
+    zones = [x for c, p in ac.calls if c == "SetDetailsOfElements" for x in p["elementsWithDetails"]
+             if x["elementId"]["guid"] == "Z1"]
+    details = zones[0]["details"]["typeSpecificDetails"]
+    assert details["useFloorFill"] is False and "stampPosition" not in details
+
+
+def test_portable_zone_number_circle():
+    # deslab: AC29's data-table stamp is hidden only after a complete reference circle and number are created.
+    class KnownStamp(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "GetGDLParametersOfElements":
+                self.calls.append((command, params))
+                return {"gdlParametersOfElements": [{"parameters": [
+                    {"name": prefix + group, "type": kind, "value": value}
+                    for group in ("0", "50", "100", "200")
+                    for prefix, kind, value in (("bShowZoneNum_", "Boolean", True), ("bShowArea_", "Boolean", True),
+                                                ("iFrameStyle_", "Integer", 5))]}]}
+            return super().tapir(command, params, timeout)
+    ac, report = KnownStamp(), obmer.Report()
+    obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
+    assert not report.errors, report.errors
+    text = next(p for c, p in ac.calls if c == "CreateTexts")["textsData"][0]
+    circle = next(p for c, p in ac.calls if c == "CreatePolylines")["polylinesData"][0]
+    assert text["text"] == "1" and text["layerIndex"] == 42
+    assert text["style"]["fontName"] == "GOST type B Кириллический" and text["style"]["height"] == 3
+    assert text["style"]["penIndex"] == circle["linePenIndex"] == 120
+    assert circle["coordinates"][0] == circle["coordinates"][-1] and len(circle["arcs"]) == 4
+    center = text["coordinate"]
+    assert all(abs((p["x"] - center["x"]) ** 2 + (p["y"] - center["y"]) ** 2 - 0.15 ** 2) < 1e-8 for p in circle["coordinates"])
+    hide = next(p for c, p in ac.calls if c == "SetGDLParametersOfElements")["elementsWithGDLParameters"][0]
+    assert all(p["value"] is False if p["name"].startswith("bShow") else p["value"] == 1 for p in hide["gdlParameters"])
+    assert [c for c, _ in ac.calls].index("CreatePolylines") < [c for c, _ in ac.calls].index("SetGDLParametersOfElements")
+
+    class FailedCircle(KnownStamp):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "CreatePolylines":
+                self.calls.append((command, params))
+                return {"elements": [{"error": {"message": "refused"}}]}
+            return super().tapir(command, params, timeout)
+    ac, report = FailedCircle(), obmer.Report()
+    obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
+    assert report.errors and any(c == "DeleteElements" for c, _ in ac.calls)
+    assert not any(c == "SetGDLParametersOfElements" for c, _ in ac.calls)
+
+
+def test_unknown_zone_stamp_is_not_hidden():
+    ac, report = FakeArchicad(), obmer.Report()
+    obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
+    assert report.errors and "неизвестный тип штампа" in report.errors[0]
+    assert [c for c, _ in ac.calls] == ["GetGDLParametersOfElements"]
 
 
 def test_axonometry_on_white():
