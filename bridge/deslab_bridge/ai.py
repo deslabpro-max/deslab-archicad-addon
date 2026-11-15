@@ -120,6 +120,23 @@ def _codex_executable():
     raise AIError("Не найден Codex CLI. Установите Codex и войдите через codex login.")
 
 
+def _run_codex_with_progress(command, *, progress_interval=15, **kwargs):
+    """deslab: drain CLI pipes through run() while reporting elapsed waiting time, without retrying the request."""
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as WaitTimeout
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        pending = worker.submit(subprocess.run, command, **kwargs)
+        while True:
+            try:
+                return pending.result(timeout=progress_interval)
+            except WaitTimeout:
+                if pending.done():
+                    return pending.result()  # Completion can race with the heartbeat timeout; preserve its result/error.
+                elapsed = int(time.monotonic() - started)
+                print(f"ИИ: ожидаю ответ Codex CLI, прошло {elapsed} с (предел {kwargs['timeout']} с).", flush=True)
+
+
 def _chat_codex(messages, profile, model, json_mode):
     """deslab: headless subscription adapter; native image attachments, no MCP or UI automation."""
     import subprocess
@@ -155,9 +172,11 @@ def _chat_codex(messages, profile, model, json_mode):
         for picture in pictures:
             command.extend(["--image", picture])
         command.append("-")
+        started = time.monotonic()
+        print(f"ИИ: {variant}, изображений {len(pictures)}. Ожидаю ответ…", flush=True)
         try:
-            done = subprocess.run(command, input="\n\n".join(parts).encode("utf-8"), capture_output=True,
-                                  cwd=folder, timeout=max(int(cfg["timeout"]), 600))
+            done = _run_codex_with_progress(command, input="\n\n".join(parts).encode("utf-8"), capture_output=True,
+                                            cwd=folder, timeout=max(int(cfg["timeout"]), 600))
         except (OSError, subprocess.TimeoutExpired) as error:
             raise AIError("Codex не ответил: " + str(error)) from None
         usage, completed = {}, False
@@ -176,7 +195,10 @@ def _chat_codex(messages, profile, model, json_mode):
         answer = result_path.read_text(encoding="utf-8").strip()
         if not answer:
             raise AIError("Codex вернул пустой ответ.")
-        return answer, dict(usage, provider=CODEX, requested=variant, models=[variant])
+        elapsed = round(time.monotonic() - started, 1)
+        print(f"ИИ: ответ {variant} получен за {elapsed:g} с.", flush=True)
+        return answer, dict(usage, provider=CODEX, requested=variant, models=[variant],
+                            elapsed_seconds=elapsed, input_images=len(pictures))
 
 
 def _claude_executable():

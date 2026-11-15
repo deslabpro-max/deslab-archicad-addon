@@ -1,10 +1,12 @@
 """deslab: subscription transport contract, without network or an Archicad process."""
 import base64
 import json
+import io
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deslab_bridge import ai, rebuild
@@ -64,6 +66,43 @@ def test_no_ai_rejected_before_archicad():
             assert error.code == 2
         else:
             raise AssertionError("Removed CLI option must fail")
+
+
+def test_waiting_reports_progress_without_retry_or_losing_output():
+    import time
+    result = subprocess.CompletedProcess([], 0, b'complete stdout', b'complete stderr')
+    def slow_run(*args, **kwargs):
+        time.sleep(0.08)
+        return result
+    output = io.StringIO()
+    with patch('subprocess.run', side_effect=slow_run) as run, redirect_stdout(output):
+        actual = ai._run_codex_with_progress(['fake-codex'], timeout=600, progress_interval=0.02)
+    assert run.call_count == 1
+    assert actual is result
+    assert 'ожидаю ответ Codex CLI' in output.getvalue()
+    assert 'предел 600 с' in output.getvalue()
+
+
+def test_process_timeout_is_propagated_without_retry():
+    error = subprocess.TimeoutExpired(['fake-codex'], 0.01)
+    with patch('subprocess.run', side_effect=error) as run:
+        try:
+            ai._run_codex_with_progress(['fake-codex'], timeout=0.01, progress_interval=0.02)
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError('Process timeout must propagate')
+    assert run.call_count == 1
+
+
+def test_completion_at_heartbeat_boundary_is_not_a_failure():
+    result = subprocess.CompletedProcess([], 0, b'answer', b'')
+    pending = Mock()
+    pending.result.side_effect = [TimeoutError(), result]
+    pending.done.return_value = True
+    with patch('concurrent.futures.ThreadPoolExecutor') as executor:
+        executor.return_value.__enter__.return_value.submit.return_value = pending
+        assert ai._run_codex_with_progress(['fake-codex'], timeout=600) is result
 
 
 if __name__ == "__main__":

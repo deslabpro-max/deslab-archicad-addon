@@ -15,6 +15,7 @@ with commands that deslab needs for drafting in Archicad 27 from Claude.
 
 | Command | Change |
 | --- | --- |
+| `ai.py` (Codex CLI), tests | deslab, 15.11.2026: show elapsed waiting time every 15 seconds while the existing CLI request runs, then report its duration. Preserve captured output, the process timeout and a single request; save elapsed_seconds/input_images in usage. No additional AI calls or model changes. |
 | `layouts.py` (`place_on_layouts`) | deslab, 15.11.2026: preserve the configured axonometry Drawing during partial plan placement even when its scaled ratio lies in the plan range. Verified by preserving both actual 3D Drawing GUIDs across a repeated plan-only update. |
 | `obmer.py` (`plan_wet_zones`, `place_wet_zones`), profile/tests | deslab, 15.11.2026: draw the AI's explicit scene.wetZones, shift them with the scene and retain legacy room patches without suppressing another bathroom. Use the reference's named 25% fill, explicit pens and profile foreground color instead of tool defaults. Material legend comparisons ignore inactive hatch pen fields returned differently by AC29, preventing duplicate samples. |
 | `obmer.py` (`fallback_zone_markers`), tests | deslab, 15.11.2026: explicitly find/load the configured GOST marker font through GetFontsByName before creating zone numbers in a fresh AC29 process. Verify the returned font identity; a missing font leaves the original zone stamps visible and reports an error. |
