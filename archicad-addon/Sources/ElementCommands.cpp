@@ -1470,6 +1470,9 @@ GS::ObjectState GetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                 typeSpecificDetails.Add ("fixedStampAngle", elem.zone.fixedAngle);
                 // deslab: portable zone appearance when an older template's favorite cannot be imported.
                 typeSpecificDetails.Add ("useFloorFill", elem.zone.useFloorFill);
+                typeSpecificDetails.Add ("floorFillAttributeId", CreateGuidObjectState (GetAttributeGuidFromIndex (API_FilltypeID, elem.zone.floorFillInd)));
+                typeSpecificDetails.Add ("floorFillPenIndex", elem.zone.floorFillPen);
+                typeSpecificDetails.Add ("floorFillBackgroundPenIndex", elem.zone.floorFillBGPen);
                 typeSpecificDetails.Add ("useContourLine", elem.zone.useContourLine);
                 typeSpecificDetails.Add ("isManual", elem.zone.manual);
                 if (!elem.zone.manual) {
@@ -2423,6 +2426,18 @@ GS::ObjectState SetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                         // deslab: match the office zone appearance without changing its geometry or stamp parameters.
                         if (typeSpecificDetails->Get ("useFloorFill", elem.zone.useFloorFill)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, useFloorFill);
+                        }
+                        // deslab: reproduce the zone's own reference fill instead of showing its category color.
+                        const GS::ObjectState* floorFillId = typeSpecificDetails->Get ("floorFillAttributeId");
+                        if (floorFillId != nullptr) {
+                            elem.zone.floorFillInd = GetAttributeIndexFromGuid (API_FilltypeID, GetGuidFromObjectState (*floorFillId));
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, floorFillInd);
+                        }
+                        if (typeSpecificDetails->Get ("floorFillPenIndex", elem.zone.floorFillPen)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, floorFillPen);
+                        }
+                        if (typeSpecificDetails->Get ("floorFillBackgroundPenIndex", elem.zone.floorFillBGPen)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, floorFillBGPen);
                         }
                         if (typeSpecificDetails->Get ("useContourLine", elem.zone.useContourLine)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, useContourLine);

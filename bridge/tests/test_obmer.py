@@ -228,6 +228,7 @@ class FakeArchicad:
         self.calls = []
         self.log = []
         self.ids = itertools.count(1)
+        self.dimension_prefs = {"dimensionStandardIndex": 4, "linear": {"unit": "Meter", "decimals": 3}}
 
     def alive(self):
         return True
@@ -235,9 +236,32 @@ class FakeArchicad:
     def _new(self, n):
         return [{"elementId": {"guid": f"G{next(self.ids)}"}} for _ in range(n)]
 
+    def api(self, command, params=None):
+        self.calls.append((command, params))
+        assert command == "API.GetNavigatorItemTree"
+        return {"navigatorTree": {"rootItem": {"name": "Виды", "type": "FolderItem", "children": [
+            {"name": item["view"], "navigatorItemId": {"guid": f"V{i}"}, "type": "StoryItem"}
+            for i, item in enumerate(PROFILE["layouts"]["items"]) ]}}}
+
     def tapir(self, command, params=None, timeout=None):
         self.calls.append((command, params))
         self.log.append((command, 0))
+        if command == "SetProjectPreferences":
+            self.dimension_prefs.update(params["dimensions"])
+            return {"dimensions": {"success": True}}
+        if command == "GetProjectPreferences":
+            return {"dimensions": self.dimension_prefs}
+        if command == "SetViewSettings":
+            return {"executionResults": [{"success": True} for _ in params["navigatorItemIdsWithViewSettings"]]}
+        if command == "GetAttributesByType" and params["attributeType"] == "ZoneCategory":
+            return {"attributes": [{"attributeId": {"guid": "CAT"}}]}
+        if command == "GetZoneCategories":
+            return {"zoneCategories": [{"name": "Полы", "attributeId": {"guid": "CAT"},
+                                         "stampName": "Маркировка помещения", "stampMainGuid": "STAMP", "stampRevGuid": "REV"}]}
+        if command == "GetAvailableLibraryParts":
+            return {"libraryParts": [{"guid": "STAMP", "typeId": "Object"}]}
+        if command == "GetAttributesByType" and params["attributeType"] == "Fill":
+            return {"attributes": [{"name": "Фон", "attributeId": {"guid": "EMPTY-FILL"}}]}
         if command == "GetAttributesByType" and params["attributeType"] == "Surface":
             return {"attributes": [{"name": "Бетон - Гладкий", "attributeId": {"guid": "S0"}}, {"name": "Краска - Белая", "attributeId": {"guid": "S1"}}]}
         if command == "GetAttributesByType" and params["attributeType"] == "BuildingMaterial":
@@ -270,10 +294,11 @@ def test_build_calls():
     report = obmer.build_measured_plan(ac, SCENE, PROFILE, rooms={"R1": {"name": "Кухня", "wet": "kitchen"}})
     names = [c for c, _ in ac.calls if c != "GetFavoritesByType"]
     # a layer hidden in the open view is shown for the build and hidden again at the end
-    assert names[:6] == ["GetAttributesByType", "GetLayers", "CreateLayers", "ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
+    assert names[:10] == ["GetAttributesByType", "GetLayers", "CreateLayers", "SetProjectPreferences", "GetProjectPreferences",
+                          "API.GetNavigatorItemTree", "SetViewSettings", "ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
     assert names[-1] == "CreateLayers" and ac.calls[-1][1]["layerDataArray"][0]["isHidden"] is True
     assert ac.calls[2][1]["layerDataArray"] == [{"attributeId": {"guid": "L0"}, "name": "слой", "isHidden": False, "isLocked": False}]
-    assert len(names) < 30, names  # a whole sheet in a couple dozen fast calls, not hundreds of Claude turns
+    assert len(names) < 34, names  # includes four calls to set, verify and save the reference dimension format
     build = next(p for c, p in ac.calls if c == "BuildModelFromScan")
     assert build["scene"]["rooms"][0]["name"] == "Кухня"
     assert build["favorites"]["zone"] == "ОБМЕР шаблон Зона"
@@ -406,7 +431,9 @@ def test_missing_favorites_build_with_defaults():
     assert all(d["markerType"] == 6 and d["markerSize"] == 1.25 for d in dimensions)
     zones = [x for c, p in ac.calls if c == "SetDetailsOfElements" for x in p["elementsWithDetails"]
              if x["elementId"]["guid"] == "Z1"]
-    assert zones and zones[0]["details"]["typeSpecificDetails"]["useFloorFill"] is False
+    assert zones and zones[0]["details"]["typeSpecificDetails"]["useFloorFill"] is True
+    assert zones[0]["details"]["typeSpecificDetails"]["floorFillAttributeId"] == {"guid": "EMPTY-FILL"}
+    assert zones[0]["details"]["typeSpecificDetails"]["floorFillBackgroundPenIndex"] == 0
 
 
 def test_zone_fill_style_without_moving_stamp():
@@ -419,7 +446,8 @@ def test_zone_fill_style_without_moving_stamp():
     zones = [x for c, p in ac.calls if c == "SetDetailsOfElements" for x in p["elementsWithDetails"]
              if x["elementId"]["guid"] == "Z1"]
     details = zones[0]["details"]["typeSpecificDetails"]
-    assert details["useFloorFill"] is False and "stampPosition" not in details
+    assert details["useFloorFill"] is True and "stampPosition" not in details
+    assert details["floorFillPenIndex"] == 86 and details["floorFillBackgroundPenIndex"] == 0
 
 
 def test_portable_zone_number_circle():
@@ -433,6 +461,9 @@ def test_portable_zone_number_circle():
                     for group in ("0", "50", "100", "200")
                     for prefix, kind, value in (("bShowZoneNum_", "Boolean", True), ("bShowArea_", "Boolean", True),
                                                 ("iFrameStyle_", "Integer", 5))]}]}
+            if command == "SetGDLParametersOfElements":
+                self.calls.append((command, params))
+                return {"executionResults": [{"success": True}]}
             return super().tapir(command, params, timeout)
     ac, report = KnownStamp(), obmer.Report()
     obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
@@ -460,12 +491,136 @@ def test_portable_zone_number_circle():
     assert report.errors and any(c == "DeleteElements" for c, _ in ac.calls)
     assert not any(c == "SetGDLParametersOfElements" for c, _ in ac.calls)
 
+    class CircleException(KnownStamp):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "CreatePolylines":
+                raise RuntimeError("circle creation failed")
+            return super().tapir(command, params, timeout)
+    ac, report = CircleException(), obmer.Report()
+    obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
+    assert report.errors and "circle creation failed" in report.errors[-1]
+    assert len(next(p for c, p in ac.calls if c == "DeleteElements")["elements"]) == 1
+
+    class FailedHide(KnownStamp):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "SetGDLParametersOfElements":
+                self.calls.append((command, params))
+                return {"executionResults": [{"success": False, "error": {"message": "refused"}}]}
+            return super().tapir(command, params, timeout)
+    ac, report = FailedHide(), obmer.Report()
+    obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
+    assert report.errors and "штамп не скрыт" in report.errors[-1]
+    removed = next(p for c, p in ac.calls if c == "DeleteElements")["elements"]
+    assert len(removed) == 2, "Failed hiding must remove both newly created marker elements"
+
 
 def test_unknown_zone_stamp_is_not_hidden():
     ac, report = FakeArchicad(), obmer.Report()
     obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
     assert report.errors and "неизвестный тип штампа" in report.errors[0]
     assert [c for c, _ in ac.calls] == ["GetGDLParametersOfElements"]
+
+
+def test_reference_dimension_preferences_verify_format_not_preset_index():
+    # deslab: AC29 can retain the informational named-preset index while the actual format is already integer mm.
+    class Views(FakeArchicad):
+        def api(self, command, params=None):
+            tree = super().api(command, params)
+            tree["navigatorTree"]["rootItem"]["children"].append({
+                "name": "Другой вид", "type": "StoryItem", "navigatorItemId": {"guid": "OTHER"}})
+            return tree
+    ac, report = Views(), obmer.Report()
+    assert ac.dimension_prefs["dimensionStandardIndex"] == 4
+    obmer.apply_dimension_preferences(ac, PROFILE, report)
+    assert not report.errors, report.errors
+    assert ac.dimension_prefs == {"dimensionStandardIndex": 4, "linear": {"unit": "Millimeter", "decimals": 0}}
+    calls = next(p for c, p in ac.calls if c == "SetViewSettings")["navigatorItemIdsWithViewSettings"]
+    assert {v["navigatorItemId"]["guid"] for v in calls} == {"V0", "V1"}
+    assert all(v["viewSettings"] == {"useCurrentDimensions": True} for v in calls)
+
+
+def test_reference_dimension_preferences_errors_are_reported():
+    class IgnoredPreferences(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "SetProjectPreferences":
+                self.calls.append((command, params))
+                return {"dimensions": {"success": True}}
+            return super().tapir(command, params, timeout)
+    ac, report = IgnoredPreferences(), obmer.Report()
+    obmer.apply_dimension_preferences(ac, PROFILE, report)
+    assert report.errors and "после записи" in report.errors[0]
+    assert not any(c == "SetViewSettings" for c, _ in ac.calls)
+
+    class RefusedView(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "SetViewSettings":
+                return {"executionResults": [{"success": True}, {"success": False, "error": {"message": "refused"}}]}
+            return super().tapir(command, params, timeout)
+    ac, report = RefusedView(), obmer.Report()
+    obmer.apply_dimension_preferences(ac, PROFILE, report)
+    assert report.errors and "во всех видах" in report.errors[0]
+
+    class RefusedPreferences(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "SetProjectPreferences":
+                return {"dimensions": {"success": False, "error": {"message": "refused"}}}
+            return super().tapir(command, params, timeout)
+    ac, report = RefusedPreferences(), obmer.Report()
+    obmer.apply_dimension_preferences(ac, PROFILE, report)
+    assert report.errors and "refused" in report.errors[0]
+
+
+def test_zone_category_repairs_unloaded_reference_stamp():
+    import copy
+    class Categories(FakeArchicad):
+        def __init__(self):
+            super().__init__()
+            self.categories = [
+                {"name": "Полы", "attributeId": {"guid": "C1"}, "categoryCode": "ГОСТ", "color": {"red": 0.5, "green": 0.5, "blue": 0.5},
+                 "stampName": "Маркировка помещения 27", "stampMainGuid": "UNLOADED", "stampRevGuid": "OLD"},
+                {"name": "A stock category", "attributeId": {"guid": "C2"}, "stampName": "Паспорт Зоны", "stampMainGuid": "STOCK", "stampRevGuid": "R2"},
+                {"name": "Z matching category", "attributeId": {"guid": "C3"}, "stampName": "Маркировка помещения 29", "stampMainGuid": "MATCH", "stampRevGuid": "R3"}]
+        def tapir(self, command, params=None, timeout=None):
+            self.calls.append((command, params))
+            if command == "GetAttributesByType":
+                return {"attributes": [{"attributeId": c["attributeId"]} for c in self.categories]}
+            if command == "GetZoneCategories":
+                ids = [a["attributeId"] for a in params["attributeIds"]]
+                return {"zoneCategories": [copy.deepcopy(c) for c in self.categories if c["attributeId"] in ids]}
+            if command == "GetAvailableLibraryParts":
+                return {"libraryParts": [{"guid": g, "typeId": "Object"} for g in ("STOCK", "MATCH")]}
+            if command == "CreateZoneCategories":
+                self.categories[0].update(params["zoneCategoryDataArray"][0])
+                return {"attributeIds": [{"attributeId": self.categories[0]["attributeId"]}]}
+            return {}
+    ac, report = Categories(), obmer.Report()
+    original = copy.deepcopy(ac.categories[0])
+    assert obmer.ensure_zone_category(ac, PROFILE, report) == {"guid": "C1"}
+    assert not report.errors, report.errors
+    assert all(ac.categories[0][k] == original[k] for k in ("name", "attributeId", "categoryCode", "color"))
+    assert ac.categories[0]["stampMainGuid"] == "MATCH" and ac.categories[0]["stampRevGuid"] == "R3"
+    assert next(p for c, p in ac.calls if c == "CreateZoneCategories")["overwriteExisting"] is True
+    ac.calls.clear()
+    assert obmer.ensure_zone_category(ac, PROFILE, report) == {"guid": "C1"}
+    assert not any(c == "CreateZoneCategories" for c, _ in ac.calls), "An already loaded stamp must remain unchanged"
+
+
+def test_missing_zone_stamp_stops_before_model_creation():
+    class NoStamp(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "GetFavoritesByType":
+                return {"favorites": []}
+            if command == "GetAvailableLibraryParts":
+                return {"libraryParts": []}
+            return super().tapir(command, params, timeout)
+    ac = NoStamp()
+    try:
+        obmer.build_measured_plan(ac, SCENE, PROFILE)
+    except ValueError as error:
+        assert "загруженным штампом" in str(error)
+    else:
+        raise AssertionError("Cannot build zones using an unloaded stamp")
+    assert not any(c == "BuildModelFromScan" for c, _ in ac.calls)
 
 
 def test_axonometry_on_white():

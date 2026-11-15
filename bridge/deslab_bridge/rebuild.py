@@ -176,6 +176,8 @@ def place(ac, guids, scene=None, source=None, root=None):
     # the rooms rounded one by one, as the schedule on the layout sums them (49,80, not 49,79 of the unrounded sum)
     total = sum(round(abs(obmer.polygon_area([(p["x"], p["y"]) for p in r["polygon"]])), 2) for r in (scene or {}).get("rooms", []) if r.get("polygon"))
     for step, args in ((layouts.place_explication, (ac, profile, Path(root) / "deslab-standard" / "schedules" if root else None)), (layouts.place_note, (ac, profile, source, total)),
+                       # deslab: the reference's legend Hatch/PolyLine symbols are not in the older standard export.
+                       (layouts.place_reference_legend, (ac, profile)),
                        (layouts.place_axonometry, (ac, profile))):
         try:
             out += step(*args)

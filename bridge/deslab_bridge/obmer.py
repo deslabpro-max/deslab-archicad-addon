@@ -1505,14 +1505,87 @@ def fallback_zone_markers(ac, scene, zone_guid, profile, layer_index, floor_inde
                         "arcs": [{"begIndex": i, "endIndex": i + 1, "arcAngle": math.pi / 2} for i in range(4)],
                         "linePenIndex": cfg["pen"], "floorInd": floor_index, "layerIndex": layer_index,
                         **({"lineTypeIndex": line_type} if line_type else {})})
-    ids = _created(ac.tapir("CreateTexts", {"textsData": texts}), "elements", report, "Номер зоны")
-    ids += _created(ac.tapir("CreatePolylines", {"polylinesData": circles}), "elements", report, "Круг номера зоны")
-    if len(ids) != 2 * len(rooms) or any(g is None for g in ids):
+    ids = []
+    try:
+        ids += _created(ac.tapir("CreateTexts", {"textsData": texts}), "elements", report, "Номер зоны")
+        ids += _created(ac.tapir("CreatePolylines", {"polylinesData": circles}), "elements", report, "Круг номера зоны")
+        if len(ids) != 2 * len(rooms) or any(g is None for g in ids):
+            raise ValueError("номер или круг не создан; исходные штампы сохранены")
+        result = ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": changes}).get("executionResults", [])
+        if len(result) != len(changes) or any(not r.get("success") for r in result):
+            raise ValueError("стандартный штамп не скрыт; новые маркеры удалены")
+    except Exception as error:
+        # deslab: do not leave a duplicate number if circle creation or hiding the old stamp failed.
         if any(ids):
             ac.tapir("DeleteElements", {"elements": _elements([g for g in ids if g])})
-        report.errors.append("Номер зоны в круге не создан; исходные штампы сохранены.")
+        report.errors.append(f"Номер зоны в круге: {error}")
+
+
+def apply_dimension_preferences(ac, profile, report):
+    """deslab: reference dimensions are integer mm; a named project/view preset must not restore metres."""
+    desired = profile.get("dimensionPreferences")
+    if not desired:
         return
-    _check_details(ac.tapir("SetGDLParametersOfElements", {"elementsWithGDLParameters": changes}), report, "Скрытие стандартного штампа зоны")
+    try:
+        result = ac.tapir("SetProjectPreferences", {"dimensions": desired}).get("dimensions", {})
+        if not result.get("success"):
+            raise ValueError(f"настройки не приняты: {result.get('error', result)}")
+        actual = ac.tapir("GetProjectPreferences", {"preferenceTypes": ["Dimensions"]}).get("dimensions", {})
+        if any(actual.get(key) != value for key, value in desired.items() if not isinstance(value, dict)) or any(
+                actual.get(key, {}).get(field) != value for key, fields in desired.items() if isinstance(fields, dict)
+                for field, value in fields.items()):
+            raise ValueError("проверка после записи не подтвердила миллиметры без дробной части")
+        from .layouts import _tree
+        wanted = {item["view"] for item in profile.get("layouts", {}).get("items", []) if item.get("view")}
+        views = [v for v in _tree(ac, "ViewMap") if v.get("name") in wanted and v.get("type") != "FolderItem"]
+        missing = wanted - {v["name"] for v in views}
+        if missing:
+            report.errors.append("Размеры: не найдены виды для сохранения формата: " + ", ".join(sorted(missing)))
+        if views:
+            updates = [{"navigatorItemId": v["navigatorItemId"], "viewSettings": {"useCurrentDimensions": True}} for v in views]
+            results = ac.tapir("SetViewSettings", {"navigatorItemIdsWithViewSettings": updates}).get("executionResults", [])
+            if len(results) != len(updates) or any(not r.get("success") for r in results):
+                raise ValueError("не удалось сохранить формат размеров во всех видах")
+    except Exception as error:
+        report.errors.append(f"Размеры в миллиметрах: {error}")
+
+
+def ensure_zone_category(ac, profile, report):
+    """deslab: preserve the reference category, replacing only an unloaded old-version stamp reference."""
+    name = profile["zone"].get("category")
+    try:
+        attrs = ac.tapir("GetAttributesByType", {"attributeType": "ZoneCategory"}).get("attributes", [])
+        ids = [{"attributeId": a["attributeId"]} for a in attrs if a.get("attributeId")]
+        categories = ac.tapir("GetZoneCategories", {"attributeIds": ids}).get("zoneCategories", [])
+        category = next((c for c in categories if c.get("name") == name), None)
+        if not category:
+            raise ValueError(f"категория «{name}» не найдена")
+        parts = ac.tapir("GetAvailableLibraryParts", {}).get("libraryParts", [])
+        normalized = lambda value: str(value).strip("{}").upper()
+        loaded = {normalized(p["guid"]) for p in parts if p.get("guid")}
+        if normalized(category.get("stampMainGuid")) in loaded:
+            return category["attributeId"]
+        candidates = [c for c in categories if normalized(c.get("stampMainGuid")) in loaded and c.get("stampRevGuid")]
+        if not candidates:
+            raise ValueError("нет категории с загруженным штампом зоны; загрузите совместимую библиотеку")
+        def bare(stamp_name):
+            parts = str(stamp_name or "").rsplit(" ", 1)
+            return (parts[0] if parts[-1].isdigit() else str(stamp_name or "")).casefold()
+        candidates.sort(key=lambda c: (bare(c.get("stampName")) != bare(category.get("stampName")), c.get("name", "")))
+        stamp = candidates[0]
+        data = {k: category[k] for k in ("attributeId", "name", "categoryCode", "color") if k in category}
+        data.update({k: stamp[k] for k in ("stampName", "stampMainGuid", "stampRevGuid")})
+        result = ac.tapir("CreateZoneCategories", {"zoneCategoryDataArray": [data], "overwriteExisting": True}).get("attributeIds", [])
+        if len(result) != 1 or result[0].get("attributeId") != category["attributeId"]:
+            raise ValueError(f"не удалось обновить штамп категории «{name}»: {result}")
+        after = ac.tapir("GetZoneCategories", {"attributeIds": [{"attributeId": category["attributeId"]}]}).get("zoneCategories", [])
+        if not after or normalized(after[0].get("stampMainGuid")) != normalized(stamp["stampMainGuid"]):
+            raise ValueError("новый штамп категории не подтверждён после записи")
+        report.steps.append({"step": "штамп категории зон заменён на загруженный", "seconds": 0, "category": name, "stamp": stamp["stampName"]})
+        return category["attributeId"]
+    except Exception as error:
+        report.errors.append(f"Подготовка зон: {error}")
+        return None
 
 
 def _find_key(obj, key):
@@ -1791,6 +1864,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
 
     if not ac.alive():
         raise RuntimeError("Archicad не отвечает. Откройте проект (копию шаблона) и закройте открытые диалоги.")
+    apply_dimension_preferences(ac, profile, report)
     if import_favorites and profile.get("favoritesFile"):
         # The office favorites («ОБМЕР шаблон …») are not in every template copy: import them, keep existing ones.
         try:
@@ -1807,6 +1881,11 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
               # deslab: 12.11.2026, the floor slab on the template's slab layer: it is what the axonometry shows as the floor
               "layers": {"walls": L["bearingWalls"], "zones": L["zones"], **({"slabs": L["slabs"]} if L.get("slabs") else {})},
               "materials": {"measuredWalls": profile["walls"]["material"], "assumedWalls": profile["walls"]["material"]}}
+    if not F.get("zone") and profile["zone"].get("category"):
+        category_id = ensure_zone_category(ac, profile, report)
+        if not category_id:
+            raise ValueError("\n".join(report.errors))
+        params["zoneCategoryAttributeId"] = category_id
     model_scene, corner_pairs = split_corner_windows(scene)
     params["scene"] = model_scene
     model = ac.tapir("BuildModelFromScan", params, timeout=600)
@@ -1969,8 +2048,18 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         ac.tapir("UnlockElements", {"elements": _elements(zone_guids)})
     report.step("слои стен, зоны разблокированы", partitions=len(partitions))
 
-    # deslab: reference zones have no coloured area fill; keep this independent of stamp placement.
+    # deslab: use the reference's transparent own fill; disabling own fill instead draws the category colour.
     zone_style = {key: profile["zone"][key] for key in ("useFloorFill", "useContourLine") if key in profile["zone"]}
+    fill_cfg = profile["zone"].get("floorFill")
+    if zone_guid and fill_cfg:
+        fills = ac.tapir("GetAttributesByType", {"attributeType": "Fill"}).get("attributes", [])
+        fill = next((f for f in fills if f.get("name") == fill_cfg["name"] and f.get("attributeId")), None)
+        if fill:
+            zone_style.update(floorFillAttributeId=fill["attributeId"], floorFillPenIndex=fill_cfg["pen"],
+                              floorFillBackgroundPenIndex=fill_cfg["backgroundPen"])
+        else:
+            zone_style.pop("useFloorFill", None)
+            report.errors.append(f"Штриховка зоны «{fill_cfg['name']}» не найдена; заливка зоны не изменена.")
     if zone_guid and (profile["zone"].get("stampAtCentre") or zone_style):
         items = []
         for room in scene.get("rooms", []):

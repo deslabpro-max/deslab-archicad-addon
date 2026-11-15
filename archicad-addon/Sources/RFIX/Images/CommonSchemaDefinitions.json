@@ -8179,6 +8179,18 @@
                 "type": "boolean",
                 "description": "Draw the zone floor fill on the plan."
             },
+            "floorFillAttributeId": {
+                "$ref": "#/AttributeId",
+                "description": "Attribute identifier of the zone's own cover fill, used when useFloorFill is true."
+            },
+            "floorFillPenIndex": {
+                "type": "integer",
+                "description": "Foreground pen index of the zone's own cover fill."
+            },
+            "floorFillBackgroundPenIndex": {
+                "type": "integer",
+                "description": "Background pen index of the zone's own cover fill; 0 means transparent."
+            },
             "useContourLine": {
                 "type": "boolean",
                 "description": "Draw the zone polygon contour on the plan."
@@ -10265,6 +10277,18 @@
             "useFloorFill": {
                 "type": "boolean",
                 "description": "Draw the zone floor fill on the plan."
+            },
+            "floorFillAttributeId": {
+                "$ref": "#/AttributeId",
+                "description": "Attribute identifier of the zone's own cover fill, used when useFloorFill is true."
+            },
+            "floorFillPenIndex": {
+                "type": "integer",
+                "description": "Foreground pen index of the zone's own cover fill."
+            },
+            "floorFillBackgroundPenIndex": {
+                "type": "integer",
+                "description": "Background pen index of the zone's own cover fill; 0 means transparent."
             },
             "useContourLine": {
                 "type": "boolean",

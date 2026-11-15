@@ -12,6 +12,7 @@
     "maxTokens": 16000
   },
   "layouts": {
+    "legendContent": "reference-legends.json",
     "comment": "Игорь 06.11.2026: чертёж встаёт на листы шаблона по максимуму. frame: область плана на листах шаблона, метры на бумаге (как у плана на листах 06-14). margin: запас вокруг плана, м модели.",
     "frame": {"xMin": 0.034, "xMax": 0.326, "yMin": 0.04, "yMax": 0.296},
     "anchor": "topLeft",
@@ -74,6 +75,7 @@
     "shaftMaterial": "Штукатурка - Гипсовая"
   },
   "dimensionText": {"font": "GOST Type BU Кириллический", "size": 2.5, "pen": 120},
+  "dimensionPreferences": {"linear": {"unit": "Millimeter", "decimals": 0}},
   "dimensionStyle": {"linePen": 120, "markerPen": 120, "markerType": 6, "markerSize": 1.25},
   "heightTextStyle": {"fontName": "GOST Type BU Кириллический", "height": 3, "penIndex": 81,
                       "bold": false, "italic": false, "underline": false, "fixedSize": true,
@@ -107,7 +109,9 @@
     }
   },
   "zone": {
-    "useFloorFill": false,
+    "category": "Полы",
+    "useFloorFill": true,
+    "floorFill": {"name": "Фон", "pen": 86, "backgroundPen": 0},
     "marker": {"radius": 0.15, "pen": 120,
                "style": {"fontName": "GOST type B Кириллический", "height": 3, "penIndex": 120,
                          "bold": false, "italic": false, "fixedSize": true, "usedContour": false, "usedFill": false}},

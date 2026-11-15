@@ -377,6 +377,95 @@ def place_explication(ac, profile, scheme_dir=None):
     return out + [f"Экспликация: ведомость «{schedule['name']}» на листе, {size}"]
 
 
+def place_reference_legend(ac, profile):
+    """deslab: restore the reference layout's omitted Hatch/PolyLine samples using portable attribute names."""
+    import json
+    from pathlib import Path
+    filename = (profile.get("layouts") or {}).get("legendContent")
+    if not filename:
+        return []
+    package = json.loads((Path(__file__).resolve().parent.parent / filename).read_text(encoding="utf-8"))
+    if package.get("format") != "deslab.reference-legends/1":
+        raise ValueError("Неизвестный формат образцов условных обозначений")
+    attributes, out = {}, []
+
+    def attribute(kind, name):
+        if kind not in attributes:
+            attributes[kind] = {a["name"]: a for a in ac.tapir("GetAttributesByType", {"attributeType": kind}).get("attributes", [])}
+        if name not in attributes[kind]:
+            raise ValueError(f"нет атрибута {kind} «{name}» для образца эталона")
+        return attributes[kind][name]
+
+    def value(item):
+        # Source/target GUID case and floating point serialization do not change a shape.
+        if isinstance(item, dict):
+            return {k: (str(v).upper() if k == "guid" else value(v)) for k, v in item.items()}
+        if isinstance(item, list):
+            return [value(v) for v in item]
+        return round(item, 9) if isinstance(item, float) else item
+
+    for entry in package.get("layouts", []):
+        layout = _layout(ac, entry["name"])
+        if not layout:
+            out.append(f"Условные обозначения: нет листа «{entry['name']}»")
+            continue
+        resolved, errors = [], []
+        for sample in entry.get("elements", []):
+            kind = sample["type"]
+            if kind not in ("Hatch", "PolyLine"):
+                errors.append(f"неподдерживаемый образец {kind}")
+                continue
+            try:
+                data = {k: sample[k] for k in ("coordinates", "arcs", "contourPenIndex", "fillPenIndex", "fillBackgroundPenIndex",
+                        "foregroundColor", "backgroundColor", "roomSpecial", "showArea", "linePenIndex", "roomSeparator") if k in sample}
+                data["layerIndex"] = attribute("Layer", sample["layer"])["index"]
+                data.setdefault("arcs", [])
+                expected = dict(data)
+                for name_key, attr_kind, field in (("buildingMaterialName", "BuildingMaterial", "buildingMaterialId"),
+                                                 ("fillName", "Fill", "fillId"), ("lineTypeName", "Line", "lineTypeId")):
+                    if sample.get(name_key):
+                        attr = attribute(attr_kind, sample[name_key])
+                        expected[field] = attr["attributeId"]
+                        data["lineTypeIndex" if field == "lineTypeId" else field] = attr["index"] if field == "lineTypeId" else attr["attributeId"]
+                # Archicad closes Hatch contours itself; compare the canonical open contour.
+                if kind == "Hatch" and len(data["coordinates"]) > 1 and value(data["coordinates"][0]) == value(data["coordinates"][-1]):
+                    data["coordinates"] = data["coordinates"][:-1]
+                    expected["coordinates"] = data["coordinates"]
+                resolved.append((kind, data, expected))
+            except ValueError as error:
+                errors.append(str(error))
+        if errors:
+            out += [f"Условные обозначения, {entry['name']}: {error}" for error in errors]
+            continue  # Do not create a partially styled legend when an attribute is missing.
+        ac.tapir("ChangeWindow", {"navigatorItemId": layout["navigatorItemId"]})
+        existing = {}
+        for kind in {r[0] for r in resolved}:
+            elements = ac.tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+            details = ac.tapir("GetDetailsOfElements", {"elements": elements}).get("detailsOfElements", []) if elements else []
+            existing[kind] = []
+            for detail in details:
+                flat = _flat(detail)
+                flat.setdefault("arcs", [])
+                coordinates = flat.get("coordinates") or []
+                if kind == "Hatch" and len(coordinates) > 1 and value(coordinates[0]) == value(coordinates[-1]):
+                    flat["coordinates"] = coordinates[:-1]
+                existing[kind].append(dict(flat, layerIndex=detail.get("layerIndex")))
+        created, kept = 0, 0
+        for kind, data, expected in resolved:
+            if any(all(value(old.get(k)) == value(v) for k, v in expected.items()) for old in existing[kind]):
+                kept += 1
+                continue
+            command, key = ("CreateHatches", "hatchesData") if kind == "Hatch" else ("CreatePolylines", "polylinesData")
+            made = ac.tapir(command, {key: [data]}).get("elements", [])
+            if len(made) == 1 and made[0].get("elementId"):
+                existing[kind].append(expected)
+                created += 1
+            else:
+                out.append(f"Условные обозначения, {entry['name']}: образец {kind} не создан ({made})")
+        out.append(f"Условные обозначения, {entry['name']}: добавлено {created}, уже есть {kept}")
+    return out
+
+
 def _folder_of(ac, kind, name):
     """The navigator id of the folder that holds the item of this name (the View Map folder of the plan view)."""
     def walk(item, parent):
