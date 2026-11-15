@@ -83,7 +83,7 @@ class Legend:
             "Layer": [{"name": "Layout", "index": 7, "attributeId": {"guid": "layer-target"}}],
             "Fill": [{"name": "Solid", "index": 20, "attributeId": {"guid": "fill-target"}}],
             "Line": [{"name": "Continuous", "index": 3, "attributeId": {"guid": "line-target"}}],
-            "BuildingMaterial": []}
+            "BuildingMaterial": [{"name": "Concrete", "index": 9, "attributeId": {"guid": "material-target"}}]}
 
     def tapir(self, command, params):
         self.calls.append((command, params))
@@ -100,6 +100,9 @@ class Legend:
             data = copy.deepcopy(params["hatchesData" if hatch else "polylinesData"][0])
             if hatch:
                 data["coordinates"].append(data["coordinates"][0])  # native response closes a Hatch contour
+                if data.get("buildingMaterialId"):
+                    data["fillPenIndex"] = 0  # native material hatch readback reports inactive per-hatch pens as zero
+                    data["fillBackgroundPenIndex"] = 0
             else:
                 data.pop("lineTypeIndex")
                 data["lineTypeId"] = {"guid": "LINE-TARGET"}
@@ -148,6 +151,25 @@ def test_reference_legend_reports_missing_attribute_without_partial_creation():
             report = layouts.place_reference_legend(ac, {"layouts": {"legendContent": str(path)}})
     assert "Missing reference fill" in report[0]
     assert not ac.elements and not any(c.startswith("Create") for c, _ in ac.calls)
+
+
+def test_material_legend_ignores_inactive_pen_readback_fields():
+    ac = Legend()
+    package = legend_package()
+    sample = package["layouts"][0]["elements"][0]
+    sample.pop("fillName")
+    sample["buildingMaterialName"] = "Concrete"
+    sample["fillPenIndex"] = 1
+    package["layouts"][0]["elements"] = [sample]
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "legend.json"
+        path.write_text(json.dumps(package), encoding="utf-8")
+        profile = {"layouts": {"legendContent": str(path)}}
+        with patch.object(layouts, "_layout", return_value={"navigatorItemId": {"guid": "layout"}}):
+            first = layouts.place_reference_legend(ac, profile)
+            second = layouts.place_reference_legend(ac, profile)
+    assert "добавлено 1" in first[-1] and "добавлено 0, уже есть 1" in second[-1]
+    assert len(ac.elements) == 1 and ac.elements[0]["details"]["fillPenIndex"] == 0
 
 
 if __name__ == "__main__":

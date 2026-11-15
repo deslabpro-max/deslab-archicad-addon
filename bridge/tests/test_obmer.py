@@ -267,7 +267,8 @@ class FakeArchicad:
         if command == "GetAvailableLibraryParts":
             return {"libraryParts": [{"guid": "STAMP", "typeId": "Object"}]}
         if command == "GetAttributesByType" and params["attributeType"] == "Fill":
-            return {"attributes": [{"name": "Фон", "attributeId": {"guid": "EMPTY-FILL"}}]}
+            return {"attributes": [{"name": "Фон", "attributeId": {"guid": "EMPTY-FILL"}},
+                                   {"name": "25 %", "attributeId": {"guid": "WET-FILL"}}]}
         if command == "GetAttributesByType" and params["attributeType"] == "Surface":
             return {"attributes": [{"name": "Бетон - Гладкий", "attributeId": {"guid": "S0"}}, {"name": "Краска - Белая", "attributeId": {"guid": "S1"}}]}
         if command == "GetAttributesByType" and params["attributeType"] == "BuildingMaterial":
@@ -461,6 +462,12 @@ def test_portable_zone_number_circle():
     # deslab: AC29's data-table stamp is hidden only after a complete reference circle and number are created.
     class KnownStamp(FakeArchicad):
         def tapir(self, command, params=None, timeout=None):
+            if command == "GetFontsByName":
+                self.calls.append((command, params))
+                self.marker_font_loaded = True
+                return {"fonts": [{"fontName": params["fontNames"][0], "fontIndex": 1142}]}
+            if command == "CreateTexts":
+                assert getattr(self, "marker_font_loaded", False), "Reference font must be loaded before creating markers"
             if command == "GetGDLParametersOfElements":
                 self.calls.append((command, params))
                 return {"gdlParametersOfElements": [{"parameters": [
@@ -519,6 +526,16 @@ def test_portable_zone_number_circle():
     assert report.errors and "штамп не скрыт" in report.errors[-1]
     removed = next(p for c, p in ac.calls if c == "DeleteElements")["elements"]
     assert len(removed) == 2, "Failed hiding must remove both newly created marker elements"
+
+    class MissingFont(KnownStamp):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "GetFontsByName":
+                return {"fonts": [{"error": {"message": "no font"}}]}
+            return super().tapir(command, params, timeout)
+    ac, report = MissingFont(), obmer.Report()
+    obmer.fallback_zone_markers(ac, SCENE, {"R1": "Z1"}, PROFILE, 42, 0, report)
+    assert report.errors and "шрифт" in report.errors[0]
+    assert not any(c in ("CreateTexts", "CreatePolylines", "SetGDLParametersOfElements") for c, _ in ac.calls)
 
 
 def test_unknown_zone_stamp_is_not_hidden():
@@ -687,6 +704,47 @@ def test_shaft_walls_join_on_axes():
     assert walls[0]["start"] == {"x": 0.29, "y": 0.963}, walls[0]
     assert walls[2]["start"] == {"x": 0.29, "y": 0.963} and walls[2]["end"] == {"x": 0.29, "y": 0.534}, walls[2]
     assert walls[3]["start"] == {"x": 0.29, "y": 0.534} and walls[3]["end"] == {"x": 0.56, "y": 0.534}, walls[3]
+
+
+def test_ai_wet_polygons_take_precedence_and_shift_with_origin():
+    import copy
+    bathroom = [{"x": 1, "y": 2}, {"x": 3, "y": 2}, {"x": 3, "y": 4}]
+    kitchen = [{"x": 5, "y": 2}, {"x": 6, "y": 2}, {"x": 6, "y": 4}]
+    scene = {"wetZones": [{"kind": "bathroom", "polygon": bathroom}], "rooms": [
+        {"id": "B", "wet": "bathroom", "polygon": [{"x": 0, "y": 0}, {"x": 4, "y": 0}, {"x": 4, "y": 4}, {"x": 0, "y": 4}]},
+        {"id": "K", "wet": "kitchen", "polygon": kitchen}]}
+    planned = obmer.plan_wet_zones(scene, PROFILE)
+    assert len(planned) == 2 and [h["kind"] for h in planned] == ["bathroom", "kitchen"]
+    assert planned[0]["coordinates"] == bathroom and planned[1]["coordinates"] == kitchen
+    shifted = obmer.shift_scene(copy.deepcopy(scene), {"x": 100, "y": -20})
+    moved = obmer.plan_wet_zones(shifted, PROFILE)
+    assert moved[0]["coordinates"][0] == {"x": 101, "y": -18}
+    assert moved[1]["coordinates"][0] == {"x": 105, "y": -18}
+    assert scene["wetZones"][0]["polygon"][0] == {"x": 1, "y": 2}
+
+
+def test_wet_polygons_use_explicit_reference_fill_and_pens():
+    scene = {"wetZones": [{"kind": kind, "polygon": [{"x": 0, "y": 0}, {"x": 1, "y": 0}, {"x": 1, "y": 1}]}
+                          for kind in ("bathroom", "kitchen")]}
+    ac, report = FakeArchicad(), obmer.Report()
+    made = obmer.place_wet_zones(ac, scene, PROFILE, report)
+    data = next(params["hatchesData"] for command, params in ac.calls if command == "CreateHatches")
+    assert len(made) == 2 and not report.errors
+    assert [h["fillPenIndex"] for h in data] == [46, 159]
+    assert all(h["fillId"] == {"guid": "WET-FILL"} and h["fillBackgroundPenIndex"] == 0 and
+               h["contourPenIndex"] == 0 and h["showArea"] is False and
+               "favoriteName" not in h for h in data)
+    assert [h["foregroundColor"] for h in data] == [PROFILE["wet"][kind]["foreground"] for kind in ("bathroom", "kitchen")]
+
+
+def test_explicit_wet_patch_does_not_suppress_another_bathroom():
+    first = [{"x": 0, "y": 0}, {"x": 2, "y": 0}, {"x": 2, "y": 2}, {"x": 0, "y": 2}]
+    second = [{"x": 5, "y": 0}, {"x": 7, "y": 0}, {"x": 7, "y": 2}, {"x": 5, "y": 2}]
+    scene = {"wetZones": [{"kind": "bathroom", "polygon": first}], "rooms": [
+        {"id": "B1", "wet": "bathroom", "polygon": first},
+        {"id": "B2", "wet": "bathroom", "polygon": second}]}
+    wet = obmer.plan_wet_zones(scene, PROFILE)
+    assert len(wet) == 2 and wet[0]["coordinates"] == first and wet[1]["coordinates"] == second
 
 
 if __name__ == "__main__":

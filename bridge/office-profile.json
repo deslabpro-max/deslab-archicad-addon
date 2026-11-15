@@ -204,6 +204,10 @@
   },
   "wet": {
     "bathroom": {
+      "fillName": "25 %",
+      "pen": 46,
+      "backgroundPen": 0,
+      "contourPen": 0,
       "foreground": {
         "red": 0.55,
         "green": 0.8,
@@ -211,6 +215,10 @@
       }
     },
     "kitchen": {
+      "fillName": "25 %",
+      "pen": 159,
+      "backgroundPen": 0,
+      "contourPen": 0,
       "foreground": {
         "red": 0.6,
         "green": 0.88,

@@ -151,7 +151,8 @@ def shift_scene(scene, origin):
     for wall in scene.get("walls", []):
         move(wall["start"])
         move(wall["end"])
-    for item in scene.get("rooms", []) + scene.get("slabs", []) + scene.get("mep", []) + scene.get("tracing", []):
+    # deslab: AI wet polygons follow the same nonzero build origin as rooms and walls.
+    for item in scene.get("rooms", []) + scene.get("slabs", []) + scene.get("mep", []) + scene.get("tracing", []) + scene.get("wetZones", []):
         for key in ("polygon", "wetPolygon"):
             for p in item.get(key) or []:
                 move(p)
@@ -1328,13 +1329,46 @@ def plan_annotations(scene, profile, texts):
 
 def plan_wet_zones(scene, profile):
     hatches = []
+    # deslab: the AI review writes explicit polygons at scene.wetZones, not on rooms[].wet.
+    for item in scene.get("wetZones", []):
+        if item.get("kind") in ("bathroom", "kitchen") and len(item.get("polygon") or []) >= 3:
+            hatches.append({"room": item.get("room"), "kind": item["kind"], "coordinates": [_xy(_pt(p)) for p in item["polygon"]]})
+    explicit = list(hatches)
     for room in scene.get("rooms", []):
         kind = room.get("wet")
         if kind not in ("bathroom", "kitchen"):
             continue
         poly = room.get("wetPolygon") or room["polygon"]
+        # An explicit patch replaces the legacy patch of that room, not other bathrooms/kitchens in the project.
+        if any(h["kind"] == kind and (h["room"] == room["id"] or h["coordinates"] == poly or
+               _inside([_pt(p) for p in room["polygon"]], polygon_centroid([_pt(p) for p in h["coordinates"]]))) for h in explicit):
+            continue
         hatches.append({"room": room["id"], "kind": kind, "coordinates": [_xy(_pt(p)) for p in poly]})
     return hatches
+
+
+def place_wet_zones(ac, scene, profile, report, floor_index=0):
+    """deslab: create the AI/legacy wet polygons with the reference's explicit 25% fill and pens."""
+    wet = plan_wet_zones(scene, profile)
+    if not wet:
+        return []
+    layer_name = profile["layers"]["wetZones"]
+    layer = layer_indices(ac, {layer_name}).get(layer_name)
+    if not layer:
+        report.errors.append(f"Мокрая зона: нет слоя «{layer_name}»")
+        return []
+    fills = {a["name"]: a["attributeId"] for a in ac.tapir("GetAttributesByType", {"attributeType": "Fill"}).get("attributes", [])}
+    data = []
+    for h in wet:
+        cfg = profile["wet"][h["kind"]]
+        fill = fills.get(cfg["fillName"])
+        if not fill:
+            report.errors.append(f"Мокрая зона: нет штриховки эталона «{cfg['fillName']}»")
+            continue
+        data.append({"coordinates": h["coordinates"], "floorInd": floor_index, "layerIndex": layer,
+                     "fillId": fill, "fillPenIndex": cfg["pen"], "fillBackgroundPenIndex": cfg["backgroundPen"],
+                     "foregroundColor": cfg["foreground"], "contourPenIndex": cfg["contourPen"], "showArea": False})
+    return [g for g in _created(ac.tapir("CreateHatches", {"hatchesData": data}), "elements", report, "Мокрая зона") if g] if data else []
 
 
 # ---------------------------------------------------------------- building in Archicad
@@ -1493,9 +1527,18 @@ def fallback_zone_markers(ac, scene, zone_guid, profile, layer_index, floor_inde
     if len(changes) != len(rooms):
         report.errors.append("Номер зоны в круге: неизвестный тип штампа; его параметры сохранены без изменений.")
         return
+    # deslab: a fresh AC29 process may not load the reference font until SearchFont is called explicitly.
+    try:
+        font_name = cfg["style"]["fontName"]
+        fonts = ac.tapir("GetFontsByName", {"fontNames": [font_name]}).get("fonts", [])
+        if len(fonts) != 1 or fonts[0].get("error") or fonts[0].get("fontIndex", 0) <= 0 or fonts[0].get("fontName", "").casefold() != font_name.casefold():
+            raise ValueError(f"шрифт «{font_name}» не найден")
+    except Exception as error:
+        report.errors.append(f"Номер зоны в круге: {error}; исходные штампы сохранены.")
+        return
     texts, circles = [], []
     radius = float(cfg["radius"])
-    style = dict(cfg["style"], justification="Center", anchor="MiddleMiddle")
+    style = dict(cfg["style"], fontName=fonts[0]["fontName"], justification="Center", anchor="MiddleMiddle")
     line_type = _line_type(ac, ("сплошная", "solid"))
     for room in rooms:
         x, y = zone_spot(scene, room)
@@ -2207,20 +2250,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
     report.step("размерные цепочки", chains=len(chains), dimensions=len(dim_guids))
 
     # 5. Wet zones.
-    wet = plan_wet_zones(scene, profile)
-    if wet:
-        data = []
-        for h in wet:
-            fav = F.get("wetBathroom" if h["kind"] == "bathroom" else "wetKitchen")
-            item = {"coordinates": h["coordinates"], "floorInd": floor_index}
-            if fav:
-                item["favoriteName"] = fav
-            else:
-                item["foregroundColor"] = profile["wet"][h["kind"]]["foreground"]
-            if idx.get(L["wetZones"]):
-                item["layerIndex"] = idx[L["wetZones"]]
-            data.append(item)
-        _created(ac.tapir("CreateHatches", {"hatchesData": data}), "elements", report, "Мокрая зона")
+    wet = place_wet_zones(ac, scene, profile, report, floor_index)
     report.step("мокрые зоны", count=len(wet))
 
     # 6. Drawings on the layouts.

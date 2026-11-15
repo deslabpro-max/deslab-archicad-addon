@@ -101,8 +101,11 @@ def place_on_layouts(ac, bbox, profile, view_scale=45):
         details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
         # the plan Drawing is the one at the plan scale (the explication is 1:1, the axonometry a different ratio)
         # (ratio * drawingScale between 1:100 and 1:16; this also finds the one placed by the previous run)
+        axonometry_name = (cfg.get("axonometry") or {}).get("view")
         old = [e for e, d in zip(drawings, details)
-               if 0.009 <= d["details"].get("ratio", 1) * d["details"].get("drawingScale", 1) <= 0.06]
+               if 0.009 <= d["details"].get("ratio", 1) * d["details"].get("drawingScale", 1) <= 0.06
+               # deslab: a scaled 3D Drawing can fall in the plan's scale range during partial layout updates.
+               and (not axonometry_name or axonometry_name not in (_flat(d).get("customName"), _flat(d).get("name")))]
         source = {"navigatorItemId": view["navigatorItemId"], "drawingScale": 1 / view_scale,
                   "modelOffset": {"x": 0, "y": 0}, "nameType": "ViewOrSourceFileName"}
         # Игорь 06.11.2026: the frame must be «Рамка по размеру Чертежа», so the drawing is created without a clip
@@ -427,6 +430,11 @@ def place_reference_legend(ac, profile):
                         attr = attribute(attr_kind, sample[name_key])
                         expected[field] = attr["attributeId"]
                         data["lineTypeIndex" if field == "lineTypeId" else field] = attr["index"] if field == "lineTypeId" else attr["attributeId"]
+                if sample.get("buildingMaterialName"):
+                    # deslab: material hatches use the material's cut-fill pens; AC29 reads their inactive per-hatch
+                    # pen fields back as zero even when creation supplied the reference's stored pen 1.
+                    expected.pop("fillPenIndex", None)
+                    expected.pop("fillBackgroundPenIndex", None)
                 # Archicad closes Hatch contours itself; compare the canonical open contour.
                 if kind == "Hatch" and len(data["coordinates"]) > 1 and value(data["coordinates"][0]) == value(data["coordinates"][-1]):
                     data["coordinates"] = data["coordinates"][:-1]
