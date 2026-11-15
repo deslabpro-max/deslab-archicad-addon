@@ -1468,6 +1468,9 @@ GS::ObjectState GetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                 typeSpecificDetails.Add ("stampPosition", Create2DCoordinateObjectState (elem.zone.pos));
                 typeSpecificDetails.Add ("stampAngle", elem.zone.stampAngle);
                 typeSpecificDetails.Add ("fixedStampAngle", elem.zone.fixedAngle);
+                // deslab: portable zone appearance when an older template's favorite cannot be imported.
+                typeSpecificDetails.Add ("useFloorFill", elem.zone.useFloorFill);
+                typeSpecificDetails.Add ("useContourLine", elem.zone.useContourLine);
                 typeSpecificDetails.Add ("isManual", elem.zone.manual);
                 if (!elem.zone.manual) {
                     // The point an automatic zone was placed from (CreateZones geometry.referencePosition);
@@ -2416,6 +2419,13 @@ GS::ObjectState SetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                         }
                         if (typeSpecificDetails->Get ("fixedStampAngle", elem.zone.fixedAngle)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, fixedAngle);
+                        }
+                        // deslab: match the office zone appearance without changing its geometry or stamp parameters.
+                        if (typeSpecificDetails->Get ("useFloorFill", elem.zone.useFloorFill)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, useFloorFill);
+                        }
+                        if (typeSpecificDetails->Get ("useContourLine", elem.zone.useContourLine)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, useContourLine);
                         }
                         // Only an automatic zone is found around its reference point; a manual
                         // zone has its outline instead, so the field is ignored for it.

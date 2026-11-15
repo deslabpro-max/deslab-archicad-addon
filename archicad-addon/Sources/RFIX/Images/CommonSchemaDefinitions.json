@@ -8171,6 +8171,14 @@
                 "type": "boolean",
                 "description": "If true, the zone stamp angle remains fixed when the element is rotated."
             },
+            "useFloorFill": {
+                "type": "boolean",
+                "description": "Draw the zone floor fill on the plan."
+            },
+            "useContourLine": {
+                "type": "boolean",
+                "description": "Draw the zone polygon contour on the plan."
+            },
             "isManual": {
                 "type": "boolean",
                 "description": "Is the coordinates of the zone manually placed?"
@@ -10249,6 +10257,14 @@
             "fixedStampAngle": {
                 "type": "boolean",
                 "description": "If true, the zone stamp angle remains fixed when the element is rotated."
+            },
+            "useFloorFill": {
+                "type": "boolean",
+                "description": "Draw the zone floor fill on the plan."
+            },
+            "useContourLine": {
+                "type": "boolean",
+                "description": "Draw the zone polygon contour on the plan."
             },
             "referencePosition": {
                 "$ref": "#/Coordinate2D",

@@ -346,26 +346,33 @@ def place_explication(ac, profile, scheme_dir=None):
     details = ac.tapir("GetDetailsOfElements", {"elements": drawings}).get("detailsOfElements", []) if drawings else []
     title = cfg.get("title", "Экспликация помещений")
     old = [e for e, d in zip(drawings, details) if _flat(d).get("name") == title or _flat(d).get("customName") == title]
-    if old and schedule["name"] == names[0] and not imported:
-        # the office schedule was in the project before this run and its drawing is on the layout: it follows the zones
-        return out + [f"Экспликация: на листе уже стоит ведомость «{schedule['name']}»"]
+    # deslab: 15.11.2026, a Drawing can outlive its source schedule after reimport/recovery and stay entirely blank.
+    # Its title is not enough to reuse it: the source GUID must still be the resolved current schedule's GUID.
+    source_guid = schedule["navigatorItemId"]["guid"].upper()
+    current = next((e for e, d in zip(drawings, details) if e in old and
+                    (_flat(d).get("navigatorItemId") or {}).get("guid", "").upper() == source_guid), None)
     right, bottom = cfg["right"], cfg["bottom"]
-    new = ac.tapir("CreateDrawings", {"drawingsData": [{"navigatorItemId": schedule["navigatorItemId"], "name": title,
-                                                         "position": {"x": right - 0.04, "y": bottom + 0.02}, "scale": 1}]})["elements"][0]
+    new = current or ac.tapir("CreateDrawings", {"drawingsData": [{"navigatorItemId": schedule["navigatorItemId"], "name": title,
+                                                                  "position": {"x": right - 0.04, "y": bottom + 0.02}, "scale": 1}]})["elements"][0]
     if "elementId" not in new:
         return out + [f"Экспликация: чертёж ведомости не создан ({new})"]
     # deslab: 12.11.2026, the schedule's own scale (1:1) must not show next to the plan's in the stamp and the layout
     # caption («1:40, 1:1», Игорь): the drawing is kept out of the Drawing Scale autotexts
     ac.tapir("SetDetailsOfElements", {"elementsWithDetails": [{"elementId": new["elementId"], "details": {
         "typeSpecificDetails": {"titleLibraryPartIndex": int(cfg.get("titleLibraryPartIndex", 0)), "includeInScaleAutoTexts": False}}}]})
+    # deslab: refresh before measuring, including reused drawings whose room rows may have changed size.
+    updated = ac.tapir("UpdateDrawings", {"elements": [{"elementId": new["elementId"]}]})
+    if not updated.get("success"):
+        return out + [f"Экспликация: чертёж ведомости не обновлён ({updated})"]
     # the schedule's size is known only once it is placed: its bottom right corner goes to the template's place, above
     # the legend, and the table grows upwards with the rooms
     got = ac.tapir("GetDetailsOfElements", {"elements": [{"elementId": new["elementId"]}]})["detailsOfElements"][0]["details"]["bounds"]
     dx, dy = right - got["xMax"], bottom - got["yMin"]
     if abs(dx) > 0.0002 or abs(dy) > 0.0002:
         ac.tapir("MoveElements", {"elementsWithMoveVectors": [{"elementId": new["elementId"], "moveVector": {"x": dx, "y": dy, "z": 0}, "copy": False}]})
-    if old:
-        ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in old]})
+    obsolete = [e for e in old if e["elementId"] != new["elementId"]]
+    if obsolete:
+        ac.tapir("DeleteElements", {"elements": [{"elementId": e["elementId"]} for e in obsolete]})
     size = f"{1000 * (got['xMax'] - got['xMin']):.0f} x {1000 * (got['yMax'] - got['yMin']):.0f} мм"
     return out + [f"Экспликация: ведомость «{schedule['name']}» на листе, {size}"]
 
