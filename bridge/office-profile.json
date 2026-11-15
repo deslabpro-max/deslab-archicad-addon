@@ -3,10 +3,10 @@
   "name": "deslab, шаблон «Антон Крючков.pln», обмерный план",
   "comment": "Правила черчения в коде. Источник: Архикад\\правила-черчения.md и template-notes.md. Новое замечание Игоря = правка здесь.",
   "ai": {
-    "comment": "Polza.ai (OpenAI-совместимый). Идентификаторы моделей надо сверить со списком /models: `python -m deslab_bridge.ai models`. Ключ в переменной POLZA_API_KEY, не здесь.",
+    "comment": "deslab: 15.11.2026, временно Astra через Codex CLI по подписке (codex login). Постоянный API-провайдер ещё не выбран. Polza остаётся доступна по явному --model; ключ только в POLZA_API_KEY.",
     "baseUrl": "https://api.polza.ai/api/v1",
-    "model": "anthropic/claude-sonnet-5.5",
-    "hardModel": "anthropic/claude-opus-5.5",
+    "model": "codex:gpt-6-astra",
+    "hardModel": "codex:gpt-6-astra",
     "timeout": 180,
     "retries": 1,
     "maxTokens": 16000

@@ -2,7 +2,7 @@
 
 // deslab: the "deslab Obmer" palette (Igor 06.11.2026: the add-on gets its own interface inside Archicad, drawn with
 // Archicad's own DG controls). It only drives the Python bridge on this PC (bridge/deslab_bridge): "Build" (Postroit) runs
-// `python -m deslab_bridge.rebuild <scan.e57 | preset> [--pdf file:page] [--model id | --no-ai]`, the chat runs
+// `python -m deslab_bridge.rebuild <scan.e57 | preset> [--pdf file:page] [--model codex:gpt-6-astra | codex:gpt-6.1-sol]`, the chat runs
 // `python -m deslab_bridge.chat <name> <message>`. The output is shown in the palette. The bridge does the scan
 // analysis, the AI review and the building through the JSON API, as before.
 

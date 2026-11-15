@@ -252,6 +252,10 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         if name not in presets:
             raise SystemExit(f"Нет пресета «{name}». Есть: {', '.join(presets)}")
         preset = presets[name]
+    # deslab: 15.11.2026, every new build requires AI; never silently fall back to geometry-only output.
+    if preset.get("ai") is False:
+        raise ValueError("Режим без ИИ отключён. Для построения требуется доступная модель.")
+    preset = dict(preset, ai=True)
     out_dir = root / "captures"
     out_dir.mkdir(parents=True, exist_ok=True)
     state_path = out_dir / f"rebuild-{name}.json"
@@ -310,7 +314,9 @@ def rebuild(name, root=None, keep=False, pictures=True, on_layouts=True, preset=
         json.dump({k: v for k, v in scene.items() if k != "views"}, f, ensure_ascii=False, indent=1)
         # deslab: Claude Code reports input/output tokens and a cost in dollars (the subscription), Polza prompt/completion and roubles
         tokens = f"{usage.get('prompt_tokens', usage.get('input_tokens'))}+{usage.get('completion_tokens', usage.get('output_tokens'))}"
-        cost = f"{usage['cost_rub']} ₽" if "cost_rub" in usage else (f"${usage['cost']:.2f} (подписка)" if usage.get("cost") is not None else "? ₽")
+        cost = ("подписка Codex" if usage.get("provider") == "codex" else
+                f"{usage['cost_rub']} ₽" if "cost_rub" in usage else
+                f"${usage['cost']:.2f} (подписка)" if usage.get("cost") is not None else "стоимость не сообщена")
         print(f"ИИ: применено {len(ai_report['applied'])}, отклонено {len(ai_report['rejected'])}, токены {tokens}, {cost}"
               + (f", модель {', '.join(usage['models'])}" if usage.get("models") else ""))
         for q in ai_report["doubts"]:
@@ -367,11 +373,10 @@ def main(argv=None):
     p.add_argument("--no-pictures", action="store_true", help="не снимать картинки видов")
     p.add_argument("--no-layouts", action="store_true", help="не ставить чертёж на листы")
     p.add_argument("--layouts-only", action="store_true", help="только поставить уже собранный план на листы")
-    p.add_argument("--ai", action="store_true", help="разбор сцены ИИ при построении (один платный вызов); для .e57 включён по умолчанию")
-    p.add_argument("--no-ai", action="store_true", help="для .e57: без ИИ")
+    p.add_argument("--ai", action="store_true", help="совместимость: ИИ всегда включён при построении")
     p.add_argument("--pdf", nargs="*", default=[], help="страницы PDF для ИИ в виде файл.pdf:12")
     p.add_argument("--images", nargs="*", default=[], help="картинки для ИИ")
-    p.add_argument("--model", help="модель Polza для ИИ, например moonshotai/kimi-k2.5 (по умолчанию из профиля)")
+    p.add_argument("--model", help="модель ИИ, например codex:gpt-6-astra (по умолчанию из профиля)")
     p.add_argument("--keep", action="store_true", help="не удалять прошлую сборку")
     a = p.parse_args(argv)
     try:
@@ -384,12 +389,18 @@ def main(argv=None):
             # a scan: built at the origin of the open file (one flat per file, from the template)
             e57 = Path(a.name).resolve()
             r = rebuild(e57.stem.split(".")[0], a.root, a.keep, not a.no_pictures, not a.no_layouts,
-                        preset={"e57": str(e57), "origin": {"x": 0, "y": 0}, "ai": not a.no_ai, "clearArea": False,
+                        preset={"e57": str(e57), "origin": {"x": 0, "y": 0}, "ai": True, "clearArea": False,
                                 "aiPdf": a.pdf, "aiImages": a.images, "aiModel": a.model})
         else:
             presets = _load(PRESETS)
-            if a.ai and a.name in presets:
-                presets[a.name] = dict(presets[a.name], ai=True, aiPdf=a.pdf, aiImages=a.images, aiModel=a.model)
+            if a.name in presets:
+                presets[a.name] = dict(presets[a.name], ai=True)
+                if a.pdf:
+                    presets[a.name]["aiPdf"] = a.pdf
+                if a.images:
+                    presets[a.name]["aiImages"] = a.images
+                if a.model:
+                    presets[a.name]["aiModel"] = a.model
             r = rebuild(a.name, a.root, a.keep, not a.no_pictures, not a.no_layouts, preset=presets.get(a.name))
     except (ArchicadError, ValueError) as error:
         print(f"ОШИБКА: {error}")

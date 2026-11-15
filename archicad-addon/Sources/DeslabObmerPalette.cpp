@@ -37,17 +37,11 @@ GS::UniString U (const char* utf8)
     return GS::UniString (utf8, CC_UTF8);
 }
 
-// The models offered in the palette: label, then the argument for the bridge ("" = the profile's default model,
-// "-" = build without the AI).
+// deslab: 15.11.2026, both choices use the signed-in Codex CLI for builds and chat.
 struct ModelChoice { const char* label; const char* id; };
 const ModelChoice modelChoices[] = {
-    { "Claude Sonnet 5.5 (\xD0\xBF\xD0\xBE \xD1\x83\xD0\xBC\xD0\xBE\xD0\xBB\xD1\x87\xD0\xB0\xD0\xBD\xD0\xB8\xD1\x8E)", "" },
-    { "Claude Opus 5.5 (\xD1\x81\xD0\xBB\xD0\xBE\xD0\xB6\xD0\xBD\xD1\x8B\xD0\xB5 \xD1\x81\xD0\xBB\xD1\x83\xD1\x87\xD0\xB0\xD0\xB8, \xD0\xB4\xD0\xBE\xD1\x80\xD0\xBE\xD0\xB6\xD0\xB5)", "anthropic/claude-opus-5.5" },
-    // deslab: 08.11.2026, Claude Code on this PC under the user's subscription (no Polza balance needed)
-    { "Claude Code (\xD0\xBF\xD0\xBE\xD0\xB4\xD0\xBF\xD0\xB8\xD1\x81\xD0\xBA\xD0\xB0, \xD0\xBD\xD0\xB0 \xD1\x8D\xD1\x82\xD0\xBE\xD0\xBC \xD0\x9F\xD0\x9A" ")", "claude-code" },
-    // deslab: Игорь 11.11.2026, try Fable 5.2 for reading the scan (through Claude Code, the model id goes to --model)
-    { "Claude Code: Fable 5.2 (\xD0\xBF\xD0\xBE\xD0\xB4\xD0\xBF\xD0\xB8\xD1\x81\xD0\xBA\xD0\xB0)", "claude-code:claude-fable-5-2" },
-    { "\xD0\x91\xD0\xB5\xD0\xB7 \xD0\x98\xD0\x98", "-" },
+    { "ChatGPT Astra (CLI)", "codex:gpt-6-astra" },
+    { "ChatGPT Sol (CLI)", "codex:gpt-6.1-sol" },
 };
 
 // Decodes the complete UTF-8 characters of pending and keeps an incomplete tail for the next read, so a Cyrillic
@@ -199,7 +193,7 @@ void DeslabObmerPalette::InitTexts ()
     const GS::UniString remembered = RememberedModel ();
     for (short i = 0; i < static_cast<short> (sizeof (modelChoices) / sizeof (modelChoices[0])); ++i) {
         const GS::UniString id (modelChoices[i].id);
-        if (!remembered.IsEmpty () && (id == remembered || (id.IsEmpty () && remembered == "default"))) {
+        if (!remembered.IsEmpty () && id == remembered) {
             modelPopUp.SelectItem (i + 1);
         }
     }
@@ -443,26 +437,18 @@ void DeslabObmerPalette::Build ()
     RememberModel (modelId);
 
     GS::Array<GS::UniString> args = { "-m", "deslab_bridge.rebuild", file, "--no-pictures" };
-    if (modelId == "-") {
-        if (isScan) {
-            args.Push ("--no-ai");
-        }
-    } else {
-        if (!isScan) {
-            args.Push ("--ai");
-        }
-        if (!modelId.IsEmpty ()) {
-            args.Push ("--model");
-            args.Push (modelId);
-        }
-        GS::UniString pdf = pdfEdit.GetText ();
-        pdf.Trim ();
-        if (!pdf.IsEmpty ()) {
-            GS::UniString page = pageEdit.GetText ();
-            page.Trim ();
-            args.Push ("--pdf");
-            args.Push (pdf + ":" + (page.IsEmpty () ? GS::UniString ("1") : page));
-        }
+    args.Push ("--model");
+    args.Push (modelId);
+    if (!isScan) {
+        args.Push ("--ai");
+    }
+    GS::UniString pdf = pdfEdit.GetText ();
+    pdf.Trim ();
+    if (!pdf.IsEmpty ()) {
+        GS::UniString page = pageEdit.GetText ();
+        page.Trim ();
+        args.Push ("--pdf");
+        args.Push (pdf + ":" + (page.IsEmpty () ? GS::UniString ("1") : page));
     }
     lastBuildName = BuildName (file);
     logEdit.SetText (GS::UniString ());
@@ -501,7 +487,7 @@ void DeslabObmerPalette::Build ()
     }
     StartJob (Job::Build, args);
     if (IsRunning ()) {
-        SetStatus (modelId == "-" ? U ("\xD0\xA1\xD1\x82\xD1\x80\xD0\xBE\xD1\x8E \xD0\xB1\xD0\xB5\xD0\xB7 \xD0\x98\xD0\x98\xE2\x80\xA6") : U ("\xD0\xA1\xD1\x82\xD1\x80\xD0\xBE\xD1\x8E, \xD0\x98\xD0\x98 \xD1\x80\xD0\xB0\xD0\xB7\xD0\xB1\xD0\xB8\xD1\x80\xD0\xB0\xD0\xB5\xD1\x82 (1\xE2\x80\x93" "3 \xD0\xBC\xD0\xB8\xD0\xBD)\xE2\x80\xA6"));
+        SetStatus (U ("\xD0\xA1\xD1\x82\xD1\x80\xD0\xBE\xD1\x8E, \xD0\x98\xD0\x98 \xD1\x80\xD0\xB0\xD0\xB7\xD0\xB1\xD0\xB8\xD1\x80\xD0\xB0\xD0\xB5\xD1\x82 (1\xE2\x80\x93" "3 \xD0\xBC\xD0\xB8\xD0\xBD)\xE2\x80\xA6"));
     }
 }
 
@@ -521,10 +507,8 @@ void DeslabObmerPalette::SendChatMessage ()
     }
     GS::Array<GS::UniString> args = { "-m", "deslab_bridge.chat", lastBuildName, message };
     const GS::UniString modelId = modelChoices[modelPopUp.GetSelectedItem () - 1].id;
-    if (!modelId.IsEmpty () && modelId != "-") {
-        args.Push ("--model");
-        args.Push (modelId);
-    }
+    args.Push ("--model");
+    args.Push (modelId);
     AppendOutput (Job::Chat, U ("\xD0\x92\xD1\x8B: ") + message + "\n" + U ("\xD0\x98\xD0\x98: "));
     messageEdit.SetText (GS::UniString ());
     StartJob (Job::Chat, args);

@@ -103,6 +103,80 @@ def pdf_page_png(pdf, page, out, width=2000):
 # subscription. Model "claude-code" (or "claude-code:opus", "claude-code:sonnet") runs `claude -p` headless; pictures are
 # written to a temp folder and read by Claude Code itself. No key is involved.
 CLAUDE_CODE = "claude-code"
+CODEX = "codex"  # deslab: temporary Astra access through the user's signed-in Codex CLI.
+
+
+def _codex_executable():
+    import shutil
+    found = shutil.which("codex")
+    if found:
+        return found
+    # deslab: Archicad may have started before the desktop application's PATH was refreshed.
+    if os.name == "nt":
+        candidates = sorted(Path(os.environ.get("ProgramFiles", "C:/Program Files")).glob(
+            "WindowsApps/OpenAI.Codex_*/app/resources/codex.exe"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if candidates:
+            return str(candidates[0])
+    raise AIError("Не найден Codex CLI. Установите Codex и войдите через codex login.")
+
+
+def _chat_codex(messages, profile, model, json_mode):
+    """deslab: headless subscription adapter; native image attachments, no MCP or UI automation."""
+    import subprocess
+    import tempfile
+    cfg = settings(profile)
+    variant = model.split(":", 1)[1] if ":" in model else "gpt-6-astra"
+    with tempfile.TemporaryDirectory(prefix="deslab-codex-", ignore_cleanup_errors=True) as folder:
+        parts, pictures = [], []
+        for message in messages:
+            content = message["content"]
+            items = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            block = []
+            for item in items:
+                if item.get("type") == "text":
+                    block.append(item["text"])
+                elif item.get("type") == "image_url":
+                    url = item["image_url"]["url"]
+                    if not url.startswith("data:image/") or ";base64," not in url:
+                        raise AIError("Codex: ожидается изображение в формате data:image/...;base64.")
+                    head, data = url.split(",", 1)
+                    path = Path(folder) / f"picture{len(pictures) + 1}.{'png' if 'png' in head else 'jpg'}"
+                    path.write_bytes(base64.b64decode(data, validate=True))
+                    pictures.append(str(path))
+                    block.append(f"[Прикреплённое изображение {len(pictures)}]")
+            parts.append(message["role"].upper() + ":\n" + "\n".join(block))
+        parts.append("Проанализируй только переданные данные и прикреплённые изображения. Не используй инструменты и не меняй файлы.")
+        if json_mode:
+            parts.append("Ответь только одним JSON-объектом без пояснений и без markdown.")
+        result_path = Path(folder) / "answer.txt"
+        command = [_codex_executable(), "exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check",
+                   "--sandbox", "read-only", "--model", variant, "-c", 'model_reasoning_effort="medium"',
+                   "--json", "--output-last-message", str(result_path)]
+        for picture in pictures:
+            command.extend(["--image", picture])
+        command.append("-")
+        try:
+            done = subprocess.run(command, input="\n\n".join(parts).encode("utf-8"), capture_output=True,
+                                  cwd=folder, timeout=max(int(cfg["timeout"]), 600))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AIError("Codex не ответил: " + str(error)) from None
+        usage, completed = {}, False
+        for line in done.stdout.decode("utf-8", "replace").splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("type") in ("error", "turn.failed"):
+                raise AIError("Codex: запрос не выполнен. Проверьте codex login status и лимит подписки.")
+            if event.get("type") == "turn.completed":
+                completed = True
+                usage = event.get("usage") or {}
+        if done.returncode or not completed or not result_path.exists():
+            raise AIError(f"Codex: ответ не получен (код {done.returncode}). Проверьте авторизацию и доступ к {variant}.")
+        answer = result_path.read_text(encoding="utf-8").strip()
+        if not answer:
+            raise AIError("Codex вернул пустой ответ.")
+        return answer, dict(usage, provider=CODEX, requested=variant, models=[variant])
 
 
 def _claude_executable():
@@ -169,6 +243,8 @@ def _chat_claude_code(messages, profile, model, json_mode):
 def chat(messages, profile=None, model=None, json_mode=True):
     """One chat-completions call with a timeout and one retry. Returns (text, usage)."""
     cfg = settings(profile)
+    if (model or cfg["model"]).split(":", 1)[0] == CODEX:
+        return _chat_codex(messages, profile, model or cfg["model"], json_mode)
     if (model or cfg["model"]).startswith(CLAUDE_CODE):
         return _chat_claude_code(messages, profile, model or cfg["model"], json_mode)
     key = api_key()
