@@ -6830,6 +6830,10 @@
                 "type": "string",
                 "description": "The name of the dimension style. If empty, the view has custom dimension style."
             },
+            "useCurrentDimensions": {
+                "type": "boolean",
+                "description": "SetViewSettings only: when true, store the current project dimension preferences as this view's custom dimension style, overriding dimensionStyle. False or omitted preserves the existing behavior."
+            },
             "penSetName": {
                 "type": "string",
                 "description": "The name of the pen set. If empty, the view has custom pen set."

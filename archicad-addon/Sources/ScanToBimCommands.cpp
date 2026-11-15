@@ -430,6 +430,7 @@ GS::Optional<GS::UniString> BuildModelFromScanCommand::GetInputParametersSchema 
             "buildWalls": { "type": "boolean", "description": "Default true." },
             "buildOpenings": { "type": "boolean", "description": "Default true." },
             "buildSlabs": { "type": "boolean", "description": "Default true." },
+            "zoneCategoryAttributeId": { "$ref": "#/AttributeId", "description": "Optional category for created zones. Its zone stamp must be available in the loaded libraries." },
             "buildZones": { "type": "boolean", "description": "Default true." }
         },
         "additionalProperties": false
@@ -911,6 +912,11 @@ GS::ObjectState BuildModelFromScanCommand::Execute (const GS::ObjectState& param
             const GS::UniString favorite = GetString (favorites, "zone");
             if (!favorite.IsEmpty ()) {
                 data.Add ("favoriteName", favorite);
+            }
+            // deslab: preserve the profile's category and its compatible stamp when the source favorite is unavailable.
+            const GS::ObjectState* zoneCategory = parameters.Get ("zoneCategoryAttributeId");
+            if (zoneCategory != nullptr) {
+                data.Add ("categoryAttributeId", *zoneCategory);
             }
             data.Add ("floorIndex", floorIndex);
             data.Add ("name", GetString (room, "name", "Room"));

@@ -3,6 +3,7 @@
 #include "ObjectState.hpp"
 #include "MigrationHelper.hpp"
 #include "NotificationCommands.hpp"
+#include "GSUnID.hpp"
 
 #include <algorithm>
 #include <vector>
@@ -793,6 +794,51 @@ GS::Optional<GS::ObjectState> CreateZonesCommand::SetTypeSpecificParameters (API
     const API_Guid categoryAttrGuid = GetGuidFromArrayItem ("categoryAttributeId", parameters);
     if (categoryAttrGuid != APINULLGuid) {
         element.zone.catInd = GetAttributeIndexFromGuid (API_ZoneCatID, categoryAttrGuid);
+    }
+
+    // deslab: a category imported from an older library may leave the defaults' stamp and parameters unresolved.
+    API_Attribute category = {};
+    category.header.typeID = API_ZoneCatID;
+    category.header.index = element.zone.catInd;
+    GSErrCode stampErr = ACAPI_Attribute_Get (&category);
+    if (stampErr != NoError) {
+        return CreateErrorResponse (stampErr, "The zone category is missing or invalid.");
+    }
+    const GS::UniString stampUnId = GS::UniString::Printf ("{%T}-{%T}",
+        APIGuidToString (category.zoneCat.stampMainGuid).ToPrintf (), APIGuidToString (category.zoneCat.stampRevGuid).ToPrintf ());
+    Int32 stampIndex = 0;
+    for (const auto type : { APILib_RoomID, APILib_ObjectID }) {
+        API_LibPart stamp = {};
+        stamp.typeID = type;
+        CHTruncate (stampUnId.ToCStr ().Get (), stamp.ownUnID, sizeof (stamp.ownUnID));
+        stampErr = ACAPI_LibraryPart_Search (&stamp, false, false);
+        delete stamp.location;
+        if (stampErr == NoError && GS::UnID (stamp.ownUnID).GetMainGuid () == APIGuid2GSGuid (category.zoneCat.stampMainGuid)) {
+            stampIndex = stamp.index;
+            break;
+        }
+    }
+    if (stampIndex == 0) {
+        return CreateErrorResponse (APIERR_BADPARS, GS::UniString::Printf (
+            "Zone category stamp is not loaded (main GUID %T). Load its library or choose a category with an available stamp.",
+            APIGuidToString (category.zoneCat.stampMainGuid).ToPrintf ()));
+    }
+    if (element.zone.libInd != stampIndex || memo.params == nullptr) {
+        double a = 0.0, b = 0.0;
+        Int32 count = 0;
+        API_AddParType** stampParams = nullptr;
+        stampErr = ACAPI_LibraryPart_GetParams (stampIndex, &a, &b, &count, &stampParams);
+        if (stampErr != NoError) {
+            if (stampParams != nullptr) {
+                ACAPI_DisposeAddParHdl (&stampParams);
+            }
+            return CreateErrorResponse (stampErr, "Failed to read the selected zone category's stamp parameters.");
+        }
+        if (memo.params != nullptr) {
+            ACAPI_DisposeAddParHdl (&memo.params);
+        }
+        memo.params = stampParams;
+        element.zone.libInd = stampIndex;
     }
 
     if (!SetUCharProperty (&parameters, "name", element.zone.roomName)) {
