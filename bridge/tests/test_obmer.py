@@ -391,6 +391,19 @@ def test_missing_favorites_build_with_defaults():
         sent = [x for c, p in ac.calls if c == command for x in p[key]]
         assert sent and not any("favoriteName" in x for x in sent), (command, sent[:1])
     assert any("Нет избранного" in e and "ОБМЕР шаблон Размер" in e for e in report["errors"]), report["errors"]
+    # deslab: 15.11.2026, fallback must retain the reference's GOST text and pens, not AC29's red/blue defaults.
+    height_text = next(p for c, p in ac.calls if c == "CreateTexts")["textsData"][0]
+    assert height_text["style"]["fontName"] == "GOST Type BU Кириллический"
+    assert height_text["style"]["height"] == 3 and height_text["style"]["penIndex"] == 81
+    label = next(p for c, p in ac.calls if c == "CreateLabels")["labelsData"][0]
+    assert label["style"]["fontName"] == "GOST Type BU Кириллический"
+    assert label["style"]["height"] == 2.5 and label["style"]["penIndex"] == 161
+    assert not label["style"]["bold"] and not label["style"]["italic"]
+    assert label["leaderLine"]["penIndex"] == 167 and label["leaderLine"]["arrowPenIndex"] == 167
+    assert label["leaderLine"]["arrowType"] == "FullCircle" and label["leaderLine"]["arrowSize"] == 0.5
+    dimensions = next(p for c, p in ac.calls if c == "CreateAssociativeDimensions")["dimensionsData"]
+    assert all(d["linePen"] == 120 and d["markerPen"] == 120 for d in dimensions)
+    assert all(d["markerType"] == 6 and d["markerSize"] == 1.25 for d in dimensions)
 
 
 def test_axonometry_on_white():

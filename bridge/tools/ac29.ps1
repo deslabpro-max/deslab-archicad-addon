@@ -64,7 +64,8 @@ if ($Action -eq 'start') {
         $product = Request $port 'API.GetProductInfo'
         if ($product.version -ne 29) { throw "Unexpected version: $($product.version)" }
         $null = Tapir $port 'GetProjectInfo'
-        $null = Tapir $port 'SetDialogAutoClose' @{enabled=$true}
+        # deslab: auto-close is for startup only; interactive E57/PDF/save dialogs must remain open after READY.
+        $null = Tapir $port 'SetDialogAutoClose' @{enabled=$false}
         $session.port = $port
         $session.ready = $true
         Save-State $session
@@ -91,17 +92,28 @@ if ($Action -eq 'status') {
   return
 }
 if ($Action -eq 'stop') {
-  if ($session.port -in $ports) {
-    try { $null = Tapir $session.port 'QuitArchicad' } catch { Log 'Quit request ended; checking process.' }
+  # deslab: unattended stop may dismiss its own dialogs, but restore interaction if the session stays open.
+  try {
+    if ($session.port -in $ports) {
+      try {
+        $null = Tapir $session.port 'SetDialogAutoClose' @{enabled=$true}
+        $null = Tapir $session.port 'QuitArchicad'
+      } catch { Log 'Quit request ended; checking process.' }
+    }
+    if (-not $proc.WaitForExit(10000)) {
+      if (-not $Discard) { throw 'Archicad is still running. To discard this owned test project, run stop -Discard.' }
+      # Recheck identity immediately before terminating; never kill another PID or a reused PID.
+      $proc = Owned-Process $session
+      if ($proc) { Stop-Process -InputObject $proc -Force; $proc.WaitForExit(); Log 'Discarded owned test session.' }
+    }
+    Remove-Item -LiteralPath $stateFile
+    Log 'STOPPED'
+  } finally {
+    $remaining = Owned-Process $session
+    if ($remaining -and $session.port -in (Owned-Ports $remaining)) {
+      $null = Tapir $session.port 'SetDialogAutoClose' @{enabled=$false}
+    }
   }
-  if (-not $proc.WaitForExit(10000)) {
-    if (-not $Discard) { throw 'Archicad is still running. To discard this owned test project, run stop -Discard.' }
-    # Recheck identity immediately before terminating; never kill another PID or a reused PID.
-    $proc = Owned-Process $session
-    if ($proc) { Stop-Process -InputObject $proc -Force; $proc.WaitForExit(); Log 'Discarded owned test session.' }
-  }
-  Remove-Item -LiteralPath $stateFile
-  Log 'STOPPED'
   return
 }
 if (-not $session.ready -or $session.port -notin $ports) { throw 'Owned session API is not ready. Run start again.' }
@@ -111,6 +123,8 @@ if (-not (Test-Path -LiteralPath $python)) { throw "Bridge environment not found
 $previousPort = $env:DESLAB_ARCHICAD_PORT
 try {
   $env:DESLAB_ARCHICAD_PORT = [string]$session.port
+  # deslab: confine automatic dialog dismissal to this unattended run, including failed runs.
+  $null = Tapir $session.port 'SetDialogAutoClose' @{enabled=$true}
   Log 'Applying office standard to the owned test project.'
   $standard = Tapir $session.port 'ApplyOfficeStandard' @{
     sourceProjectPath=(Join-Path $workspace 'Антон Крючков.pln')
@@ -124,4 +138,7 @@ try {
     & $python -m deslab_bridge.rebuild $InputFile --root $workspace --model codex:gpt-6-astra
     if ($LASTEXITCODE -ne 0) { throw "Bridge failed with exit code $LASTEXITCODE" }
   } finally { Pop-Location }
-} finally { $env:DESLAB_ARCHICAD_PORT = $previousPort }
+} finally {
+  try { $null = Tapir $session.port 'SetDialogAutoClose' @{enabled=$false} }
+  finally { $env:DESLAB_ARCHICAD_PORT = $previousPort }
+}

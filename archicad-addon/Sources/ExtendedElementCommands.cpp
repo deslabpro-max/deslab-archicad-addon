@@ -665,6 +665,24 @@ GS::Optional<GS::ObjectState> DimensionDefaults::Read (const GS::ObjectState& da
         element.dimension.defNote.noteFont = *fontIndex;
     }
 
+    // deslab: the reference's line pens and ticks must survive failed cross-version Favorite import.
+    Int32 linePen = 0;
+    if (data.Get ("linePen", linePen)) {
+        element.dimension.linPen = static_cast<short> (linePen);
+    }
+    Int32 markerPen = 0;
+    if (data.Get ("markerPen", markerPen)) {
+        element.dimension.markerData.markerPen = static_cast<short> (markerPen);
+    }
+    Int32 markerType = 0;
+    if (data.Get ("markerType", markerType)) {
+        element.dimension.markerData.markerType = static_cast<API_MarkerID> (markerType);
+    }
+    double markerSize = 0.0;
+    if (data.Get ("markerSize", markerSize)) {
+        element.dimension.markerData.markerSize = markerSize;
+    }
+
     return {};
 }
 
@@ -6399,6 +6417,12 @@ GS::Optional<GS::UniString> CreateAssociativeDimensionsCommand::GetInputParamete
                             "type": "string",
                             "description": "Optional name of the font of the dimension texts (as GetDetailsOfElements reports fontName), applied after favoriteName."
                         },
+                        "linePen": { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "markerPen": { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "markerType": { "type": "integer", "minimum": 0, "maximum": 17,
+                            "description": "Optional API_MarkerID: 6 is a 45-degree slash, as in the office reference." },
+                        "markerSize": { "type": "number", "exclusiveMinimum": 0,
+                            "description": "Optional dimension marker size in paper millimeters." },
                         "referencePoint": { "$ref": "#/Coordinate2D" },
                         "direction": { "$ref": "#/Coordinate2D" },
                         "floorIndex": { "type": "number" },
@@ -6620,6 +6644,12 @@ GS::Optional<GS::UniString> CreateAssociativeDimensionsOnSectionCommand::GetInpu
                             "type": "string",
                             "description": "Optional name of the font of the dimension texts (as GetDetailsOfElements reports fontName), applied after favoriteName."
                         },
+                        "linePen": { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "markerPen": { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "markerType": { "type": "integer", "minimum": 0, "maximum": 17,
+                            "description": "Optional API_MarkerID: 6 is a 45-degree slash, as in the office reference." },
+                        "markerSize": { "type": "number", "exclusiveMinimum": 0,
+                            "description": "Optional dimension marker size in paper millimeters." },
                         "sectionElementId": {
                             "$ref": "#/ElementId",
                             "description": "The identifier of a single section element. Only one of sectionElementId and sectionElementIds can be given."
@@ -6796,6 +6826,12 @@ GS::Optional<GS::UniString> CreateWallThicknessDimensionsCommand::GetInputParame
                             "type": "string",
                             "description": "Optional name of the font of the dimension texts (as GetDetailsOfElements reports fontName), applied after favoriteName."
                         },
+                        "linePen": { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "markerPen": { "type": "integer", "minimum": 1, "maximum": 255 },
+                        "markerType": { "type": "integer", "minimum": 0, "maximum": 17,
+                            "description": "Optional API_MarkerID: 6 is a 45-degree slash, as in the office reference." },
+                        "markerSize": { "type": "number", "exclusiveMinimum": 0,
+                            "description": "Optional dimension marker size in paper millimeters." },
                         "wallId": { "$ref": "#/ElementId" },
                         "referencePoint": { "$ref": "#/Coordinate2D" },
                         "direction": { "$ref": "#/Coordinate2D" }

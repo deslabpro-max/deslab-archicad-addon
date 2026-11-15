@@ -74,6 +74,10 @@
     "shaftMaterial": "Штукатурка - Гипсовая"
   },
   "dimensionText": {"font": "GOST Type BU Кириллический", "size": 2.5, "pen": 120},
+  "dimensionStyle": {"linePen": 120, "markerPen": 120, "markerType": 6, "markerSize": 1.25},
+  "heightTextStyle": {"fontName": "GOST Type BU Кириллический", "height": 3, "penIndex": 81,
+                      "bold": false, "italic": false, "underline": false, "fixedSize": true,
+                      "spacing": -1.5, "usedContour": false, "usedFill": false},
   "favoritesFile": "C:\\Users\\user\\Desktop\\Архикад\\obmer_fav.prefs",
   "favorites": {
     "zone": "ОБМЕР шаблон Зона",
@@ -109,6 +113,12 @@
     "stampAtCentre": true
   },
   "labels": {
+    "style": {"fontName": "GOST Type BU Кириллический", "height": 2.5, "penIndex": 161,
+              "bold": false, "italic": false, "underline": false, "fixedSize": true,
+              "usedContour": false, "usedFill": false},
+    "leaderLine": {"penIndex": 167, "framed": false, "contourOffset": 0, "hasLeaderLine": true,
+                   "anchorPoint": "Underlined", "leaderShape": "Segmented", "arrowType": "FullCircle",
+                   "arrowVisible": true, "arrowPenIndex": 167, "arrowSize": 0.5},
     "window": [
       [
         "h",

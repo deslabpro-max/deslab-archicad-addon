@@ -1956,7 +1956,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         # deslab: «Н 3312» centred right under the number circle (the stamp is at the same x),
         # one block with it (Игорь, 03.11.2026)
         data = [{"coordinate": t["coordinate"], "text": t["text"], "floorIndex": floor_index,
-                 "style": {"justification": "Center", "anchor": "MiddleTop"},
+                 # deslab: reference styles remain explicit when AC29 cannot import the AC27 favorites.
+                 "style": dict(profile.get("heightTextStyle") or {}, justification="Center", anchor="MiddleTop"),
                  **({"favoriteName": F["heightText"]} if F.get("heightText") else {}),
                  **({"layerIndex": idx[L["zones"]]} if idx.get(L["zones"]) else {})} for t in texts]
         guids = _created(ac.tapir("CreateTexts", {"textsData": data}), "elements", report, "Текст Н")
@@ -1973,14 +1974,16 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
         # deslab: the lines of a label are aligned by their first letter «h» (Игорь 04.11.2026),
         # so Left; it holds when sent together with the runs (test of 04.11 on kv94, no endless
         # shelf; an endless one is redone by _redo_endless_labels anyway)
-        item["style"] = {"justification": "Left"}
+        item["style"] = dict(profile["labels"].get("style") or {}, justification="Left")
+        if profile["labels"].get("leaderLine"):
+            item["leaderLine"] = dict(profile["labels"]["leaderLine"])
         if profile["labels"].get("textSpacing") is not None:  # Archicad's line spacing of the label text
             item["style"]["spacing"] = profile["labels"]["textSpacing"]
         if F.get("label"):
             item["favoriteName"] = F["label"]
         else:  # rules: no blue fill, frame or bold when the favorite is missing
             item["style"].update({"bold": False, "usedContour": False, "usedFill": False})
-            item["leaderLine"] = {"framed": False}
+            item.setdefault("leaderLine", {})["framed"] = False
         # Not associative: an associative label moves its dot to the element's own anchor.
         data.append(item)
     if data:
@@ -2015,6 +2018,8 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
                                    for j, g in enumerate(ids)]}
             if F.get("dimension"):
                 d["favoriteName"] = F["dimension"]
+            # deslab: AC29 may not import the reference favorite; line/marker style must not inherit blue tool defaults.
+            d.update(profile.get("dimensionStyle") or {})
             # deslab: 08.11.2026, the favorite does not set the dimension text, and a new project's tool defaults are not
             # the template's: font, size and pen of the texts are sent (profile "dimensionText")
             for key, value in (profile.get("dimensionText") or {}).items():
