@@ -1531,7 +1531,7 @@ def apply_dimension_preferences(ac, profile, report):
         if not result.get("success"):
             raise ValueError(f"настройки не приняты: {result.get('error', result)}")
         actual = ac.tapir("GetProjectPreferences", {"preferenceTypes": ["Dimensions"]}).get("dimensions", {})
-        if any(actual.get(key) != value for key, value in desired.items() if not isinstance(value, dict)) or any(
+        if any(actual.get(key) != value for key, value in desired.items() if key != "dimensionStandardIndex" and not isinstance(value, dict)) or any(
                 actual.get(key, {}).get(field) != value for key, fields in desired.items() if isinstance(fields, dict)
                 for field, value in fields.items()):
             raise ValueError("проверка после записи не подтвердила миллиметры без дробной части")
@@ -1542,10 +1542,18 @@ def apply_dimension_preferences(ac, profile, report):
         if missing:
             report.errors.append("Размеры: не найдены виды для сохранения формата: " + ", ".join(sorted(missing)))
         if views:
-            updates = [{"navigatorItemId": v["navigatorItemId"], "viewSettings": {"useCurrentDimensions": True}} for v in views]
+            standard = profile.get("dimensionStyle", {}).get("standard")
+            if not standard:
+                raise ValueError("в профиле не задан именной стандарт размеров для видов")
+            # deslab: AC29 restores named standards on view switch; private dimensionPrefs did not survive activation.
+            updates = [{"navigatorItemId": v["navigatorItemId"], "viewSettings": {"dimensionStyle": standard}} for v in views]
             results = ac.tapir("SetViewSettings", {"navigatorItemIdsWithViewSettings": updates}).get("executionResults", [])
             if len(results) != len(updates) or any(not r.get("success") for r in results):
                 raise ValueError("не удалось сохранить формат размеров во всех видах")
+            saved = ac.tapir("GetViewSettings", {"navigatorItemIds": [
+                {"navigatorItemId": v["navigatorItemId"]} for v in views]}).get("viewSettings", [])
+            if len(saved) != len(views) or any(v.get("dimensionStyle") != standard for v in saved):
+                raise ValueError(f"именной стандарт размеров «{standard}» не найден или не сохранён в видах")
     except Exception as error:
         report.errors.append(f"Размеры в миллиметрах: {error}")
 
@@ -2159,7 +2167,7 @@ def _build_measured_plan(ac, scene, profile, rooms, origin, floor_index, import_
             if F.get("dimension"):
                 d["favoriteName"] = F["dimension"]
             # deslab: AC29 may not import the reference favorite; line/marker style must not inherit blue tool defaults.
-            d.update(profile.get("dimensionStyle") or {})
+            d.update({k: v for k, v in (profile.get("dimensionStyle") or {}).items() if k != "standard"})
             # deslab: 08.11.2026, the favorite does not set the dimension text, and a new project's tool defaults are not
             # the template's: font, size and pen of the texts are sent (profile "dimensionText")
             for key, value in (profile.get("dimensionText") or {}).items():

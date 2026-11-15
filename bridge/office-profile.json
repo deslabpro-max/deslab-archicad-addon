@@ -75,8 +75,8 @@
     "shaftMaterial": "Штукатурка - Гипсовая"
   },
   "dimensionText": {"font": "GOST Type BU Кириллический", "size": 2.5, "pen": 120},
-  "dimensionPreferences": {"linear": {"unit": "Millimeter", "decimals": 0}},
-  "dimensionStyle": {"linePen": 120, "markerPen": 120, "markerType": 6, "markerSize": 1.25},
+  "dimensionPreferences": {"dimensionStandardIndex": 0, "linear": {"unit": "Millimeter", "decimals": 0}},
+  "dimensionStyle": {"standard": "Миллиметры", "linePen": 120, "markerPen": 120, "markerType": 6, "markerSize": 1.25},
   "heightTextStyle": {"fontName": "GOST Type BU Кириллический", "height": 3, "penIndex": 81,
                       "bold": false, "italic": false, "underline": false, "fixedSize": true,
                       "spacing": -1.5, "usedContour": false, "usedFill": false},

@@ -229,6 +229,7 @@ class FakeArchicad:
         self.log = []
         self.ids = itertools.count(1)
         self.dimension_prefs = {"dimensionStandardIndex": 4, "linear": {"unit": "Meter", "decimals": 3}}
+        self.view_dimensions = {}
 
     def alive(self):
         return True
@@ -252,7 +253,12 @@ class FakeArchicad:
         if command == "GetProjectPreferences":
             return {"dimensions": self.dimension_prefs}
         if command == "SetViewSettings":
+            for view in params["navigatorItemIdsWithViewSettings"]:
+                self.view_dimensions[view["navigatorItemId"]["guid"]] = view["viewSettings"].get("dimensionStyle")
             return {"executionResults": [{"success": True} for _ in params["navigatorItemIdsWithViewSettings"]]}
+        if command == "GetViewSettings":
+            return {"viewSettings": [{"dimensionStyle": self.view_dimensions.get(v["navigatorItemId"]["guid"])}
+                                     for v in params["navigatorItemIds"]]}
         if command == "GetAttributesByType" and params["attributeType"] == "ZoneCategory":
             return {"attributes": [{"attributeId": {"guid": "CAT"}}]}
         if command == "GetZoneCategories":
@@ -294,11 +300,11 @@ def test_build_calls():
     report = obmer.build_measured_plan(ac, SCENE, PROFILE, rooms={"R1": {"name": "Кухня", "wet": "kitchen"}})
     names = [c for c, _ in ac.calls if c != "GetFavoritesByType"]
     # a layer hidden in the open view is shown for the build and hidden again at the end
-    assert names[:10] == ["GetAttributesByType", "GetLayers", "CreateLayers", "SetProjectPreferences", "GetProjectPreferences",
-                          "API.GetNavigatorItemTree", "SetViewSettings", "ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
+    assert names[:11] == ["GetAttributesByType", "GetLayers", "CreateLayers", "SetProjectPreferences", "GetProjectPreferences",
+                          "API.GetNavigatorItemTree", "SetViewSettings", "GetViewSettings", "ImportFavorites", "GetAttributesByType", "BuildModelFromScan"], names
     assert names[-1] == "CreateLayers" and ac.calls[-1][1]["layerDataArray"][0]["isHidden"] is True
     assert ac.calls[2][1]["layerDataArray"] == [{"attributeId": {"guid": "L0"}, "name": "слой", "isHidden": False, "isLocked": False}]
-    assert len(names) < 34, names  # includes four calls to set, verify and save the reference dimension format
+    assert len(names) < 35, names  # includes five calls to set, verify and save the reference dimension format
     build = next(p for c, p in ac.calls if c == "BuildModelFromScan")
     assert build["scene"]["rooms"][0]["name"] == "Кухня"
     assert build["favorites"]["zone"] == "ОБМЕР шаблон Зона"
@@ -429,6 +435,7 @@ def test_missing_favorites_build_with_defaults():
     dimensions = next(p for c, p in ac.calls if c == "CreateAssociativeDimensions")["dimensionsData"]
     assert all(d["linePen"] == 120 and d["markerPen"] == 120 for d in dimensions)
     assert all(d["markerType"] == 6 and d["markerSize"] == 1.25 for d in dimensions)
+    assert all("standard" not in d for d in dimensions), "The view's standard name is not an element-creation property"
     zones = [x for c, p in ac.calls if c == "SetDetailsOfElements" for x in p["elementsWithDetails"]
              if x["elementId"]["guid"] == "Z1"]
     assert zones and zones[0]["details"]["typeSpecificDetails"]["useFloorFill"] is True
@@ -524,6 +531,13 @@ def test_unknown_zone_stamp_is_not_hidden():
 def test_reference_dimension_preferences_verify_format_not_preset_index():
     # deslab: AC29 can retain the informational named-preset index while the actual format is already integer mm.
     class Views(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "SetProjectPreferences":
+                self.calls.append((command, params))
+                assert params["dimensions"]["dimensionStandardIndex"] == 0
+                self.dimension_prefs["linear"] = params["dimensions"]["linear"]
+                return {"dimensions": {"success": True}}
+            return super().tapir(command, params, timeout)
         def api(self, command, params=None):
             tree = super().api(command, params)
             tree["navigatorTree"]["rootItem"]["children"].append({
@@ -536,7 +550,7 @@ def test_reference_dimension_preferences_verify_format_not_preset_index():
     assert ac.dimension_prefs == {"dimensionStandardIndex": 4, "linear": {"unit": "Millimeter", "decimals": 0}}
     calls = next(p for c, p in ac.calls if c == "SetViewSettings")["navigatorItemIdsWithViewSettings"]
     assert {v["navigatorItemId"]["guid"] for v in calls} == {"V0", "V1"}
-    assert all(v["viewSettings"] == {"useCurrentDimensions": True} for v in calls)
+    assert all(v["viewSettings"] == {"dimensionStyle": "Миллиметры"} for v in calls)
 
 
 def test_reference_dimension_preferences_errors_are_reported():
@@ -568,6 +582,15 @@ def test_reference_dimension_preferences_errors_are_reported():
     ac, report = RefusedPreferences(), obmer.Report()
     obmer.apply_dimension_preferences(ac, PROFILE, report)
     assert report.errors and "refused" in report.errors[0]
+
+    class IgnoredNamedStandard(FakeArchicad):
+        def tapir(self, command, params=None, timeout=None):
+            if command == "SetViewSettings":
+                return {"executionResults": [{"success": True}, {"success": True}]}
+            return super().tapir(command, params, timeout)
+    ac, report = IgnoredNamedStandard(), obmer.Report()
+    obmer.apply_dimension_preferences(ac, PROFILE, report)
+    assert report.errors and "«Миллиметры» не найден" in report.errors[0]
 
 
 def test_zone_category_repairs_unloaded_reference_stamp():
