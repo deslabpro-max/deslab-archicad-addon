@@ -1602,10 +1602,12 @@ GS::Optional<GS::ObjectState> CreateHatchesCommand::SetTypeSpecificParameters (A
     }
     const GS::ObjectState* fillId = parameters.Get ("fillId");
     if (fillId != nullptr) {
+        element.hatch.hatchType = API_FillHatch;  // deslab: explicit fill selects its subtype, regardless of tool defaults.
         element.hatch.fillInd = GetAttributeIndexFromGuid (API_FilltypeID, GetGuidFromObjectState (*fillId));
     }
     const GS::ObjectState* buildingMaterialId = parameters.Get ("buildingMaterialId");
     if (buildingMaterialId != nullptr) {
+        element.hatch.hatchType = API_BuildingMaterialHatch;  // deslab: material takes precedence when both are given.
         element.hatch.buildingMaterial = GetAttributeIndexFromGuid (API_BuildingMaterialID, GetGuidFromObjectState (*buildingMaterialId));
     }
     Int32 roomSpecial = 0;

@@ -15,6 +15,7 @@ with commands that deslab needs for drafting in Archicad 27 from Claude.
 
 | Command | Change |
 | --- | --- |
+| `CreateHatches` | deslab, 15.11.2026: explicit fillId/buildingMaterialId also selects the matching API hatch type, so reference legend swatches actually use the requested fill or material instead of an unrelated tool default. |
 | `CreateZones`, `GetZoneStampParameters`, `BuildModelFromScan` | deslab, 15.11.2026: resolve the selected category's actual stamp by GUID in both legacy Room and AC29 Object parts, refresh stale libInd/parameter defaults when changing stamp, and accept optional zoneCategoryAttributeId in scan builds. This prevents BADPARS after reopening a migrated project with missing AC27 stamps. |
 | `SetViewSettings` (`useCurrentDimensions`) | deslab, 15.11.2026: optionally save the current dimension preferences directly into a view, preserving the reference's integer millimeters even when AC29 has a different named GOST preset. Omitted/false retains existing behavior. |
 | `obmer.py` (`fallback_zone_markers`), profile and tests | deslab, 15.11.2026: if the AC27 Zone Favorite is unavailable, keep real zones for schedules and render their reference GOST B 3 mm pen120 numbers in 0.15 m radius circles. Hide stock stamp rows only after checking their actual GDL capabilities and successfully creating replacement markers. Unknown stamps and partial marker creation failures preserve original stamps and report errors. |
