@@ -828,6 +828,7 @@ GS::ObjectState SetViewSettingsCommand::Execute (const GS::ObjectState& paramete
                 executionResults (CreateFailedExecutionResult (err, "Failed to read current dimension preferences"));
                 continue;
             }
+            currentDimensions.index = 0;  // deslab: store custom formats, not the named standard returned with current preferences.
             navigatorView.dimName[0] = '\0';
             navigatorView.dimPrefs = &currentDimensions;
             navigatorView.saveDim = true;
