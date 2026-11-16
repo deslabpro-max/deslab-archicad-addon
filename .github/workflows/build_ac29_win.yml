@@ -1,0 +1,49 @@
+# deslab: 13.11.2026, Игорь installs Archicad 29 (its MEP tools can be reached by an add-on, those of 27 cannot)
+name: Build Add-On AC29 Win
+
+on:
+  push:
+    branches: [ '**' ]
+    paths: [ 'archicad-addon/**', '.github/workflows/build_ac29_win.yml' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build_win:
+    runs-on: [ windows-2022 ]
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v4
+    - name: Download Development Kit
+      run: python archicad-addon/Tools/download_and_unzip.py https://github.com/GRAPHISOFT/archicad-api-devkit/releases/download/29.3000/API.Development.Kit.WIN.29.3000.zip archicad-addon/Build/DevKits/AC29
+    - name: Generate Project
+      run: cmake -B archicad-addon/Build -G "Visual Studio 17 2022" -A "x64" -T "v143" -DAC_VERSION=29 -DAC_API_DEVKIT_DIR="archicad-addon/Build/DevKits/AC29/Support" archicad-addon
+    - name: Build RelWithDebInfo
+      run: cmake --build archicad-addon/Build --config RelWithDebInfo
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: DeslabTapir AddOn AC29 Win
+        path: archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC29_Win.apx
+    - name: Publish to the "ac29-latest" release (main only)
+      if: github.ref == 'refs/heads/main'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        gh release view ac29-latest -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+          gh release create ac29-latest -R "$GITHUB_REPOSITORY" --prerelease --title "AC29 Win, latest main build" --notes "Built from main by build_ac29_win.yml."
+        gh release upload ac29-latest -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC29_Win.apx
+    # deslab: other branches go to the "ac29-dev" pre-release, so a branch build can be tried on the drafting PC
+    # (Actions artifacts cannot be downloaded there).
+    - name: Publish to the "ac29-dev" release (other branches)
+      if: github.ref != 'refs/heads/main'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        gh release view ac29-dev -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+          gh release create ac29-dev -R "$GITHUB_REPOSITORY" --prerelease --title "AC29 Win, latest branch build" --notes "Built from a non-main branch by build_ac29_win.yml. For testing only." || true
+        gh release upload ac29-dev -R "$GITHUB_REPOSITORY" --clobber archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC29_Win.apx

@@ -1,9 +1,12 @@
 #include "CommandBase.hpp"
 
+#include <vector>
+
 #include "SchemaDefinitions.hpp"
 #include "MigrationHelper.hpp"
 
 #include <cmath>
+#include <string>
 
 constexpr double EPS = 0.001;
 constexpr const char* CommandNamespace = "TapirCommand";
@@ -1220,6 +1223,44 @@ void DecomposeHotlinkTransformation (const API_Tranmat& transformation, API_Coor
     rotationAngle = std::atan2 (-transformation.tmx[1], transformation.tmx[5]);
     const double det = transformation.tmx[0] * transformation.tmx[5] - transformation.tmx[1] * transformation.tmx[4];
     mirrored = det < 0.0;
+}
+
+GSErrCode SearchLibraryPartAnyVersion (API_LibPart& libPart)
+{
+    const GSErrCode err = ACAPI_LibraryPart_Search (&libPart, false, true);
+    if (err == NoError) {
+        return err;
+    }
+    // deslab: «Base NN» with NN of one or two digits: the bare «Base» is tried first (from Archicad 28 on the library parts
+    // have no version in their names: Archicad 29 has «Цилиндр», «Окно», «Панельный Радиатор», not «Цилиндр 27»), then
+    // the other versions from 40 down to 20. A bare «Base» is tried as «Base NN» from 40 down to 20.
+    const std::string name (GS::UniString (libPart.docu_UName).ToCStr (CC_UTF8).Get ());
+    const size_t space = name.find_last_of (' ');
+    const bool versioned = space != std::string::npos && space != 0 && name.size () - space - 1 >= 1 && name.size () - space - 1 <= 2 &&
+                           name.find_first_not_of ("0123456789", space + 1) == std::string::npos;
+    std::vector<std::string> candidates;
+    if (versioned) {
+        candidates.push_back (name.substr (0, space));
+    }
+    const std::string base = versioned ? name.substr (0, space + 1) : name + " ";
+    for (int version = 40; version >= 20; --version) {
+        const std::string candidate = base + std::to_string (version);
+        if (candidate != name) {
+            candidates.push_back (candidate);
+        }
+    }
+    for (const std::string& candidate : candidates) {
+        API_LibPart other = {};
+        other.typeID = libPart.typeID;
+        GS::ucsncpy (other.docu_UName, GS::UniString (candidate.c_str (), CC_UTF8).ToUStr ().Get (), API_UniLongNameLen - 1);
+        if (ACAPI_LibraryPart_Search (&other, false, true) == NoError) {
+            delete libPart.location;
+            libPart = other;
+            return NoError;
+        }
+        delete other.location;
+    }
+    return err;
 }
 
 GSErrCode ChangeElementId (const API_Guid& elementGuid, const GS::UniString& id)

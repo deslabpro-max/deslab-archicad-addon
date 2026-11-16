@@ -1,6 +1,8 @@
 #include "3DProjectionCommands.hpp"
 #include "MigrationHelper.hpp"
 
+#include <cmath>
+
 // Both commands mirror API_3DProjectionInfo (the 3D Projection Settings of the 3D window):
 // the common part (isPersp, camGuid, actCamSet) plus either the perspective parameters
 // (API_PerspPars) or the axonometric transformation (API_AxonoPars), whichever the
@@ -48,7 +50,9 @@ GS::Optional<GS::UniString> Get3DProjectionSettingsCommand::GetRawResponseSchema
                     },
                     "minItems": 12,
                     "maxItems": 12
-                }
+                },
+                "azimuth": { "type": "number", "description": "deslab: the camera's angle around the target." },
+                "projectionMode": { "type": "integer", "description": "deslab: the projection type selected in 3D Projection Settings." }
             },
             "additionalProperties": false,
             "required": [
@@ -95,6 +99,9 @@ GS::ObjectState Get3DProjectionSettingsCommand::Execute (const GS::ObjectState& 
         for (double value : projectionInfo.u.axono.tranmat.tmx) {
             transformationMatrix (value);
         }
+        // deslab: 12.11.2026, with the angle and the projection type, so that the set command can put all of it back
+        axonometric.Add ("azimuth", projectionInfo.u.axono.azimuth);
+        axonometric.Add ("projectionMode", static_cast<Int32> (projectionInfo.u.axono.projMod));
         response.Add ("axonometric", axonometric);
     }
 
@@ -117,12 +124,20 @@ GS::Optional<GS::UniString> Set3DProjectionSettingsCommand::GetInputParametersSc
     "properties": {
         "perspective": {
             "$ref": "#/PerspectiveProjectionParameters"
+        },
+        "axonometric": {
+            "type": "object",
+            "description": "deslab: a parallel projection, as Get3DProjectionSettings reports it.",
+            "properties": {
+                "transformationMatrix": { "type": "array", "items": { "type": "number" }, "minItems": 12, "maxItems": 12 },
+                "azimuth": { "type": "number" },
+                "projectionMode": { "type": "integer" }
+            },
+            "additionalProperties": false,
+            "required": ["transformationMatrix"]
         }
     },
-    "additionalProperties": false,
-    "required": [
-        "perspective"
-    ]
+    "additionalProperties": false
 })";
 }
 
@@ -135,9 +150,82 @@ GS::Optional<GS::UniString> Set3DProjectionSettingsCommand::GetRawResponseSchema
 
 GS::ObjectState Set3DProjectionSettingsCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
 {
+    // deslab: 12.11.2026, the axonometry of the office template (the 3D drawing of the measured plan layouts): the
+    // parallel projection is set by its matrix, as Get3DProjectionSettings gives it.
+    GS::ObjectState axonometric;
+    if (parameters.Get ("axonometric", axonometric)) {
+        GS::Array<double> matrix;
+        // numbers one by one: a list read as doubles takes an integer item's bits as a double
+        class Numbers : public GS::ObjectState::Processor {
+        public:
+            GS::Array<double> values;
+            virtual void IntFound (const GS::String&, Int64 value) override { values.Push (static_cast<double> (value)); }
+            virtual void UIntFound (const GS::String&, UInt64 value) override { values.Push (static_cast<double> (value)); }
+            virtual void RealFound (const GS::String&, double value) override { values.Push (value); }
+            virtual bool ListFound (const GS::String&) override { return true; }
+        } numbers;
+        if (axonometric.IsList ("transformationMatrix")) {
+            axonometric.Enumerate ("transformationMatrix", numbers);
+        }
+        double azimuth = 0.0;
+        Int32 projectionMode = 0;
+        const bool hasAzimuth = axonometric.Get ("azimuth", azimuth);
+        const bool hasMode = axonometric.Get ("projectionMode", projectionMode);
+        matrix = numbers.values;
+        if (matrix.GetSize () != 12) {
+            return CreateFailedExecutionResult (APIERR_BADPARS, "Invalid parameter: axonometric.transformationMatrix takes 12 numbers.");
+        }
+        API_3DProjectionInfo info {};
+        GSErrCode axoErr = ACAPI_View_Get3DProjectionSets (&info);
+        if (axoErr != NoError) {
+            return CreateFailedExecutionResult (axoErr, "Failed to get the current 3D projection settings.");
+        }
+        const API_SunAngleSettings sun = info.isPersp ? info.u.persp.sunAngSets : info.u.axono.sunAngSets;
+        if (info.isPersp) {
+            info.u.axono = API_AxonoPars {};
+        }
+        info.isPersp = false;
+        info.camGuid = APINULLGuid;
+        API_AxonoPars& axono = info.u.axono;
+        axono.sunAngSets = sun;
+        if (hasAzimuth) {
+            axono.azimuth = azimuth;
+        }
+        if (hasMode) {
+            axono.projMod = static_cast<short> (projectionMode);
+        }
+        double* m = axono.tranmat.tmx;
+        for (UIndex i = 0; i < 12; ++i) {
+            m[i] = matrix[i];
+        }
+        // the inverse of the 3 x 4 matrix (rotation part inverted, translation carried over)
+        const double det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]);
+        if (std::fabs (det) > 1e-12) {
+            double* v = axono.invtranmat.tmx;
+            v[0] = (m[5] * m[10] - m[6] * m[9]) / det;
+            v[1] = (m[2] * m[9] - m[1] * m[10]) / det;
+            v[2] = (m[1] * m[6] - m[2] * m[5]) / det;
+            v[4] = (m[6] * m[8] - m[4] * m[10]) / det;
+            v[5] = (m[0] * m[10] - m[2] * m[8]) / det;
+            v[6] = (m[2] * m[4] - m[0] * m[6]) / det;
+            v[8] = (m[4] * m[9] - m[5] * m[8]) / det;
+            v[9] = (m[1] * m[8] - m[0] * m[9]) / det;
+            v[10] = (m[0] * m[5] - m[1] * m[4]) / det;
+            v[3] = -(v[0] * m[3] + v[1] * m[7] + v[2] * m[11]);
+            v[7] = -(v[4] * m[3] + v[5] * m[7] + v[6] * m[11]);
+            v[11] = -(v[8] * m[3] + v[9] * m[7] + v[10] * m[11]);
+        }
+        axoErr = ACAPI_CallUndoableCommand ("Set3DProjectionSettingsCommand", [&]() -> GSErrCode {
+            return ACAPI_View_Change3DProjectionSets (&info, nullptr);
+        });
+        return axoErr == NoError
+            ? CreateSuccessfulExecutionResult ()
+            : CreateFailedExecutionResult (axoErr, "Failed to set the 3D projection settings.");
+    }
+
     GS::ObjectState perspective;
     if (!parameters.Get ("perspective", perspective)) {
-        return CreateFailedExecutionResult (APIERR_BADPARS, "Invalid parameter: perspective.");
+        return CreateFailedExecutionResult (APIERR_BADPARS, "Invalid parameter: perspective or axonometric is required.");
     }
 
     GS::ObjectState cameraPosition;

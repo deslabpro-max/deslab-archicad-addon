@@ -1,0 +1,455 @@
+{
+  "format": "deslab.reference-legends/1",
+  "source": "Антон Крючков.pln, read-only copy, 15.11.2026",
+  "layouts": [
+    {
+      "name": "ОБМЕРНЫЙ ПЛАН",
+      "elements": [
+        {
+          "type": "Hatch",
+          "layer": "001 Обмерный план ПЕРЕГОРОДКИ",
+          "coordinates": [
+            {
+              "x": 0.329995559,
+              "y": 0.056847451
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.056847451
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.051439808
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.051439808
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.056847451
+            }
+          ],
+          "contourPenIndex": 252,
+          "fillPenIndex": 0,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "buildingMaterialName": "Штукатурка - Гипсовая"
+        },
+        {
+          "type": "Hatch",
+          "layer": "\u0014",
+          "coordinates": [
+            {
+              "x": 0.329995559,
+              "y": 0.041493602
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.041493602
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.03608596
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.03608596
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.041493602
+            }
+          ],
+          "contourPenIndex": 74,
+          "fillPenIndex": 159,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "fillName": "25 %"
+        },
+        {
+          "type": "Hatch",
+          "layer": "\u0014",
+          "coordinates": [
+            {
+              "x": 0.329995559,
+              "y": 0.049031604
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.049031604
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.043623961
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.043623961
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.049031604
+            }
+          ],
+          "contourPenIndex": 74,
+          "fillPenIndex": 46,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "fillName": "25 %"
+        },
+        {
+          "type": "Hatch",
+          "layer": "\u0014",
+          "coordinates": [
+            {
+              "x": 0.329995559,
+              "y": 0.072124699
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.072124699
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.066717056
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.066717056
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.072124699
+            }
+          ],
+          "contourPenIndex": 252,
+          "fillPenIndex": 1,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "buildingMaterialName": "Железобетон - Конструкционный"
+        },
+        {
+          "type": "Hatch",
+          "layer": "\u0014",
+          "coordinates": [
+            {
+              "x": 0.329995559,
+              "y": 0.041364269
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.041364269
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.035956626
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.035956626
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.041364269
+            }
+          ],
+          "contourPenIndex": 74,
+          "fillPenIndex": 46,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "fillName": "25 %"
+        },
+        {
+          "type": "Hatch",
+          "layer": "\u0014",
+          "coordinates": [
+            {
+              "x": 0.329995559,
+              "y": 0.064592556
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.064592556
+            },
+            {
+              "x": 0.36214911,
+              "y": 0.059184913
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.059184913
+            },
+            {
+              "x": 0.329995559,
+              "y": 0.064592556
+            }
+          ],
+          "contourPenIndex": 252,
+          "fillPenIndex": 1,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "buildingMaterialName": "Блок Бетонный - Конструкционный"
+        }
+      ]
+    },
+    {
+      "name": "ИНЖЕНЕРНЫЕ УЗЛЫ",
+      "elements": [
+        {
+          "type": "Hatch",
+          "layer": "\u0014",
+          "coordinates": [
+            {
+              "x": 0.314995559,
+              "y": 0.080498476
+            },
+            {
+              "x": 0.34714911,
+              "y": 0.080498476
+            },
+            {
+              "x": 0.34714911,
+              "y": 0.075090833
+            },
+            {
+              "x": 0.314995559,
+              "y": 0.075090833
+            },
+            {
+              "x": 0.314995559,
+              "y": 0.080498476
+            }
+          ],
+          "contourPenIndex": 252,
+          "fillPenIndex": 1,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "buildingMaterialName": "Блок Бетонный - Конструкционный"
+        },
+        {
+          "type": "Hatch",
+          "layer": "001 Обмерный план ПЕРЕГОРОДКИ",
+          "coordinates": [
+            {
+              "x": 0.314995559,
+              "y": 0.065141605
+            },
+            {
+              "x": 0.34714911,
+              "y": 0.065141605
+            },
+            {
+              "x": 0.34714911,
+              "y": 0.059733962
+            },
+            {
+              "x": 0.314995559,
+              "y": 0.059733962
+            },
+            {
+              "x": 0.314995559,
+              "y": 0.065141605
+            }
+          ],
+          "contourPenIndex": 252,
+          "fillPenIndex": 0,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "buildingMaterialName": "Штукатурка - Гипсовая"
+        },
+        {
+          "type": "Hatch",
+          "layer": "002 Инженерные узлы РАДИАТОРЫ",
+          "coordinates": [
+            {
+              "x": 0.321083319,
+              "y": 0.052977981
+            },
+            {
+              "x": 0.337983319,
+              "y": 0.052977981
+            },
+            {
+              "x": 0.337983319,
+              "y": 0.056177981
+            },
+            {
+              "x": 0.321083319,
+              "y": 0.056177981
+            },
+            {
+              "x": 0.321083319,
+              "y": 0.052977981
+            }
+          ],
+          "contourPenIndex": 0,
+          "fillPenIndex": 19,
+          "fillBackgroundPenIndex": 19,
+          "roomSpecial": 0,
+          "showArea": false,
+          "fillName": "Фон"
+        },
+        {
+          "type": "Hatch",
+          "layer": "\u0014",
+          "coordinates": [
+            {
+              "x": 0.314995559,
+              "y": 0.072794672
+            },
+            {
+              "x": 0.34714911,
+              "y": 0.072794672
+            },
+            {
+              "x": 0.34714911,
+              "y": 0.067387029
+            },
+            {
+              "x": 0.314995559,
+              "y": 0.067387029
+            },
+            {
+              "x": 0.314995559,
+              "y": 0.072794672
+            }
+          ],
+          "contourPenIndex": 252,
+          "fillPenIndex": 1,
+          "fillBackgroundPenIndex": 0,
+          "roomSpecial": 0,
+          "showArea": false,
+          "buildingMaterialName": "Железобетон - Конструкционный"
+        },
+        {
+          "type": "Hatch",
+          "layer": "002 Инженерные узлы РАДИАТОРЫ",
+          "coordinates": [
+            {
+              "x": 0.321083319,
+              "y": 0.043750278
+            },
+            {
+              "x": 0.337983319,
+              "y": 0.043750278
+            },
+            {
+              "x": 0.337983319,
+              "y": 0.046950278
+            },
+            {
+              "x": 0.321083319,
+              "y": 0.046950278
+            },
+            {
+              "x": 0.321083319,
+              "y": 0.043750278
+            }
+          ],
+          "contourPenIndex": 0,
+          "fillPenIndex": 19,
+          "fillBackgroundPenIndex": 19,
+          "roomSpecial": 0,
+          "showArea": false,
+          "fillName": "Фон"
+        },
+        {
+          "type": "PolyLine",
+          "layer": "002 Инженерные узлы РОЗЕТКИ и ВЫКЛЮЧАТЕЛИ",
+          "coordinates": [
+            {
+              "x": 0.0831,
+              "y": 0.0189576
+            },
+            {
+              "x": 0.0883,
+              "y": 0.0189576
+            },
+            {
+              "x": 0.0883,
+              "y": 0.0209576
+            },
+            {
+              "x": 0.0831,
+              "y": 0.0209576
+            },
+            {
+              "x": 0.0831,
+              "y": 0.0189576
+            }
+          ],
+          "linePenIndex": 1,
+          "roomSeparator": false,
+          "lineTypeName": "Сплошная линия"
+        },
+        {
+          "type": "PolyLine",
+          "layer": "002 Инженерные узлы РОЗЕТКИ и ВЫКЛЮЧАТЕЛИ",
+          "coordinates": [
+            {
+              "x": 0.0831,
+              "y": 0.0189576
+            },
+            {
+              "x": 0.0883,
+              "y": 0.0189576
+            },
+            {
+              "x": 0.0883,
+              "y": 0.0209576
+            },
+            {
+              "x": 0.0831,
+              "y": 0.0209576
+            },
+            {
+              "x": 0.0831,
+              "y": 0.0189576
+            }
+          ],
+          "linePenIndex": 1,
+          "roomSeparator": false,
+          "lineTypeName": "Сплошная линия"
+        },
+        {
+          "type": "PolyLine",
+          "layer": "002 Инженерные узлы РОЗЕТКИ и ВЫКЛЮЧАТЕЛИ",
+          "coordinates": [
+            {
+              "x": 0.326899176,
+              "y": 0.037549333
+            },
+            {
+              "x": 0.333912142,
+              "y": 0.037549333
+            },
+            {
+              "x": 0.333912142,
+              "y": 0.041362299
+            },
+            {
+              "x": 0.326899176,
+              "y": 0.041362299
+            },
+            {
+              "x": 0.326899176,
+              "y": 0.037549333
+            }
+          ],
+          "linePenIndex": 1,
+          "roomSeparator": false,
+          "lineTypeName": "Сплошная линия"
+        }
+      ]
+    }
+  ]
+}

@@ -396,6 +396,14 @@ GS::ObjectState GetSectionElementsCommand::Execute (const GS::ObjectState& param
 template <typename ListProxyType>
 static GSErrCode GetElementsInDrawOrderFromCurrentDatabase (const GS::ObjectState& parameters, ListProxyType& elementsListProxy)
 {
+    // deslab: walking the drawing order of a layout or a master layout database brought Archicad 27 down;
+    // those databases are refused, GetAllElements lists their elements.
+    API_DatabaseInfo currentDatabase = {};
+    if (ACAPI_Database_GetCurrentDatabase (&currentDatabase) == NoError &&
+        (currentDatabase.typeID == APIWind_LayoutID || currentDatabase.typeID == APIWind_MasterLayoutID)) {
+        return APIERR_NOTSUPPORTED;
+    }
+
     API_ElemTypeID elemType = API_ZombieElemID;
     GS::UniString elementTypeStr;
     if (parameters.Get ("elementType", elementTypeStr)) {
@@ -1460,6 +1468,12 @@ GS::ObjectState GetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                 typeSpecificDetails.Add ("stampPosition", Create2DCoordinateObjectState (elem.zone.pos));
                 typeSpecificDetails.Add ("stampAngle", elem.zone.stampAngle);
                 typeSpecificDetails.Add ("fixedStampAngle", elem.zone.fixedAngle);
+                // deslab: portable zone appearance when an older template's favorite cannot be imported.
+                typeSpecificDetails.Add ("useFloorFill", elem.zone.useFloorFill);
+                typeSpecificDetails.Add ("floorFillAttributeId", CreateGuidObjectState (GetAttributeGuidFromIndex (API_FilltypeID, elem.zone.floorFillInd)));
+                typeSpecificDetails.Add ("floorFillPenIndex", elem.zone.floorFillPen);
+                typeSpecificDetails.Add ("floorFillBackgroundPenIndex", elem.zone.floorFillBGPen);
+                typeSpecificDetails.Add ("useContourLine", elem.zone.useContourLine);
                 typeSpecificDetails.Add ("isManual", elem.zone.manual);
                 if (!elem.zone.manual) {
                     // The point an automatic zone was placed from (CreateZones geometry.referencePosition);
@@ -1902,6 +1916,9 @@ GS::ObjectState GetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                     typeSpecificDetails.Add ("customNumber", GS::UniString (elem.drawing.customNumber));
                 }
                 typeSpecificDetails.Add ("isInNumbering", elem.drawing.isInNumbering);
+                // deslab: 12.11.2026, Drawing Settings > «include in the Drawing Scale autotexts»: a schedule on the layout
+                // added its 1:1 to the scale in the stamp («1:40, 1:1»)
+                typeSpecificDetails.Add ("includeInScaleAutoTexts", elem.drawing.includeInAutoTextsAndIES);
                 typeSpecificDetails.Add ("hasBorderLine",       elem.drawing.hasBorderLine);
                 typeSpecificDetails.Add ("borderLineTypeIndex", GetAttributeIndex (elem.drawing.borderLineType));
                 typeSpecificDetails.Add ("borderPenIndex",      (Int32)elem.drawing.borderPen);
@@ -2406,6 +2423,25 @@ GS::ObjectState SetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                         if (typeSpecificDetails->Get ("fixedStampAngle", elem.zone.fixedAngle)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, fixedAngle);
                         }
+                        // deslab: match the office zone appearance without changing its geometry or stamp parameters.
+                        if (typeSpecificDetails->Get ("useFloorFill", elem.zone.useFloorFill)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, useFloorFill);
+                        }
+                        // deslab: reproduce the zone's own reference fill instead of showing its category color.
+                        const GS::ObjectState* floorFillId = typeSpecificDetails->Get ("floorFillAttributeId");
+                        if (floorFillId != nullptr) {
+                            elem.zone.floorFillInd = GetAttributeIndexFromGuid (API_FilltypeID, GetGuidFromObjectState (*floorFillId));
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, floorFillInd);
+                        }
+                        if (typeSpecificDetails->Get ("floorFillPenIndex", elem.zone.floorFillPen)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, floorFillPen);
+                        }
+                        if (typeSpecificDetails->Get ("floorFillBackgroundPenIndex", elem.zone.floorFillBGPen)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, floorFillBGPen);
+                        }
+                        if (typeSpecificDetails->Get ("useContourLine", elem.zone.useContourLine)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_ZoneType, useContourLine);
+                        }
                         // Only an automatic zone is found around its reference point; a manual
                         // zone has its outline instead, so the field is ignored for it.
                         const GS::ObjectState* referencePosition = typeSpecificDetails->Get ("referencePosition");
@@ -2550,6 +2586,10 @@ GS::ObjectState SetDetailsOfElementsCommand::Execute (const GS::ObjectState& par
                         }
                         if (typeSpecificDetails->Get ("isInNumbering", elem.drawing.isInNumbering)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_DrawingType, isInNumbering);
+                        }
+                        // deslab: 12.11.2026, see GetDetailsOfElements
+                        if (typeSpecificDetails->Get ("includeInScaleAutoTexts", elem.drawing.includeInAutoTextsAndIES)) {
+                            ACAPI_ELEMENT_MASK_SET (mask, API_DrawingType, includeInAutoTextsAndIES);
                         }
                         if (typeSpecificDetails->Get ("hasBorderLine", elem.drawing.hasBorderLine)) {
                             ACAPI_ELEMENT_MASK_SET (mask, API_DrawingType, hasBorderLine);

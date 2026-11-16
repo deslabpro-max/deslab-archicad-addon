@@ -819,6 +819,20 @@ GS::ObjectState SetViewSettingsCommand::Execute (const GS::ObjectState& paramete
         SetCharProperty (viewSettingsOS, "modelViewOptions", navigatorView.modelViewOptName);
         SetCharProperty (viewSettingsOS, "layerCombination", navigatorView.layerCombination);
         SetCharProperty (viewSettingsOS, "dimensionStyle", navigatorView.dimName);
+        // deslab: save the current custom dimension units instead of a stale named standard in the view.
+        API_DimensionPrefs currentDimensions = {};
+        bool useCurrentDimensions = false;
+        if (viewSettingsOS->Get ("useCurrentDimensions", useCurrentDimensions) && useCurrentDimensions) {
+            err = ACAPI_ProjectSetting_GetPreferences (&currentDimensions, APIPrefs_DimensionsID);
+            if (err != NoError) {
+                executionResults (CreateFailedExecutionResult (err, "Failed to read current dimension preferences"));
+                continue;
+            }
+            currentDimensions.index = 0;  // deslab: store custom formats, not the named standard returned with current preferences.
+            navigatorView.dimName[0] = '\0';
+            navigatorView.dimPrefs = &currentDimensions;
+            navigatorView.saveDim = true;
+        }
         SetCharProperty (viewSettingsOS, "penSetName", navigatorView.penSetName);
         SetUCharProperty (viewSettingsOS, "graphicOverrideCombination", navigatorView.overrideCombination);
         if (viewSettingsOS->Get ("drawingScale", navigatorView.drawingScale)) {

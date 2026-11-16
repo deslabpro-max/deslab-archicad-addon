@@ -4870,17 +4870,24 @@ GS::Optional<GS::UniString> CreateZoneCategoriesCommand::GetInputParametersSchem
 // API_LibPart::ownUnID field carries) and, when given, by its document name.
 static API_AddParType** GetZoneStampParameters (const API_Guid& stampMainGuid, const API_Guid& stampRevGuid, const GS::uchar_t* stampName)
 {
-    API_LibPart libPart = {};
-    libPart.typeID = APILib_RoomID;
     const GS::UniString unIdStr = GS::UniString::Printf ("{%T}-{%T}", APIGuidToString (stampMainGuid).ToPrintf (), APIGuidToString (stampRevGuid).ToPrintf ());
-    CHTruncate (unIdStr.ToCStr ().Get (), libPart.ownUnID, sizeof (libPart.ownUnID));
-    if (stampName != nullptr) {
-        GS::ucscpy (libPart.docu_UName, stampName);
+    Int32 stampIndex = 0;
+    // deslab: Archicad 29 library packages expose valid zone stamps as Object rather than Room.
+    for (const auto type : { APILib_RoomID, APILib_ObjectID }) {
+        API_LibPart libPart = {};
+        libPart.typeID = type;
+        CHTruncate (unIdStr.ToCStr ().Get (), libPart.ownUnID, sizeof (libPart.ownUnID));
+        if (stampName != nullptr) {
+            GS::ucscpy (libPart.docu_UName, stampName);
+        }
+        const GSErrCode searchErr = ACAPI_LibraryPart_Search (&libPart, false, false);
+        delete libPart.location;
+        if (searchErr == NoError && GS::UnID (libPart.ownUnID).GetMainGuid () == APIGuid2GSGuid (stampMainGuid)) {
+            stampIndex = libPart.index;
+            break;
+        }
     }
-
-    const GSErrCode searchErr = ACAPI_LibraryPart_Search (&libPart, false, false);
-    delete libPart.location;
-    if (searchErr != NoError || GS::UnID (libPart.ownUnID).GetMainGuid () != APIGuid2GSGuid (stampMainGuid)) {
+    if (stampIndex == 0) {
         return nullptr;
     }
 
@@ -4888,7 +4895,7 @@ static API_AddParType** GetZoneStampParameters (const API_Guid& stampMainGuid, c
     double b = 0.0;
     Int32 addParNum = 0;
     API_AddParType** addPars = nullptr;
-    if (ACAPI_LibraryPart_GetParams (libPart.index, &a, &b, &addParNum, &addPars) != NoError) {
+    if (ACAPI_LibraryPart_GetParams (stampIndex, &a, &b, &addParNum, &addPars) != NoError) {
         if (addPars != nullptr) {
             ACAPI_DisposeAddParHdl (&addPars);
         }

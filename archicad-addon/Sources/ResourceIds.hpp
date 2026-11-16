@@ -15,6 +15,11 @@
 
 #define ID_SCRIPTUI_PALETTE             32041
 
+// deslab: the deslab Obmer palette and its menu item (DeslabObmerPalette)
+#define ID_DESLAB_OBMER_PALETTE         32050
+#define ID_ADDON_MENU_FOR_OBMER         32051
+#define ID_ADDON_MENU_OBMER                 1
+
 #define ID_ADDON_MENU_FOR_SHORTCUTS     32026
 #define ID_ADDON_MENU_MANAGE_SHORTCUTS      1
 

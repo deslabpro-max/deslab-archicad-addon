@@ -16,6 +16,7 @@
 
 #include "AboutDialog.hpp"
 #include "TapirPalette.hpp"
+#include "DeslabObmerPalette.hpp"   // deslab
 #include "ScriptUIPalette.hpp"
 #include "VersionChecker.hpp"
 
@@ -30,6 +31,7 @@
 #include "ScanToBimCommands.hpp" // deslab
 #include "ElementGroupingCommands.hpp"
 #include "AttributeCommands.hpp"
+#include "OfficeStandardCommands.hpp"   // deslab
 #include "TeamworkCommands.hpp"
 #include "IssueCommands.hpp"
 #include "LibraryCommands.hpp"
@@ -104,6 +106,13 @@ static GSErrCode MenuCommandHandler (const API_MenuParams* menuParams)
                     break;
             }
             break;
+        case ID_ADDON_MENU_FOR_OBMER:   // deslab: the deslab Obmer palette
+            if (DeslabObmerPalette::HasInstance () && DeslabObmerPalette::Instance ().IsVisible ()) {
+                DeslabObmerPalette::Instance ().Hide ();
+            } else {
+                DeslabObmerPalette::Instance ().Show ();
+            }
+            break;
         case ID_ADDON_MENU_FOR_UPDATE:
             switch (menuParams->menuItemRef.itemIndex) {
                 case ID_ADDON_MENU_UPDATE:
@@ -168,6 +177,7 @@ GSErrCode RegisterInterface (void)
     GSErrCode err = NoError;
 
     err |= ACAPI_MenuItem_RegisterMenu (ID_ADDON_MENU_FOR_PALETTE, 0, MenuCode_UserDef, MenuFlag_Default);
+    err |= ACAPI_MenuItem_RegisterMenu (ID_ADDON_MENU_FOR_OBMER, 0, MenuCode_UserDef, MenuFlag_Default);   // deslab
     err |= ACAPI_MenuItem_RegisterMenu (ID_ADDON_MENU_FOR_UPDATE, 0, MenuCode_UserDef, MenuFlag_Default);
     err |= ACAPI_MenuItem_RegisterMenu (ID_ADDON_MENU, 0, MenuCode_UserDef, MenuFlag_Default);
     err |= ACAPI_MenuItem_RegisterMenu (ID_ADDON_MENU_FOR_SHORTCUTS, 0, MenuCode_UserDef, MenuFlag_SeparatorBefore);
@@ -186,6 +196,7 @@ GSErrCode Initialize (void)
     GSErrCode err = NoError;
 
     err |= ACAPI_MenuItem_InstallMenuHandler (ID_ADDON_MENU_FOR_PALETTE, MenuCommandHandler);
+    err |= ACAPI_MenuItem_InstallMenuHandler (ID_ADDON_MENU_FOR_OBMER, MenuCommandHandler);   // deslab
     err |= ACAPI_MenuItem_InstallMenuHandler (ID_ADDON_MENU_FOR_UPDATE, MenuCommandHandler);
     err |= ACAPI_MenuItem_InstallMenuHandler (ID_ADDON_MENU, MenuCommandHandler);
     err |= ACAPI_MenuItem_InstallMenuHandler (ID_ADDON_MENU_FOR_SHORTCUTS, MenuCommandHandler);
@@ -197,6 +208,7 @@ GSErrCode Initialize (void)
     err |= ACAPI_MenuItem_InstallMenuHandler (ID_ADDON_MENU_RUNSCRIPT_6, MenuCommandHandler);
     err |= TapirPalette::RegisterPaletteControlCallBack ();
     err |= ScriptUIPalette::RegisterPaletteControlCallBack ();
+    err |= DeslabObmerPalette::RegisterPaletteControlCallBack ();   // deslab
 
     // The Add-On is preloaded, so this runs before Archicad opens the first project.
     ApplyDialogAutoCloseFromEnvironment ();
@@ -1111,6 +1123,18 @@ GSErrCode Initialize (void)
         err |= RegisterCommand<GetAttributesFromProjectCommand> (
             attributeCommands, "1.7.3",
             "Reads the attributes of the given types from another project or template file without opening it, for example to compare them with the attributes of the open project. Nothing is imported into the open project. The names are the legacy 8-bit names, so non-ASCII characters may not come through. Available from Archicad 27."
+        );
+        err |= RegisterCommand<ApplyOfficeStandardCommand> (   // deslab
+            attributeCommands, "1.7.4",
+            "deslab: sets up the office standard in the open project. Reads the attributes (pen sets, line types, fills, surfaces, building materials, composites, layers, layer combinations, zone categories) of the given project or template file without opening it and creates the missing ones, with their references moved to the new indices. Existing attributes (same name) are kept. Archicad 27 does not read layers, surfaces and building materials from a file: they come from packagePath, written by CaptureOfficeStandard. A layer combination whose layers are missing is not created; project layers the standard does not know are hidden in the new combinations. Available from Archicad 27."
+        );
+        err |= RegisterCommand<ImportScheduleSchemeCommand> (   // deslab
+            attributeCommands, "1.7.4",
+            "deslab: imports an Interactive Schedule scheme from its XML file into the open project, through the Interactive Schedule add-on's own import command (no dialog). Available from Archicad 27."
+        );
+        err |= RegisterCommand<CaptureOfficeStandardCommand> (   // deslab
+            attributeCommands, "1.7.4",
+            "deslab: writes the layers, surfaces, building materials and layer combinations (with their layer statuses) and the graphic override rules and combinations of the open project (the office standard's project or a copy of it) to a JSON standard package for ApplyOfficeStandard. Available from Archicad 27."
         );
         err |= RegisterCommand<DeleteAttributesCommand> (
             attributeCommands, "1.5.4",
@@ -2102,6 +2126,7 @@ GSErrCode FreeData (void)
     // A palette script still running at quit kept its output reader thread alive after the add-on was unloaded,
     // and Archicad crashed in that thread (GS::Process::GetStandardErrorChannel on the destroyed palette).
     TapirPalette::StopRunningScriptOnQuit ();
+    DeslabObmerPalette::StopOnQuit ();   // deslab: the same for a running bridge process
     // Must run here, not left to the static GS::Ref's destructor at DLL/dylib unload time - see
     // ScriptUIPalette::Release for why (real macOS crash on quit, EXC_BAD_ACCESS tearing down the
     // browser control after Archicad's own environment had already begun shutting down).

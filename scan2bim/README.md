@@ -14,7 +14,7 @@ The Windows build (`deslab-scan2bim.exe`, PyInstaller, no Python needed) comes o
 `.github/workflows/build_ac27_win.yml` as `deslab-scan2bim-win.zip` in the release. Unzip it next
 to the add-on file so that the add-on finds `deslab-scan2bim\deslab-scan2bim.exe`.
 
-Tests: `python scan2bim/tests/test_synthetic.py` (two rooms, a partition with a door, a window
+Tests: `python scan2bim/tests/test_fit.py` (JK bottom wall), `python scan2bim/tests/test_clutter.py` (a stack and a board are no wall, tracing found), `python scan2bim/tests/test_synthetic.py` (two rooms, a partition with a door, a window
 in a niche, rotated 7°).
 
 ## How it works
@@ -23,10 +23,11 @@ in a niche, rotated 7°).
    applied). 22 million points read in about 5 s; every 4th point is kept by default.
 2. Floor and ceiling: the lowest and highest dense horizontal surfaces (Z histogram).
 3. Orientation: the rotation that makes the wall points sharpest along X and Y. The scene is
-   written in that frame, so the main walls run along the axes; small deviations of single walls
-   (0.2–0.5° are normal) are kept.
+   written in that frame, so the walls run along the axes; a single wall's small deviation is
+   averaged out (step 4), never drawn.
 4. Wall faces: 2 cm cells scanned over at least 55 % of the room height; runs of such cells along
-   X and Y, refined to a least-squares line on the raw points. The room side of a face is the side
+   X and Y, placed at the average position of the raw points (least-squares at the middle). A face
+   is always straight along its axis: we never draw at an angle, every corner is 90° (Игорь, 04.11.2026); so is a room outline: an edge within 15° of an axis becomes a small step plus a square run. The room side of a face is the side
    with floor hits right next to it.
 5. Walls: faces that look at each other 5–900 mm apart are one wall of the measured thickness.
    A face seen from one side only becomes a wall of default thickness behind it (640 mm when it
@@ -42,11 +43,17 @@ in a niche, rotated 7°).
    0.3 m) with the other face of the wall whole behind it is a niche, not a doorway: no
    opening, and the wall stays closed there.
 7. No jogs: a wall continuing a longer parallel wall end to end, off its line by less than half
-   the thickness, goes onto that line (a one-sided wall takes the measured thickness). A step of
+   the thickness, goes onto that line, unless their scanned room faces are 0.1 m or more apart (a real
+   step: the JK shaft box at the entrance door went onto the corridor wall's line and into the doorway) (a one-sided wall takes the measured thickness). A step of
    0.3 m or more on the room side (a shaft box, a pier) stays: the one-sided piece keeps its face
    and takes the back face of the measured wall, so the back stays straight. Short
    connectors (under 0.25 m) are dropped. A one-sided wall lying on another wall is dropped and
    its openings move to that wall.
+7a. One straight back face: two walls on one line, end to end (also across a crossing wall),
+   keep their scanned room faces, small real steps included, but share one back face. A one-sided
+   wall takes the back face of a measured wall, else of the longer one, with its slope (a slightly
+   skewed scan wall becomes parallel to it), and its thickness follows;
+   the joints are then redone (no jog at the entrance door, no step on the outer face).
 8. Walls are always closed: wall ends are moved onto the centre lines of the walls they meet.
    An L corner is closed when both ends are within 1.3 m of it, a free end runs on to a crossing
    wall up to 0.8 m away (T joint), collinear pieces up to 0.8 m apart are joined, and a piece
@@ -62,6 +69,23 @@ in a niche, rotated 7°).
     past a wall), top at the main floor.
 11. Interior doors get one height (median of the measured 1.95–2.45 m heads); a door in a wall with
     a window is a balcony door (`balconyDoor`) and keeps its own head.
+12. Room outlines and walls agree (`fit.py`, Игорь 04.11.2026, run JK): an outline edge off its axis
+    by less than 12 mm is made square; where the outline steps between two wall faces, the walls
+    end exactly on the step (a wall that runs on outside the room to a T joint stays); a small
+    corner lump (up to 0.2 m) that no wall face carries is filled and noted in `assumptions`; a wall
+    that runs on inside a parallel wall at least as thick stops at that wall's end.
+
+13. Clutter is no wall (Игорь 05.11.2026, run JK: a stack of tiles 0.65 m high with a board leaning
+    on it made a wall into the entrance door): a wall-face cell must be scanned over 40 % of the
+    band from 1.5 m to 0.3 m under the ceiling as well, and a wall whose faces have points low
+    down but nothing above 1.2 m over most of their length is dropped (noted in `assumptions`).
+14. Tracing (the first row of blocks of new walls): 2 cm cells with points 0.04–0.6 m over the floor
+    and nothing at 0.65–2.0 m, away from the walls; runs 6–26 cm across that line up over at least
+    0.3 m, standing on the floor (a radiator hangs above it), 0.18–0.4 m high, up to 0.2 m wide; a strip
+    runs on along its own cells where clutter beside it makes the rows too wide, a strip found twice is
+    kept once, one along a wall face less than 0.1 m off it is stuff at the wall foot. Width and position
+    from the points. An end runs on to a wall face up to 0.25 m off and onto the axis of a square
+    strip it meets (L and T joints). Written as `tracing` (the bridge builds low walls).
 
 ## Scene format `deslab.scan2bim/1`
 
@@ -80,6 +104,8 @@ Metres, model frame (see `transform`). Floor of the largest room at z = 0.
     "openings": [{"id": "W1.1", "kind": "door | window | balconyDoor", "centerOffset": 1.2,
                   "width": 0.8, "sill": 0.0, "height": 2.1}]
   }],
+  "tracing": [{"id": "T1", "start": {"x": 4.67, "y": 5.2}, "end": {"x": 4.67, "y": 9.34},
+               "thickness": 0.08, "height": 0.25}],
   "rooms": [{"id": "R1", "number": 1, "name": "Помещение 1",
              "polygon": [{"x": 0, "y": 0}], "floor": 0.0, "ceiling": 3.31,
              "height": 3.31, "area": 36.18}],
