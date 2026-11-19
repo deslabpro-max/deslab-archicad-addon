@@ -12,17 +12,23 @@ permissions:
 jobs:
   build_win:
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { ac: 28, sdk: '28.4001', compiler: v142 }
+        - { ac: 29, sdk: '29.3000', compiler: v143 }
     steps:
     - uses: actions/checkout@v4
-    - name: Download Archicad 28 DevKit
-      run: python archicad-addon/Tools/download_and_unzip.py https://github.com/GRAPHISOFT/archicad-api-devkit/releases/download/28.4001/API.Development.Kit.WIN.28.4001.zip archicad-addon/Build/DevKits/AC28
+    - name: Download Archicad DevKit
+      run: python archicad-addon/Tools/download_and_unzip.py https://github.com/GRAPHISOFT/archicad-api-devkit/releases/download/${{ matrix.sdk }}/API.Development.Kit.WIN.${{ matrix.sdk }}.zip archicad-addon/Build/DevKits/AC${{ matrix.ac }}
     - name: Configure
-      run: cmake -B archicad-addon/Build -G "Visual Studio 17 2022" -A x64 -T v142 -DAC_VERSION=28 -DAC_API_DEVKIT_DIR="archicad-addon/Build/DevKits/AC28/Support" archicad-addon
+      run: cmake -B archicad-addon/Build -G "Visual Studio 17 2022" -A x64 -T ${{ matrix.compiler }} -DAC_VERSION=${{ matrix.ac }} -DAC_API_DEVKIT_DIR="archicad-addon/Build/DevKits/AC${{ matrix.ac }}/Support" archicad-addon
     - name: Compile
       run: cmake --build archicad-addon/Build --config RelWithDebInfo --parallel 2
     - name: Upload APX
       uses: actions/upload-artifact@v4
       with:
-        name: DeslabAddOn-AC28-Win
-        path: archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC28_Win.apx
+        name: DeslabAddOn-AC${{ matrix.ac }}-Win
+        path: archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC${{ matrix.ac }}_Win.apx
         if-no-files-found: error

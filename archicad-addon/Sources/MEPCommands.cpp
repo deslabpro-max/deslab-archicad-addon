@@ -13,6 +13,12 @@
 #include "ACAPI/MEPRoutingSegment.hpp"
 #include "ACAPI/MEPRoutingSegmentDefault.hpp"
 #include "ACAPI/MEPRoutingNode.hpp"
+#include "ACAPI/MEPRoutingNodeDefault.hpp"
+#ifdef ServerMainVers_2900
+#include "ACAPI/MEPElbowDefault.hpp"
+#else
+#include "ACAPI/MEPBendDefault.hpp"
+#endif
 #include "ACAPI/MEPTerminalDefault.hpp"
 #include "ACAPI/MEPAccessoryDefault.hpp"
 #include "ACAPI/MEPEquipmentDefault.hpp"
@@ -776,6 +782,10 @@ GS::Optional<GS::UniString> CreateMEPRoutingElementsCommand::GetInputParametersS
                             "$ref": "#/Guid",
                             "description": "Optional guid of the segment preference table (see GetMEPPreferenceTables) applied to all segments. Not applicable to the CableCarrier domain."
                         },
+                        "elbowPreferenceTableId": {
+                            "$ref": "#/Guid",
+                            "description": "Optional guid of the elbow preference table for Piping or Ventilation (see GetMEPPreferenceTables with includeFittingTables)."
+                        },
                         "mepSystemId": {
                             "$ref": "#/AttributeId",
                             "description": "Optional MEP system attribute."
@@ -895,6 +905,41 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
                         modifier.SetCrossSectionReferenceId (static_cast<uint32_t> (referenceId));
                     }
                 });
+            }
+
+            // deslab: a segment table does not set the elbow table. The wrong elbow can leave both ports open.
+            GS::UniString elbowTableId;
+            if (routingElementData.Get ("elbowPreferenceTableId", elbowTableId)) {
+                auto nodeDefault = routingElementDefault->GetRoutingNodeDefault ();
+#ifdef ServerMainVers_2900
+                auto elbowDefault = nodeDefault.GetElbowDefault ();
+#else
+                auto elbowDefault = nodeDefault.GetBendDefault ();
+#endif
+                GSErrCode tableError = NoError;
+                const auto elbowResult = elbowDefault.Modify ([&](auto& modifier) {
+                    const auto result = modifier.SetPreferenceTable (Adapter::UniqueID (APIGuidFromString (elbowTableId.ToCStr ())));
+                    if (result.IsErr ()) {
+                        tableError = result.UnwrapErr ().kind;
+                    }
+                });
+                if (tableError != NoError || elbowResult.IsErr ()) {
+                    elements (CreateErrorResponse (tableError != NoError ? tableError : elbowResult.UnwrapErr ().kind,
+                        "Failed to set the elbow preference table."));
+                    continue;
+                }
+#ifdef ServerMainVers_2900
+                nodeDefault.SetElbowDefault (elbowDefault);
+#else
+                nodeDefault.SetBendDefault (elbowDefault);
+#endif
+                const auto nodeResult = routingElementDefault->Modify ([&](RoutingElementDefault::Modifier& modifier) {
+                    modifier.SetRoutingNodeDefault (nodeDefault);
+                });
+                if (nodeResult.IsErr ()) {
+                    elements (CreateErrorResponse (nodeResult.UnwrapErr ().kind, "Failed to apply the routing node defaults."));
+                    continue;
+                }
             }
 
             const GS::ObjectState* mepSystemId = routingElementData.Get ("mepSystemId");

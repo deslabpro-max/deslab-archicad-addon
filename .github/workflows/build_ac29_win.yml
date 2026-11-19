@@ -3,7 +3,7 @@ name: Build Add-On AC29 Win
 
 on:
   push:
-    branches: [ '**' ]
+    branches: [ '**', '!test/ac28-native-mep' ]
     paths: [ 'archicad-addon/**', '.github/workflows/build_ac29_win.yml' ]
   workflow_dispatch:
 

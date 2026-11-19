@@ -2,7 +2,7 @@ name: Build Add-On AC27 Win
 
 on:
   push:
-    branches: [ '**' ]
+    branches: [ '**', '!test/ac28-native-mep' ]
     paths: [ 'archicad-addon/**', 'scan2bim/**', '.github/workflows/build_ac27_win.yml' ]
   workflow_dispatch:
 
