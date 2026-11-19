@@ -8,12 +8,15 @@
 #include "ACAPI/MEPEnums.hpp"
 #include "ACAPI/MEPElement.hpp"
 #include "ACAPI/MEPPort.hpp"
+#include "ACAPI/MEPPipingPort.hpp"
 #include "ACAPI/MEPRoutingElement.hpp"
 #include "ACAPI/MEPRoutingElementDefault.hpp"
 #include "ACAPI/MEPRoutingSegment.hpp"
 #include "ACAPI/MEPRoutingSegmentDefault.hpp"
 #include "ACAPI/MEPRoutingNode.hpp"
 #include "ACAPI/MEPRoutingNodeDefault.hpp"
+#include "ACAPI/MEPRigidSegmentDefault.hpp"
+#include "ACAPI/MEPTransitionDefault.hpp"
 #ifdef ServerMainVers_2900
 #include "ACAPI/MEPElbowDefault.hpp"
 #else
@@ -786,6 +789,10 @@ GS::Optional<GS::UniString> CreateMEPRoutingElementsCommand::GetInputParametersS
                             "$ref": "#/Guid",
                             "description": "Optional guid of the elbow preference table for Piping or Ventilation (see GetMEPPreferenceTables with includeFittingTables)."
                         },
+                        "removeInsulation": {
+                            "type": "boolean",
+                            "description": "Remove template insulation from rigid segments, elbows and transitions."
+                        },
                         "mepSystemId": {
                             "$ref": "#/AttributeId",
                             "description": "Optional MEP system attribute."
@@ -872,6 +879,18 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
             }
 
             RoutingSegmentDefault segmentDefault = routingElementDefault->GetRoutingSegmentDefault ();
+            // deslab: use the measured pipe or duct body without adding template insulation.
+            bool removeInsulation = false;
+            routingElementData.Get ("removeInsulation", removeInsulation);
+            removeInsulation &= domain.value () != Domain::CableCarrier;
+            if (removeInsulation) {
+                auto rigidDefault = segmentDefault.GetRigidSegmentDefault ();
+                if (rigidDefault.Modify ([](auto& modifier) { modifier.RemoveInsulation (); }).IsErr () ||
+                    segmentDefault.Modify ([&](auto& modifier) { modifier.SetRigidSegmentDefault (rigidDefault); }).IsErr ()) {
+                    elements (CreateErrorResponse (APIERR_GENERAL, "Failed to remove rigid segment insulation."));
+                    continue;
+                }
+            }
             double width = 0.0;
             double height = 0.0;
             GS::UniString shapeStr;
@@ -909,7 +928,8 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
 
             // deslab: a segment table does not set the elbow table. The wrong elbow can leave both ports open.
             GS::UniString elbowTableId;
-            if (routingElementData.Get ("elbowPreferenceTableId", elbowTableId)) {
+            const bool hasElbowTable = routingElementData.Get ("elbowPreferenceTableId", elbowTableId);
+            if (hasElbowTable || removeInsulation) {
                 auto nodeDefault = routingElementDefault->GetRoutingNodeDefault ();
 #ifdef ServerMainVers_2900
                 auto elbowDefault = nodeDefault.GetElbowDefault ();
@@ -918,14 +938,22 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
 #endif
                 GSErrCode tableError = NoError;
                 const auto elbowResult = elbowDefault.Modify ([&](auto& modifier) {
-                    const auto result = modifier.SetPreferenceTable (Adapter::UniqueID (APIGuidFromString (elbowTableId.ToCStr ())));
-                    if (result.IsErr ()) {
-                        tableError = result.UnwrapErr ().kind;
+                    if (hasElbowTable) {
+                        const auto result = modifier.SetPreferenceTable (Adapter::UniqueID (APIGuidFromString (elbowTableId.ToCStr ())));
+                        if (result.IsErr ()) {
+                            tableError = result.UnwrapErr ().kind;
+                        }
                     }
+                    if (removeInsulation) modifier.RemoveInsulation ();
                 });
                 if (tableError != NoError || elbowResult.IsErr ()) {
                     elements (CreateErrorResponse (tableError != NoError ? tableError : elbowResult.UnwrapErr ().kind,
-                        "Failed to set the elbow preference table."));
+                        "Failed to configure the route elbow."));
+                    continue;
+                }
+                auto transitionDefault = nodeDefault.GetTransitionDefault ();
+                if (removeInsulation && transitionDefault.Modify ([](auto& modifier) { modifier.RemoveInsulation (); }).IsErr ()) {
+                    elements (CreateErrorResponse (APIERR_GENERAL, "Failed to remove transition insulation."));
                     continue;
                 }
                 const auto nodeResult = nodeDefault.Modify ([&](RoutingNodeDefault::Modifier& modifier) {
@@ -934,6 +962,7 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
 #else
                     modifier.SetBendDefault (elbowDefault);
 #endif
+                    if (removeInsulation) modifier.SetTransitionDefault (transitionDefault);
                 });
                 if (nodeResult.IsErr ()) {
                     elements (CreateErrorResponse (nodeResult.UnwrapErr ().kind, "Failed to set the elbow defaults on the routing node."));
@@ -1032,6 +1061,10 @@ GS::Optional<GS::UniString> CreateMEPElementsCommand::GetInputParametersSchema (
                         "orientationRotation": {
                             "$ref": "#/Coordinate3D",
                             "description": "Optional rotation vector of the orientation. Defaults to (0, 1, 0)."
+                        },
+                        "attachToPipingPort": {
+                            "type": "string",
+                            "description": "For a Piping Accessory, match the named port's outer diameter, wall and system, and place on that port."
                         }
                     },
                     "additionalProperties": false,
@@ -1121,6 +1154,24 @@ GS::ObjectState CreateMEPElementsCommand::Execute (const GS::ObjectState& parame
                     ACAPI::Result<AccessoryDefault> accessoryDefault = CreateAccessoryDefault (domain.value ());
                     if (accessoryDefault.IsErr ()) {
                         return { accessoryDefault.UnwrapErr (), accessoryDefault.Token () };
+                    }
+                    // deslab: keep the route's measured section and allow a connected accessory on its free port.
+                    GS::UniString portId;
+                    if (domain.value () == Domain::Piping && elementData.Get ("attachToPipingPort", portId)) {
+                        const auto targetId = Adapter::UniqueID (APIGuidFromString (portId.ToCStr ()));
+                        auto port = PipingPort::Get (targetId);
+                        if (port.IsErr ()) return { port.UnwrapErr (), port.Token () };
+                        for (uint32_t index = 0; index < accessoryDefault->GetPortCount (); ++index) {
+                            auto end = accessoryDefault->GetPipingPortDefault (index);
+                            if (end.IsErr ()) return { end.UnwrapErr (), end.Token () };
+                            const auto modified = end->Modify ([&](PipingPortDefault::Modifier& modifier) {
+                                modifier.SetDiameter (port->GetOuterDiameter ());
+                                modifier.SetWallThickness (port->GetWallThickness ());
+                                modifier.SetMEPSystem (port->GetMEPSystem ());
+                            });
+                            if (modified.IsErr ()) return { modified.UnwrapErr (), modified.Token () };
+                        }
+                        return accessoryDefault->Place (targetId);
                     }
                     return accessoryDefault->Place (coordinate, orientation);
                 }
