@@ -23,6 +23,7 @@
 #include "ACAPI/MEPBendDefault.hpp"
 #endif
 #include "ACAPI/MEPTerminalDefault.hpp"
+#include "ACAPI/MEPAccessory.hpp"
 #include "ACAPI/MEPAccessoryDefault.hpp"
 #include "ACAPI/MEPEquipmentDefault.hpp"
 #include "ACAPI/MEPFittingDefault.hpp"
@@ -1065,6 +1066,10 @@ GS::Optional<GS::UniString> CreateMEPElementsCommand::GetInputParametersSchema (
                         "attachToPipingPort": {
                             "type": "string",
                             "description": "For a Piping Accessory, match the named port's outer diameter, wall and system, and place on that port."
+                        },
+                        "accessoryTemplateId": {
+                            "$ref": "#/ElementId",
+                            "description": "Optional existing accessory of the same domain whose library part and appearance should be used."
                         }
                     },
                     "additionalProperties": false,
@@ -1151,7 +1156,21 @@ GS::ObjectState CreateMEPElementsCommand::Execute (const GS::ObjectState& parame
                     return terminalDefault->Place (coordinate, orientation);
                 }
                 if (typeStr == "Accessory") {
-                    ACAPI::Result<AccessoryDefault> accessoryDefault = CreateAccessoryDefault (domain.value ());
+                    // deslab: port dimensions alone do not change the default library part's body.
+                    const GS::ObjectState* sourceId = elementData.Get ("accessoryTemplateId");
+                    ACAPI::Result<AccessoryDefault> accessoryDefault = [&]() -> ACAPI::Result<AccessoryDefault> {
+                        if (sourceId == nullptr) {
+                            return CreateAccessoryDefault (domain.value ());
+                        }
+                        auto source = Accessory::Get (Adapter::UniqueID (GetGuidFromObjectState (*sourceId)));
+                        if (source.IsErr ()) {
+                            return { source.UnwrapErr (), source.Token () };
+                        }
+                        if (source->GetDomain () != domain.value ()) {
+                            return { ACAPI::Error { APIERR_BADPARS, "The template accessory must have the same MEP domain." }, source.Token () };
+                        }
+                        return ACAPI::Ok (source->PickUpDefault ());
+                    } ();
                     if (accessoryDefault.IsErr ()) {
                         return { accessoryDefault.UnwrapErr (), accessoryDefault.Token () };
                     }
