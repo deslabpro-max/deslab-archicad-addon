@@ -928,16 +928,22 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
                         "Failed to set the elbow preference table."));
                     continue;
                 }
+                const auto nodeResult = nodeDefault.Modify ([&](RoutingNodeDefault::Modifier& modifier) {
 #ifdef ServerMainVers_2900
-                nodeDefault.SetElbowDefault (elbowDefault);
+                    modifier.SetElbowDefault (elbowDefault);
 #else
-                nodeDefault.SetBendDefault (elbowDefault);
+                    modifier.SetBendDefault (elbowDefault);
 #endif
-                const auto nodeResult = routingElementDefault->Modify ([&](RoutingElementDefault::Modifier& modifier) {
-                    modifier.SetRoutingNodeDefault (nodeDefault);
                 });
                 if (nodeResult.IsErr ()) {
-                    elements (CreateErrorResponse (nodeResult.UnwrapErr ().kind, "Failed to apply the routing node defaults."));
+                    elements (CreateErrorResponse (nodeResult.UnwrapErr ().kind, "Failed to set the elbow defaults on the routing node."));
+                    continue;
+                }
+                const auto routeResult = routingElementDefault->Modify ([&](RoutingElementDefault::Modifier& modifier) {
+                    modifier.SetRoutingNodeDefault (nodeDefault);
+                });
+                if (routeResult.IsErr ()) {
+                    elements (CreateErrorResponse (routeResult.UnwrapErr ().kind, "Failed to apply the routing node defaults."));
                     continue;
                 }
             }
