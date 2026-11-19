@@ -1,0 +1,28 @@
+# deslab: compile the Archicad 28 build for live MEP verification.
+name: Build Add-On AC28 Win
+
+on:
+  push:
+    branches: [ 'test/ac28-native-mep' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build_win:
+    runs-on: windows-2022
+    steps:
+    - uses: actions/checkout@v4
+    - name: Download Archicad 28 DevKit
+      run: python archicad-addon/Tools/download_and_unzip.py https://github.com/GRAPHISOFT/archicad-api-devkit/releases/download/28.4001/API.Development.Kit.WIN.28.4001.zip archicad-addon/Build/DevKits/AC28
+    - name: Configure
+      run: cmake -B archicad-addon/Build -G "Visual Studio 17 2022" -A x64 -T v143 -DAC_VERSION=28 -DAC_API_DEVKIT_DIR="archicad-addon/Build/DevKits/AC28/Support" archicad-addon
+    - name: Compile
+      run: cmake --build archicad-addon/Build --config RelWithDebInfo --parallel 2
+    - name: Upload APX
+      uses: actions/upload-artifact@v4
+      with:
+        name: DeslabAddOn-AC28-Win
+        path: archicad-addon/Build/RelWithDebInfo/DeslabAddOn_AC28_Win.apx
+        if-no-files-found: error
