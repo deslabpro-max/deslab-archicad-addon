@@ -880,8 +880,9 @@ static GSErrCode SurveyPipeElbowTable (uint32_t reference, double diameter, doub
         if (written.IsErr ()) error = written.UnwrapErr ().kind;
     }
     if (error != NoError) {
-        container->Modify ([&](PreferenceTableContainerBase::Modifier& modifier) {
-            return modifier.Delete (*created);
+        container->Modify ([&](PreferenceTableContainerBase::Modifier& modifier) -> GSErrCode {
+            const auto removal = modifier.Delete (*created);
+            return removal.IsErr () ? removal.UnwrapErr ().kind : NoError;
         }, "Remove unused survey pipe elbow table");
         return error;
     }
