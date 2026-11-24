@@ -4,6 +4,10 @@
 
 #include <cmath>
 
+#ifdef ServerMainVers_2800
+#include "ACAPI/MEPAdapter.hpp"
+#endif
+
 constexpr const char* ParameterValueFieldName = "value";
 constexpr USize MaxStrValueLength = 512;
 
@@ -564,6 +568,38 @@ GS::ObjectState	GetGDLParametersOfElementsCommand::Execute (const GS::ObjectStat
             continue;
         }
 
+#ifdef ServerMainVers_2800
+        // deslab: MEP Equipment parameters are obtained from its native memo, as in the AC28 MEP example.
+        if (GetElemTypeId (apiElement.header) == API_ExternalElemID && ACAPI::MEP::IsEquipment (apiElement.header.type.classID)) {
+            API_ElementMemo memo {};
+            err = ACAPI_Element_GetMemo (paramOwner.guid, &memo);
+            if (err == NoError && memo.params != nullptr) {
+                GS::ObjectState result;
+                const auto& fields = result.AddList<GS::ObjectState> ("parameters");
+                const GSSize count = BMGetHandleSize ((GSHandle) memo.params) / sizeof (API_AddParType);
+                for (GSIndex i = 0; i < count; ++i) {
+                    const API_AddParType& p = (*memo.params)[i];
+                    if (p.typeID == APIParT_Separator) continue;
+                    GS::ObjectState field;
+                    field.Add ("name", p.name);
+                    field.Add ("displayName", GS::UniString (p.uDescname));
+                    field.Add ("index", p.index);
+                    field.Add ("type", ConvertAddParIDToString (p.typeID));
+                    field.Add ("isLocked", false);
+                    AddValueAndDescriptions (field, p);
+                    AddParameterFlags (field, p);
+                    fields (field);
+                }
+                elemGdlParameterListAdder (result);
+            } else {
+                elemGdlParameterListAdder (CreateErrorResponse (err != NoError ? err : APIERR_BADPARS,
+                    "MEP Equipment did not return GDL parameters in its memo."));
+            }
+            ACAPI_DisposeElemMemoHdls (&memo);
+            continue;
+        }
+#endif
+
 #ifdef ServerMainVers_2600
         paramOwner.type = apiElement.header.type;
 #else
@@ -802,6 +838,65 @@ GS::Optional<GS::UniString> SetGDLParametersOfElementsCommand::GetRawResponseSch
     })";
 }
 
+#ifdef ServerMainVers_2800
+static GSErrCode ChangeEquipmentMemo (API_Element& element, const GS::Array<GS::ObjectState>& changes)
+{
+    // deslab: the AC28 MEP_Test example changes external MEP parameters without OpenParameters.
+    API_ElementMemo memo {};
+    GSErrCode err = ACAPI_Element_GetMemo (element.header.guid, &memo);
+    if (err == NoError && memo.params == nullptr) err = APIERR_BADPARS;
+    if (err == NoError) {
+        const GSSize count = BMGetHandleSize ((GSHandle) memo.params) / sizeof (API_AddParType);
+        for (const GS::ObjectState& change : changes) {
+            GS::String name;
+            if (!change.Get ("name", name)) { err = APIERR_BADPARS; break; }
+            API_AddParType* parameter = nullptr;
+            for (GSIndex i = 0; i < count; ++i) {
+                if (name == (*memo.params)[i].name) { parameter = &(*memo.params)[i]; break; }
+            }
+            if (parameter == nullptr) { err = APIERR_BADPARS; break; }
+            if (parameter->typeMod == API_ParArray && parameter->typeID == APIParT_Length) {
+                GS::Array<double> values;
+                Int32 rows = 0;
+                Int32 columns = 0;
+                if (parameter->value.array == nullptr || !GetNumberArrayValueField (change, values, rows, columns)
+                    || rows != parameter->dim1 || columns != parameter->dim2
+                    || values.GetSize () * sizeof (double) > BMGetHandleSize (parameter->value.array)) {
+                    err = APIERR_BADPARS;
+                    break;
+                }
+                auto* dest = reinterpret_cast<double*> (*parameter->value.array);
+                for (double value : values) {
+                    if (!std::isfinite (value)) { err = APIERR_BADPARS; break; }
+                    *dest++ = value;
+                }
+                if (err != NoError) break;
+            } else if (parameter->typeMod == API_ParSimple && parameter->typeID == APIParT_Boolean) {
+                bool value = false;
+                if (!change.Get ("value", value)) { err = APIERR_BADPARS; break; }
+                parameter->value.real = value ? 1.0 : 0.0;
+            } else if (parameter->typeMod == API_ParSimple &&
+                    (parameter->typeID == APIParT_Length || parameter->typeID == APIParT_Angle ||
+                     parameter->typeID == APIParT_RealNum)) {
+                double value = 0;
+                if (!change.Get ("value", value) || !std::isfinite (value)) { err = APIERR_BADPARS; break; }
+                // The memo already holds angle values in radians.
+                parameter->value.real = value;
+            } else {
+                err = APIERR_NOTSUPPORTED;
+                break;
+            }
+        }
+        if (err == NoError) {
+            API_Element mask {};
+            err = ACAPI_Element_Change (&element, &mask, &memo, APIMemoMask_AddPars, true);
+        }
+    }
+    ACAPI_DisposeElemMemoHdls (&memo);
+    return err;
+}
+#endif
+
 GS::ObjectState	SetGDLParametersOfElementsCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
 {
     GS::Array<GS::ObjectState> elementsWithGDLParameters;
@@ -849,6 +944,14 @@ GS::ObjectState	SetGDLParametersOfElementsCommand::Execute (const GS::ObjectStat
             GS::Array<GS::ObjectState> elemGdlParameters;
             elementWithGDLParameters.Get ("gdlParameters", elemGdlParameters);
 
+#ifdef ServerMainVers_2800
+            if (GetElemTypeId (element.header) == API_ExternalElemID && ACAPI::MEP::IsEquipment (element.header.type.classID)) {
+                err = ChangeEquipmentMemo (element, elemGdlParameters);
+                executionResults (err == NoError ? CreateSuccessfulExecutionResult ()
+                    : CreateFailedExecutionResult (err, "Could not write the MEP Equipment parameter memo."));
+                continue;
+            }
+#endif
             err = ACAPI_LibraryPart_OpenParameters (&paramOwner);
             if (err == NoError) {
                 API_GetParamsType getParams = {};

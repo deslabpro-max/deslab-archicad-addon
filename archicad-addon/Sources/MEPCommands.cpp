@@ -790,6 +790,10 @@ GS::Optional<GS::UniString> CreateMEPRoutingElementsCommand::GetInputParametersS
                             "$ref": "#/Guid",
                             "description": "Optional guid of the elbow preference table for Piping or Ventilation (see GetMEPPreferenceTables with includeFittingTables)."
                         },
+                        "surveyPipeBendRadius": {
+                            "type": "number",
+                            "description": "Observed pipe bend radius in metres. Uses a dedicated preference table and leaves existing project tables untouched."
+                        },
                         "removeInsulation": {
                             "type": "boolean",
                             "description": "Remove template insulation from rigid segments, elbows and transitions."
@@ -833,6 +837,58 @@ GS::Optional<GS::UniString> CreateMEPRoutingElementsCommand::GetRawResponseSchem
         ]
     })";
 }
+
+#ifdef ServerMainVers_2800
+static GSErrCode SurveyPipeElbowTable (uint32_t reference, double diameter, double radius, GS::UniString& tableGuid)
+{
+    if (!std::isfinite (radius) || diameter <= 0 || radius < 0.6 * diameter || radius > 1.0)
+        return APIERR_BADPARS;
+    auto container = GetPipeElbowPreferenceTableContainer ();
+    if (container.IsErr ()) return container.UnwrapErr ().kind;
+    const auto name = GS::UniString::Printf ("Deslab Survey Pipe %d, D=%.2f mm, R=%.2f mm", reference,
+        diameter * 1000.0, radius * 1000.0);
+    for (const auto& id : container->GetPreferenceTables ()) {
+        auto table = PipeElbowPreferenceTable::Get (id);
+        if (table.IsErr () || table->GetName () != name) continue;
+        const auto storedD = table->GetDiameterByReferenceId (reference);
+        const auto storedR = table->GetRadiusByReferenceId (reference);
+        if (storedD.IsErr () || storedR.IsErr () || std::fabs (*storedD - diameter) > 0.00001 ||
+            std::fabs (*storedR - radius) > 0.00001) return APIERR_BADPARS;
+        tableGuid = APIGuidToString (MEPUniqueIDToAPIGuid (id));
+        return NoError;
+    }
+
+    std::optional<ACAPI::MEP::UniqueID> created;
+    const auto added = container->Modify ([&](PreferenceTableContainerBase::Modifier& modifier) -> GSErrCode {
+        const auto id = modifier.AddNewTable (name);
+        if (id.IsErr ()) return id.UnwrapErr ().kind;
+        created = *id;
+        return NoError;
+    }, "Create survey pipe elbow table");
+    if (added.IsErr ()) return added.UnwrapErr ().kind;
+    auto table = PipeElbowPreferenceTable::Get (*created);
+    GSErrCode error = NoError;
+    if (table.IsErr ()) {
+        error = table.UnwrapErr ().kind;
+    } else {
+        const auto written = table->Modify ([&](PipeElbowPreferenceTable::Modifier& modifier) -> GSErrCode {
+            const auto bodySize = modifier.SetDiameterByReferenceId (reference, diameter);
+            if (bodySize.IsErr ()) return bodySize.UnwrapErr ().kind;
+            const auto bendRadius = modifier.SetRadiusByReferenceId (reference, radius);
+            return bendRadius.IsErr () ? bendRadius.UnwrapErr ().kind : NoError;
+        }, "Set measured survey elbow");
+        if (written.IsErr ()) error = written.UnwrapErr ().kind;
+    }
+    if (error != NoError) {
+        container->Modify ([&](PreferenceTableContainerBase::Modifier& modifier) {
+            return modifier.Delete (*created);
+        }, "Remove unused survey pipe elbow table");
+        return error;
+    }
+    tableGuid = APIGuidToString (MEPUniqueIDToAPIGuid (*created));
+    return NoError;
+}
+#endif
 
 GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState& parameters, GS::ProcessControl& /*processControl*/) const
 {
@@ -929,7 +985,21 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
 
             // deslab: a segment table does not set the elbow table. The wrong elbow can leave both ports open.
             GS::UniString elbowTableId;
-            const bool hasElbowTable = routingElementData.Get ("elbowPreferenceTableId", elbowTableId);
+            bool hasElbowTable = routingElementData.Get ("elbowPreferenceTableId", elbowTableId);
+            double measuredRadius = 0.;
+            if (routingElementData.Get ("surveyPipeBendRadius", measuredRadius)) {
+                if (domain.value () != Domain::Piping || referenceId < 0 || nodeCoordinates.GetSize () < 3) {
+                    elements (CreateErrorResponse (APIERR_BADPARS, "Survey bend radius requires a referenced circular pipe route."));
+                    continue;
+                }
+                const auto err = SurveyPipeElbowTable (static_cast<uint32_t> (referenceId),
+                    segmentDefault.GetCrossSectionWidth (), measuredRadius, elbowTableId);
+                if (err != NoError) {
+                    elements (CreateErrorResponse (err, "Failed to configure the survey pipe bend radius."));
+                    continue;
+                }
+                hasElbowTable = true;
+            }
             if (hasElbowTable || removeInsulation) {
                 auto nodeDefault = routingElementDefault->GetRoutingNodeDefault ();
 #ifdef ServerMainVers_2900
@@ -1070,6 +1140,14 @@ GS::Optional<GS::UniString> CreateMEPElementsCommand::GetInputParametersSchema (
                         "accessoryTemplateId": {
                             "$ref": "#/ElementId",
                             "description": "Optional existing accessory of the same domain whose library part and appearance should be used."
+                        },
+                        "equipmentLibraryPartId": {
+                            "$ref": "#/ElementId",
+                            "description": "Optional main GUID of a library part compatible with the Equipment tool."
+                        },
+                        "pipingSystemId": {
+                            "$ref": "#/AttributeId",
+                            "description": "Optional piping system assigned to the Equipment's piping ports."
                         }
                     },
                     "additionalProperties": false,
@@ -1201,9 +1279,34 @@ GS::ObjectState CreateMEPElementsCommand::Execute (const GS::ObjectState& parame
                     }
                     return fittingDefault->Place (coordinate, orientation);
                 }
+                // deslab: pick the actual equipment, independently of the user's current tool default.
                 ACAPI::Result<EquipmentDefault> equipmentDefault = CreateEquipmentDefault ();
                 if (equipmentDefault.IsErr ()) {
                     return { equipmentDefault.UnwrapErr (), equipmentDefault.Token () };
+                }
+                if (const GS::ObjectState* part = elementData.Get ("equipmentLibraryPartId"); part != nullptr) {
+                    const API_Guid partGuid = GetGuidFromObjectState (*part);
+                    const auto modified = equipmentDefault->Modify ([&](ElementDefault::Modifier& modifier) {
+                        modifier.SetObjectId (partGuid);
+                    });
+                    if (modified.IsErr ()) return { modified.UnwrapErr (), modified.Token () };
+                    if (equipmentDefault->GetObjectId () != partGuid) {
+                        return { ACAPI::Error { APIERR_BADPARS, "The requested equipment library part was not selected." }, equipmentDefault.Token () };
+                    }
+                }
+                if (const GS::ObjectState* system = elementData.Get ("pipingSystemId"); system != nullptr) {
+                    const auto index = GetAttributeIndexFromGuid (API_MEPSystemID, GetGuidFromObjectState (*system));
+                    for (uint32_t i = 0; i < equipmentDefault->GetPortCount (); ++i) {
+                        const auto domainOfPort = equipmentDefault->GetDomainOfPort (i);
+                        if (domainOfPort.IsErr ()) return { domainOfPort.UnwrapErr (), domainOfPort.Token () };
+                        if (domainOfPort.Unwrap () != Domain::Piping) continue;
+                        auto port = equipmentDefault->GetPipingPortDefault (i);
+                        if (port.IsErr ()) return { port.UnwrapErr (), port.Token () };
+                        const auto modified = port->Modify ([&](PipingPortDefault::Modifier& modifier) {
+                            modifier.SetMEPSystem (index);
+                        });
+                        if (modified.IsErr ()) return { modified.UnwrapErr (), modified.Token () };
+                    }
                 }
                 return equipmentDefault->Place (coordinate, orientation);
             } ();
