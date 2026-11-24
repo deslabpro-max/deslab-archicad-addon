@@ -26,6 +26,7 @@
 #include "ACAPI/MEPAccessory.hpp"
 #include "ACAPI/MEPAccessoryDefault.hpp"
 #include "ACAPI/MEPEquipmentDefault.hpp"
+#include "ACAPI/MEPEquipment.hpp"
 #include "ACAPI/MEPFittingDefault.hpp"
 #include "ACAPI/MEPDistributionSystemsGraph.hpp"
 #include "ACAPI/MEPDistributionSystem.hpp"
@@ -1623,6 +1624,10 @@ GS::Optional<GS::UniString> ConnectMEPElementsCommand::GetInputParametersSchema 
                         "connectToId": {
                             "$ref": "#/ElementId",
                             "description": "The MEP element or routing element to connect to."
+                        },
+                        "targetEquipmentPipingPort": {
+                            "type": "string",
+                            "description": "Named free Equipment port. If unassigned, set the route system on this port before connecting."
                         }
                     },
                     "additionalProperties": false,
@@ -1679,6 +1684,52 @@ GS::ObjectState ConnectMEPElementsCommand::Execute (const GS::ObjectState& param
         if (routingElement.IsErr ()) {
             connectionResults (CreateErrorResponse (routingElement.UnwrapErr ().kind, "Failed to get the routing element."));
             continue;
+        }
+
+        // deslab: AC28 can reject assigning the system on the library Equipment default.
+        // Assign a single, explicitly selected port on the placed, editable Equipment.
+        GS::UniString portName;
+        if (connectionData.Get ("targetEquipmentPipingPort", portName)) {
+            auto equipment = Equipment::Get (Adapter::UniqueID (GetGuidFromObjectState (*connectToId)));
+            if (equipment.IsErr () || routingElement->GetDomain () != Domain::Piping) {
+                connectionResults (CreateErrorResponse (APIERR_BADPARS, "Expected Piping route and Equipment target."));
+                continue;
+            }
+            std::optional<UniqueID> match;
+            bool ambiguous = false;
+            for (const auto& id : equipment->GetPortIDs ()) {
+                auto port = PipingPort::Get (id);
+                if (port.IsOk () && port->GetName () == portName) {
+                    if (match.has_value ()) { ambiguous = true; break; }
+                    match.emplace (id);
+                }
+            }
+            if (!match.has_value () || ambiguous) {
+                connectionResults (CreateErrorResponse (APIERR_BADPARS, "Expected one named Piping port on Equipment."));
+                continue;
+            }
+            auto port = PipingPort::Get (match.value ());
+            if (port.IsErr () || port->IsPhysicallyConnected ()) {
+                connectionResults (CreateErrorResponse (APIERR_BADPARS, "Equipment port is unavailable or occupied."));
+                continue;
+            }
+            const auto system = routingElement->GetMEPSystem ();
+            if (port->GetMEPSystem () != system) {
+                if (GetAttributeGuidFromIndex (API_MEPSystemID, port->GetMEPSystem ()) != APINULLGuid) {
+                    connectionResults (CreateErrorResponse (APIERR_BADPARS, "Equipment port already has a different system."));
+                    continue;
+                }
+                std::optional<ACAPI::Error> assignmentError;
+                auto changed = port->Modify ([&](PipingPort::Modifier& modifier) {
+                    auto assigned = modifier.SetMEPSystem (system);
+                    if (assigned.IsErr ()) assignmentError = assigned.UnwrapErr ();
+                }, "Set Equipment Piping System");
+                if (assignmentError.has_value () || changed.IsErr ()) {
+                    connectionResults (CreateErrorResponse (assignmentError ? assignmentError->kind : changed.UnwrapErr ().kind,
+                                                           "Failed to set the Equipment port system."));
+                    continue;
+                }
+            }
         }
 
         std::optional<RouteConnectionResult> connectionResult;
