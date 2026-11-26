@@ -23,6 +23,7 @@
 #include "ACAPI/MEPBendDefault.hpp"
 #endif
 #include "ACAPI/MEPTerminalDefault.hpp"
+#include "ACAPI/MEPTakeOff.hpp"
 #include "ACAPI/MEPTakeOffDefault.hpp"
 #include "ACAPI/MEPVentilationPortDefault.hpp"
 #include "ACAPI/MEPAccessory.hpp"
@@ -1244,7 +1245,8 @@ GS::Optional<GS::UniString> CreateMEPElementsCommand::GetInputParametersSchema (
                                 "distance": {"type": "number", "minimum": 0},
                                 "rotation": {"type": "number"},
                                 "width": {"type": "number", "exclusiveMinimum": 0},
-                                "height": {"type": "number", "exclusiveMinimum": 0}
+                                "height": {"type": "number", "exclusiveMinimum": 0},
+                                "length": {"type": "number", "exclusiveMinimum": 0}
                             },
                             "required": ["segmentId", "distance", "rotation", "width", "height"],
                             "additionalProperties": false
@@ -1362,7 +1364,23 @@ GS::ObjectState CreateMEPElementsCommand::Execute (const GS::ObjectState& parame
                         });
                         if (changed.IsErr ()) return { changed.UnwrapErr (), changed.Token () };
                     }
-                    return takeOff->Place (id, distance, rotation);
+                    auto placed = takeOff->Place (id, distance, rotation);
+                    if (placed.IsErr ()) return placed;
+                    double length = 0;
+                    if (placement->Get ("length", length)) {
+                        auto element = TakeOff::Get (placed.Unwrap ());
+                        if (element.IsOk ()) {
+                            const auto sized = element->Modify ([&](TakeOff::Modifier& modifier) {
+                                modifier.SetLength (length);
+                            }, "Set measured take-off length");
+                            if (sized.IsOk () && std::abs (element->GetLength () - length) < 0.001) return placed;
+                        }
+                        const GS::Array<API_Guid> cleanup { MEPUniqueIDToAPIGuid (placed.Unwrap ()) };
+                        const GSErrCode deleted = ACAPI_Element_Delete (cleanup);
+                        if (deleted != NoError) return placed; // deslab: let the caller read and own any surviving element.
+                        return { ACAPI::Error { APIERR_BADPARS, "Take-off length could not be confirmed." }, placed.Token () };
+                    }
+                    return placed;
                 }
                 if (typeStr == "Terminal") {
                     ACAPI::Result<TerminalDefault> terminalDefault = CreateTerminalDefault (domain.value ());
