@@ -1246,7 +1246,8 @@ GS::Optional<GS::UniString> CreateMEPElementsCommand::GetInputParametersSchema (
                                 "rotation": {"type": "number"},
                                 "width": {"type": "number", "exclusiveMinimum": 0},
                                 "height": {"type": "number", "exclusiveMinimum": 0},
-                                "length": {"type": "number", "exclusiveMinimum": 0}
+                                "length": {"type": "number", "exclusiveMinimum": 0},
+                                "shiftAlongFace": {"$ref": "#/Coordinate3D"}
                             },
                             "required": ["segmentId", "distance", "rotation", "width", "height"],
                             "additionalProperties": false
@@ -1339,6 +1340,16 @@ GS::ObjectState CreateMEPElementsCommand::Execute (const GS::ObjectState& parame
                         !std::isfinite (width) || !std::isfinite (height) || distance < 0 || width <= 0 || height <= 0) {
                         return { ACAPI::Error { APIERR_BADPARS, "Missing or invalid ventilation take-off geometry." }, ACAPI_GetToken () };
                     }
+                    double length = 0;
+                    const bool hasLength = placement->Get ("length", length);
+                    if (hasLength && (!std::isfinite (length) || length <= 0)) {
+                        return { ACAPI::Error { APIERR_BADPARS, "Invalid take-off length." }, ACAPI_GetToken () };
+                    }
+                    const auto* shiftOs = placement->Get ("shiftAlongFace");
+                    const auto shift = shiftOs ? Get3DCoordinateFromObjectState (*shiftOs) : API_Coord3D {};
+                    if (!std::isfinite (shift.x) || !std::isfinite (shift.y) || !std::isfinite (shift.z)) {
+                        return { ACAPI::Error { APIERR_BADPARS, "Invalid take-off shift." }, ACAPI_GetToken () };
+                    }
                     const auto* segmentId = placement->Get ("segmentId");
                     if (segmentId == nullptr) {
                         return { ACAPI::Error { APIERR_BADPARS, "Missing associated ventilation segment." }, ACAPI_GetToken () };
@@ -1366,19 +1377,23 @@ GS::ObjectState CreateMEPElementsCommand::Execute (const GS::ObjectState& parame
                     }
                     auto placed = takeOff->Place (id, distance, rotation);
                     if (placed.IsErr ()) return placed;
-                    double length = 0;
-                    if (placement->Get ("length", length)) {
+                    if (hasLength || shiftOs != nullptr) {
                         auto element = TakeOff::Get (placed.Unwrap ());
                         if (element.IsOk ()) {
+                            const auto anchor = element->GetAnchorPoint ();
+                            const API_Coord3D target { anchor.x + shift.x, anchor.y + shift.y, anchor.z + shift.z };
                             const auto sized = element->Modify ([&](TakeOff::Modifier& modifier) {
-                                modifier.SetLength (length);
-                            }, "Set measured take-off length");
-                            if (sized.IsOk () && std::abs (element->GetLength () - length) < 0.001) return placed;
+                                if (hasLength) modifier.SetLength (length);
+                                if (shiftOs != nullptr) modifier.SetAnchorPoint (target);
+                            }, "Set measured take-off geometry");
+                            const auto at = element->GetAnchorPoint ();
+                            if (sized.IsOk () && (!hasLength || std::abs (element->GetLength () - length) < 0.001) &&
+                                (shiftOs == nullptr || std::hypot (at.x - target.x, at.y - target.y, at.z - target.z) < 0.001)) return placed;
                         }
                         const GS::Array<API_Guid> cleanup { MEPUniqueIDToAPIGuid (placed.Unwrap ()) };
                         const GSErrCode deleted = ACAPI_Element_Delete (cleanup);
                         if (deleted != NoError) return placed; // deslab: let the caller read and own any surviving element.
-                        return { ACAPI::Error { APIERR_BADPARS, "Take-off length could not be confirmed." }, placed.Token () };
+                        return { ACAPI::Error { APIERR_BADPARS, "Take-off geometry could not be confirmed." }, placed.Token () };
                     }
                     return placed;
                 }
