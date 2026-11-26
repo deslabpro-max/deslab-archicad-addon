@@ -5231,7 +5231,22 @@ GS::Optional<GS::UniString> CreateOpeningsCommand::GetInputParametersSchema () c
                         "ownerElementId": { "$ref": "#/ElementId" },
                         "basePoint": { "$ref": "#/Coordinate3D" },
                         "width": { "type": "number", "exclusiveMinimum": 0.0 },
-                        "height": { "type": "number", "exclusiveMinimum": 0.0 }
+                        "height": { "type": "number", "exclusiveMinimum": 0.0 },
+                        "wallOpeningShape": {
+                            "type": "string",
+                            "enum": ["Circular", "Rectangular"],
+                            "description": "AC28 measured wall opening. Base point is horizontally centred and uses the bottom elevation."
+                        },
+                        "wallOpeningDepth": {
+                            "type": "number",
+                            "exclusiveMinimum": 0.0,
+                            "description": "Limited depth from the measured near wall face into the wall. Used with wallOpeningShape."
+                        },
+                        "wallOpeningEnd": {
+                            "type": "string",
+                            "enum": ["Start", "End"],
+                            "description": "Place a limited measured opening along the longitudinal axis at the named wall end."
+                        }
                     },
                     "additionalProperties": false,
                     "required": ["ownerElementId", "basePoint"]
@@ -5304,6 +5319,8 @@ GS::ObjectState CreateOpeningsCommand::Execute (const GS::ObjectState& parameter
                 continue;
             }
             const API_Coord3D basePoint = Get3DCoordinateFromObjectState (*data.Get ("basePoint"));
+            GS::UniString wallShape;
+            const bool measuredWallOpening = data.Get ("wallOpeningShape", wallShape);
 
 #ifndef ServerMainVers_2900
             API_Element element = {};
@@ -5328,6 +5345,62 @@ GS::ObjectState CreateOpeningsCommand::Execute (const GS::ObjectState& parameter
             data.Get ("width", extrusionParameters.width);
             data.Get ("height", extrusionParameters.height);
 
+            // deslab: orient a measured passage by its actual host, independent of Opening tool defaults.
+            if (measuredWallOpening) {
+                API_Element owner = {};
+                owner.header.guid = element.opening.owner;
+                if (ACAPI_Element_Get (&owner) != NoError ||
+#ifdef ServerMainVers_2600
+                    owner.header.type != API_WallID ||
+#else
+                    owner.header.typeID != API_WallID ||
+#endif
+                    std::abs (owner.wall.angle) > 1.0e-6 || !data.Contains ("width") || !data.Contains ("height")) {
+                    elements.Push (CreateErrorResponse (APIERR_BADPARS, "A measured opening needs a straight host wall and both dimensions."));
+                    continue;
+                }
+                const double dx = owner.wall.endC.x - owner.wall.begC.x;
+                const double dy = owner.wall.endC.y - owner.wall.begC.y;
+                const double length = std::hypot (dx, dy);
+                if (length < 1.0e-6 ||
+                    (wallShape == "Circular" && std::abs (extrusionParameters.width - extrusionParameters.height) > 1.0e-6)) {
+                    elements.Push (CreateErrorResponse (APIERR_BADPARS, "Invalid measured opening dimensions or host direction."));
+                    continue;
+                }
+                const double ux = dx / length, uy = dy / length;
+                double depth = 0.0;
+                const bool finiteOpening = data.Get ("wallOpeningDepth", depth);
+                const double side = -(basePoint.x - owner.wall.begC.x) * uy +
+                    (basePoint.y - owner.wall.begC.y) * ux;
+                const double normalSign = finiteOpening && side > 0.0 ? -1.0 : 1.0;
+                GS::UniString endName;
+                const bool alongWall = data.Get ("wallOpeningEnd", endName);
+                if (alongWall && (!finiteOpening || depth >= length)) {
+                    elements.Push (CreateErrorResponse (APIERR_BADPARS, "A measured wall end needs a limited local cut."));
+                    continue;
+                }
+                element.header.floorInd = owner.header.floorInd;
+                auto& frame = element.opening.extrusionGeometryData.frame;
+                frame.basePoint.z += extrusionParameters.height / 2.0;
+                const double nx = alongWall ? (endName == "End" ? -ux : ux) : -normalSign * uy;
+                const double ny = alongWall ? (endName == "End" ? -uy : uy) : normalSign * ux;
+                frame.axisX = {-ny, nx, 0.0};
+                frame.axisY = {0.0, 0.0, 1.0};
+                frame.axisZ = {nx, ny, 0.0};
+                extrusionParameters.basePolygonType = wallShape == "Circular" ?
+                    API_OpeningBasePolygonCircular : API_OpeningBasePolygonRectangular;
+                extrusionParameters.constraint = alongWall ? API_OpeningFree : API_OpeningForcedHorizontal;
+                extrusionParameters.anchor = APIAnc_MM;
+                extrusionParameters.limitType = finiteOpening ? API_OpeningLimitFinite : API_OpeningLimitInfinite;
+                if (finiteOpening) {
+                    extrusionParameters.extrusionStartOffset = -0.003;
+                    extrusionParameters.finiteBodyLength = depth + 0.003;
+                }
+                extrusionParameters.linkedStatus = wallShape == "Circular" ? API_OpeningLinked : API_OpeningNotLinked;
+                element.opening.floorPlanParameters.floorPlanDisplayMode = API_OpeningSymbolicOverhead;
+                element.opening.floorPlanParameters.outlinesParameters.outlinesStyle = API_OpeningShowOverheadBorder;
+            }
+
             // The extrusion frame's base point does NOT position the opening vertically:
             // with a horizontal or aligned constraint the vertical position comes from
             // anchorAltitude, measured from the home story up to the anchor point, and the
@@ -5351,6 +5424,10 @@ GS::ObjectState CreateOpeningsCommand::Execute (const GS::ObjectState& parameter
             }
             elements.Push (CreateElementIdObjectState (element.header.guid));
 #else
+            if (measuredWallOpening) {
+                elements.Push (CreateErrorResponse (APIERR_NOTSUPPORTED, "Measured wall openings are implemented for Archicad 28."));
+                continue;
+            }
             ACAPI::Result<ACAPI::Element::OpeningDefault> openingDefault = ACAPI::Element::CreateOpeningDefault ();
             if (openingDefault.IsErr ()) {
                 elements.Push (CreateErrorResponse (openingDefault.UnwrapErr ().kind, GS::UniString (openingDefault.UnwrapErr ().text.c_str ())));

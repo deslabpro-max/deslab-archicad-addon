@@ -795,6 +795,14 @@ GS::Optional<GS::UniString> CreateMEPRoutingElementsCommand::GetInputParametersS
                             "type": "number",
                             "description": "Observed pipe bend radius in metres. Uses a dedicated preference table and leaves existing project tables untouched."
                         },
+                        "surveyDuctDiameter": {
+                            "type": "number",
+                            "description": "Measured diameter for a straight ventilation run. Uses a dedicated table."
+                        },
+                        "simpleDuctEnds": {
+                            "type": "boolean",
+                            "description": "Use plain connections without template flanges for ventilation."
+                        },
                         "removeInsulation": {
                             "type": "boolean",
                             "description": "Remove template insulation from rigid segments, elbows and transitions."
@@ -840,6 +848,54 @@ GS::Optional<GS::UniString> CreateMEPRoutingElementsCommand::GetRawResponseSchem
 }
 
 #ifdef ServerMainVers_2800
+// deslab: an observed straight sleeve can differ from every entry in the default duct tables.
+static GSErrCode SurveyDuctTable (uint32_t reference, double diameter, GS::UniString& tableGuid)
+{
+    if (!std::isfinite (diameter) || diameter < 0.045 || diameter > 1.8)
+        return APIERR_BADPARS;
+    auto container = GetDuctSegmentPreferenceTableContainer ();
+    if (container.IsErr ()) return container.UnwrapErr ().kind;
+    const auto name = GS::UniString::Printf ("Deslab Survey Duct %d, D=%.2f mm", reference, diameter * 1000.0);
+    for (const auto& id : container->GetPreferenceTables ()) {
+        auto table = DuctCircularSegmentPreferenceTable::Get (id);
+        if (table.IsErr () || table->GetName () != name) continue;
+        const auto stored = table->GetDiameterByReferenceId (reference);
+        if (stored.IsErr () || std::fabs (*stored - diameter) > 0.00001) return APIERR_BADPARS;
+        tableGuid = APIGuidToString (MEPUniqueIDToAPIGuid (id));
+        return NoError;
+    }
+    std::optional<ACAPI::MEP::UniqueID> created;
+    const auto added = container->Modify ([&](PreferenceTableContainerBase::Modifier& modifier) -> GSErrCode {
+        const auto id = modifier.AddNewTable (name);
+        if (id.IsErr ()) return id.UnwrapErr ().kind;
+        created = *id;
+        return NoError;
+    }, "Create survey duct preference table");
+    if (added.IsErr ()) return added.UnwrapErr ().kind;
+    auto table = DuctCircularSegmentPreferenceTable::Get (*created);
+    GSErrCode error = NoError;
+    if (table.IsErr ()) {
+        error = table.UnwrapErr ().kind;
+    } else {
+        const auto written = table->Modify ([&](DuctCircularSegmentPreferenceTable::Modifier& modifier) -> GSErrCode {
+            const auto size = modifier.SetDiameterByReferenceId (reference, diameter);
+            if (size.IsErr ()) return size.UnwrapErr ().kind;
+            const auto thickness = modifier.SetWallThicknessByReferenceId (reference, 0.001);
+            return thickness.IsErr () ? thickness.UnwrapErr ().kind : NoError;
+        }, "Set measured survey duct dimensions");
+        if (written.IsErr ()) error = written.UnwrapErr ().kind;
+    }
+    if (error != NoError) {
+        container->Modify ([&](PreferenceTableContainerBase::Modifier& modifier) -> GSErrCode {
+            const auto removed = modifier.Delete (*created);
+            return removed.IsErr () ? removed.UnwrapErr ().kind : NoError;
+        }, "Remove unused survey duct preference table");
+        return error;
+    }
+    tableGuid = APIGuidToString (MEPUniqueIDToAPIGuid (*created));
+    return NoError;
+}
+
 static GSErrCode SurveyPipeElbowTable (uint32_t reference, double diameter, double radius, GS::UniString& tableGuid)
 {
     if (!std::isfinite (radius) || diameter <= 0 || radius < 0.6 * diameter || radius > 1.0)
@@ -959,7 +1015,21 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
             const bool hasHeight = routingElementData.Get ("crossSectionHeight", height);
             const bool hasShape = routingElementData.Get ("crossSectionShape", shapeStr);
             const bool hasReferenceId = routingElementData.Get ("crossSectionReferenceId", referenceId);
-            const bool hasPreferenceTableId = routingElementData.Get ("preferenceTableId", preferenceTableIdStr);
+            bool hasPreferenceTableId = routingElementData.Get ("preferenceTableId", preferenceTableIdStr);
+            double observedDiameter = 0.0;
+            if (routingElementData.Get ("surveyDuctDiameter", observedDiameter)) {
+                if (domain.value () != Domain::Ventilation || shapeStr != "Circular" || referenceId < 0 ||
+                    nodeCoordinates.GetSize () != 2) {
+                    elements (CreateErrorResponse (APIERR_BADPARS, "Measured duct sizing needs a straight circular ventilation route and a reference."));
+                    continue;
+                }
+                const auto err = SurveyDuctTable (static_cast<uint32_t> (referenceId), observedDiameter, preferenceTableIdStr);
+                if (err != NoError) {
+                    elements (CreateErrorResponse (err, "Failed to configure the measured ventilation diameter."));
+                    continue;
+                }
+                hasPreferenceTableId = true;
+            }
             if (hasWidth || hasHeight || hasShape || hasReferenceId || hasPreferenceTableId) {
                 segmentDefault.Modify ([&](RoutingSegmentDefault::Modifier& modifier) {
                     // The preference table is set before the reference id, because the reference id is
@@ -983,6 +1053,20 @@ GS::ObjectState CreateMEPRoutingElementsCommand::Execute (const GS::ObjectState&
                         modifier.SetCrossSectionReferenceId (static_cast<uint32_t> (referenceId));
                     }
                 });
+            }
+            bool simpleDuctEnds = false;
+            if (routingElementData.Get ("simpleDuctEnds", simpleDuctEnds) && simpleDuctEnds &&
+                domain.value () == Domain::Ventilation) {
+                GSErrCode connectionError = NoError;
+                const auto updated = segmentDefault.Modify ([&](RoutingSegmentDefault::Modifier& modifier) {
+                    const auto result = modifier.SetConnectionStyle (ConnectionStyle::SimpleBody);
+                    if (result.IsErr ()) connectionError = result.UnwrapErr ().kind;
+                });
+                if (updated.IsErr () || connectionError != NoError) {
+                    elements (CreateErrorResponse (updated.IsErr () ? updated.UnwrapErr ().kind : connectionError,
+                        "Failed to apply plain duct connections."));
+                    continue;
+                }
             }
 
             // deslab: a segment table does not set the elbow table. The wrong elbow can leave both ports open.
