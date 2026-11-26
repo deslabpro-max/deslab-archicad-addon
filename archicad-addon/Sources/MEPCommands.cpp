@@ -23,6 +23,8 @@
 #include "ACAPI/MEPBendDefault.hpp"
 #endif
 #include "ACAPI/MEPTerminalDefault.hpp"
+#include "ACAPI/MEPTakeOffDefault.hpp"
+#include "ACAPI/MEPVentilationPortDefault.hpp"
 #include "ACAPI/MEPAccessory.hpp"
 #include "ACAPI/MEPAccessoryDefault.hpp"
 #include "ACAPI/MEPEquipmentDefault.hpp"
@@ -1234,6 +1236,18 @@ GS::Optional<GS::UniString> CreateMEPElementsCommand::GetInputParametersSchema (
                         "pipingSystemId": {
                             "$ref": "#/AttributeId",
                             "description": "Optional piping system assigned to the Equipment's piping ports."
+                        },
+                        "ventilationTakeOff": {
+                            "type": "object",
+                            "properties": {
+                                "segmentId": {"$ref": "#/ElementId"},
+                                "distance": {"type": "number", "minimum": 0},
+                                "rotation": {"type": "number"},
+                                "width": {"type": "number", "exclusiveMinimum": 0},
+                                "height": {"type": "number", "exclusiveMinimum": 0}
+                            },
+                            "required": ["segmentId", "distance", "rotation", "width", "height"],
+                            "additionalProperties": false
                         }
                     },
                     "additionalProperties": false,
@@ -1312,6 +1326,44 @@ GS::ObjectState CreateMEPElementsCommand::Execute (const GS::ObjectState& parame
             const API_Coord3D coordinate = Get3DCoordinateFromObjectState (*position);
 
             ACAPI::Result<ACAPI::MEP::UniqueID> newElementId = [&]() -> ACAPI::Result<ACAPI::MEP::UniqueID> {
+                if (typeStr == "TakeOff") {
+                    // deslab: attach the stock ventilation take-off to the actual routing segment.
+                    const auto* placement = elementData.Get ("ventilationTakeOff");
+                    double distance = 0, rotation = 0, width = 0, height = 0;
+                    if (placement == nullptr || domain != Domain::Ventilation ||
+                        !placement->Get ("distance", distance) || !placement->Get ("rotation", rotation) ||
+                        !placement->Get ("width", width) || !placement->Get ("height", height) ||
+                        !std::isfinite (distance) || !std::isfinite (rotation) ||
+                        !std::isfinite (width) || !std::isfinite (height) || distance < 0 || width <= 0 || height <= 0) {
+                        return { ACAPI::Error { APIERR_BADPARS, "Missing or invalid ventilation take-off geometry." }, ACAPI_GetToken () };
+                    }
+                    const auto* segmentId = placement->Get ("segmentId");
+                    if (segmentId == nullptr) {
+                        return { ACAPI::Error { APIERR_BADPARS, "Missing associated ventilation segment." }, ACAPI_GetToken () };
+                    }
+                    const auto id = Adapter::UniqueID (GetGuidFromObjectState (*segmentId));
+                    const auto segment = RoutingSegment::Get (id);
+                    if (segment.IsErr ()) return { segment.UnwrapErr (), segment.Token () };
+                    const auto route = RoutingElement::Get (segment->GetRoutingElementId ());
+                    if (route.IsErr ()) return { route.UnwrapErr (), route.Token () };
+                    if (route->GetDomain () != Domain::Ventilation) {
+                        return { ACAPI::Error { APIERR_BADPARS, "Expected a ventilation route segment." }, route.Token () };
+                    }
+                    auto takeOff = CreateTakeOffDefault (Domain::Ventilation);
+                    if (takeOff.IsErr ()) return { takeOff.UnwrapErr (), takeOff.Token () };
+                    for (uint32_t i = 0; i < takeOff->GetPortCount (); ++i) {
+                        auto port = takeOff->GetVentilationPortDefault (i);
+                        if (port.IsErr ()) return { port.UnwrapErr (), port.Token () };
+                        const auto changed = port->Modify ([&](VentilationPortDefault::Modifier& modifier) {
+                            modifier.SetShape (ConnectorShape::Rectangular);
+                            modifier.SetWidth (width);
+                            modifier.SetHeight (height);
+                            modifier.SetMEPSystem (route->GetMEPSystem ());
+                        });
+                        if (changed.IsErr ()) return { changed.UnwrapErr (), changed.Token () };
+                    }
+                    return takeOff->Place (id, distance, rotation);
+                }
                 if (typeStr == "Terminal") {
                     ACAPI::Result<TerminalDefault> terminalDefault = CreateTerminalDefault (domain.value ());
                     if (terminalDefault.IsErr ()) {
