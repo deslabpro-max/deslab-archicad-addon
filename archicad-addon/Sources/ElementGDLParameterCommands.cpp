@@ -569,8 +569,9 @@ GS::ObjectState	GetGDLParametersOfElementsCommand::Execute (const GS::ObjectStat
         }
 
 #ifdef ServerMainVers_2800
-        // deslab: MEP Equipment parameters are obtained from its native memo, as in the AC28 MEP example.
-        if (GetElemTypeId (apiElement.header) == API_ExternalElemID && ACAPI::MEP::IsEquipment (apiElement.header.type.classID)) {
+        // deslab: native AC28 MEP equipment and take-offs do not expose OpenParameters.
+        if (GetElemTypeId (apiElement.header) == API_ExternalElemID &&
+            (ACAPI::MEP::IsEquipment (apiElement.header.type.classID) || ACAPI::MEP::IsTakeOff (apiElement.header.type.classID))) {
             API_ElementMemo memo {};
             err = ACAPI_Element_GetMemo (paramOwner.guid, &memo);
             if (err == NoError && memo.params != nullptr) {
@@ -593,7 +594,7 @@ GS::ObjectState	GetGDLParametersOfElementsCommand::Execute (const GS::ObjectStat
                 elemGdlParameterListAdder (result);
             } else {
                 elemGdlParameterListAdder (CreateErrorResponse (err != NoError ? err : APIERR_BADPARS,
-                    "MEP Equipment did not return GDL parameters in its memo."));
+                    "Native MEP element did not return GDL parameters in its memo."));
             }
             ACAPI_DisposeElemMemoHdls (&memo);
             continue;
@@ -839,7 +840,45 @@ GS::Optional<GS::UniString> SetGDLParametersOfElementsCommand::GetRawResponseSch
 }
 
 #ifdef ServerMainVers_2800
-static GSErrCode ChangeEquipmentMemo (API_Element& element, const GS::Array<GS::ObjectState>& changes)
+static bool IsValidTakeOffEdit (const GS::String& name, double value, const API_ElementMemo& memo, GSSize count)
+{
+    if (!std::isfinite (value)) return false;
+    if (name == "ConLength_1") return value > 0.0 && value <= 1.8;
+    if (name != "TakeoffPos") return false;
+
+    const auto find = [&] (const char* parameterName) -> const API_AddParType* {
+        for (GSIndex i = 0; i < count; ++i) {
+            if (GS::String ((*memo.params)[i].name) == parameterName) return &(*memo.params)[i];
+        }
+        return nullptr;
+    };
+    const auto length = [&] (const char* parameterName) {
+        const auto* p = find (parameterName);
+        return p != nullptr && p->typeMod == API_ParSimple ? p->value.real : 0.0;
+    };
+    const auto array = [&] (const char* parameterName, Int32 row, Int32 column) {
+        const auto* p = find (parameterName);
+        if (p == nullptr || p->typeMod != API_ParArray || p->value.array == nullptr ||
+            row >= p->dim1 || column >= p->dim2) return 0.0;
+        const USize index = row * p->dim2 + column;
+        return (index + 1) * sizeof (double) <= BMGetHandleSize (p->value.array)
+            ? reinterpret_cast<const double*> (*p->value.array)[index] : 0.0;
+    };
+
+    // deslab: use the same attached-duct face and outlet span as the stock rectangular take-off.
+    if (length ("DuctShapeType") != 1.0 || array ("MEP_NumConnectionData", 1, 17) <= 0.0) return false;
+    double axesDot = 0.0;
+    for (Int32 axis = 0; axis < 3; ++axis) {
+        axesDot += array ("MEP_Position", 2, axis) * array ("Duct_Straight_Position", 2, axis);
+    }
+    const double face = length (std::abs (axesDot) < 1.0e-6 ? "DuctWidth" : "DuctDepth");
+    const Int32 widthColumn = array ("MEP_NumConnectionData", 0, 20) == 2.0 ? 11 : 12;
+    const double outlet = array ("MEP_NumConnectionData", 0, widthColumn);
+    const double taper = length ("MEP_TakeoffTypeID") == 1.0 ? length ("InclPartLength") : 0.0;
+    return face > 0.0 && outlet > 0.0 && std::abs (value) <= (face - outlet) / 2.0 - taper + 1.0e-6;
+}
+
+static GSErrCode ChangeNativeMEPMemo (API_Element& element, const GS::Array<GS::ObjectState>& changes)
 {
     // deslab: the AC28 MEP_Test example changes external MEP parameters without OpenParameters.
     API_ElementMemo memo {};
@@ -850,6 +889,13 @@ static GSErrCode ChangeEquipmentMemo (API_Element& element, const GS::Array<GS::
         for (const GS::ObjectState& change : changes) {
             GS::String name;
             if (!change.Get ("name", name)) { err = APIERR_BADPARS; break; }
+            if (ACAPI::MEP::IsTakeOff (element.header.type.classID)) {
+                double value = 0.0;
+                if (!change.Get ("value", value) || !IsValidTakeOffEdit (name, value, memo, count)) {
+                    err = APIERR_BADPARS;
+                    break;
+                }
+            }
             API_AddParType* parameter = nullptr;
             for (GSIndex i = 0; i < count; ++i) {
                 if (name == (*memo.params)[i].name) { parameter = &(*memo.params)[i]; break; }
@@ -945,10 +991,11 @@ GS::ObjectState	SetGDLParametersOfElementsCommand::Execute (const GS::ObjectStat
             elementWithGDLParameters.Get ("gdlParameters", elemGdlParameters);
 
 #ifdef ServerMainVers_2800
-            if (GetElemTypeId (element.header) == API_ExternalElemID && ACAPI::MEP::IsEquipment (element.header.type.classID)) {
-                err = ChangeEquipmentMemo (element, elemGdlParameters);
+            if (GetElemTypeId (element.header) == API_ExternalElemID &&
+                (ACAPI::MEP::IsEquipment (element.header.type.classID) || ACAPI::MEP::IsTakeOff (element.header.type.classID))) {
+                err = ChangeNativeMEPMemo (element, elemGdlParameters);
                 executionResults (err == NoError ? CreateSuccessfulExecutionResult ()
-                    : CreateFailedExecutionResult (err, "Could not write the MEP Equipment parameter memo."));
+                    : CreateFailedExecutionResult (err, "Could not write the native MEP parameter memo."));
                 continue;
             }
 #endif
